@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Caraxes.Core/Caraxes.Core.csproj" />
+  <Project Path="Caraxes.Tests/Caraxes.Tests.csproj" />
+  <Project Path="Caraxes/Caraxes.csproj" />
+</Solution>

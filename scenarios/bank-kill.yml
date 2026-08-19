@@ -1,0 +1,26 @@
+# Bank-transfer invariant under a node kill. Transfers contend across the whole keyspace and conserve
+# SUM(balance); a kill mid-run must not break atomicity. Verdict PASS requires the conserved-balance
+# invariant to hold (never waived) plus recovery within the limit.
+name: bank-kill
+cluster:
+  name: bank-chaos
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+workload:
+  kind: bank
+  database: caraxes
+  rows: 20000
+  mode: closed
+  workers: 32
+  duration: 60s
+  warmup: 15s
+  read_percent: 50
+  write_percent: 50
+nemesis:
+  seed: 5
+  events:
+    - { at: 20s, fault: kill, target: random, duration: 20s }
+checks:
+  max_recovery_seconds: 45
+teardown: true

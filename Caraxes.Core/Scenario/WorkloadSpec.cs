@@ -1,0 +1,107 @@
+/**
+ * This file is part of Caraxes
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Caraxes.Core.Scenario;
+
+/// <summary>
+/// The SQL workload driven against a cluster, mapping onto <c>CamusDB.Workload</c>'s
+/// <c>init</c>/<c>run</c> flags. Defaults are lighter than the workload's own (shorter duration,
+/// fewer rows) because a chaos scenario runs many of these and cares about behavior under fault,
+/// not peak throughput — override per scenario when a longer measured window is wanted.
+/// </summary>
+public sealed class WorkloadSpec
+{
+    /// <summary>Write shape: <c>accounts</c> (shard-disjoint read-modify-write, conflict-free) or
+    /// <c>bank</c> (contended transfers across the keyspace with a conserved <c>SUM(balance)</c>
+    /// atomicity invariant checked post-run). Bank is the stronger anomaly detector under contention
+    /// and faults.</summary>
+    public string Kind { get; set; } = "accounts";
+
+    /// <summary>Database the workload seeds and drives; <c>init</c> creates it if absent.</summary>
+    public string Database { get; set; } = "caraxes";
+
+    public ulong Seed { get; set; } = 1847;
+
+    public long Rows { get; set; } = 100_000;
+
+    public int PayloadBytes { get; set; } = 256;
+
+    /// <summary>Rows per seeding transaction during <c>init</c>.</summary>
+    public int Batch { get; set; } = 500;
+
+    /// <summary>Load model: <c>open</c> (fixed arrival rate) or <c>closed</c> (saturation).</summary>
+    public string Mode { get; set; } = "open";
+
+    /// <summary>Open-loop submitted operations per second.</summary>
+    public int TargetOps { get; set; } = 500;
+
+    public int Workers { get; set; } = 32;
+
+    public int ReadPercent { get; set; } = 60;
+
+    public int WritePercent { get; set; } = 40;
+
+    public int WritesPerTransaction { get; set; } = 1;
+
+    public string Duration { get; set; } = "60s";
+
+    public string Warmup { get; set; } = "15s";
+
+    public string Drain { get; set; } = "10s";
+
+    public int Connections { get; set; } = 8;
+
+    public int MaxInFlight { get; set; } = 4096;
+
+    /// <summary>Write-transaction locking: <c>optimistic</c> or <c>pessimistic</c>. Defaults to
+    /// empty, which inherits the cluster's <c>locking</c> so a scenario's two halves agree unless
+    /// deliberately mismatched.</summary>
+    public string Locking { get; set; } = "";
+
+    /// <summary>Write-transaction isolation: <c>read_committed</c> or <c>serializable</c>. Empty
+    /// inherits the cluster's <c>isolation</c>.</summary>
+    public string Isolation { get; set; } = "";
+
+    public bool NoAutoPrepare { get; set; }
+
+    /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
+    public int RequestTimeout { get; set; }
+
+    /// <summary>Tolerate conflicts and open-loop pacing shortfalls as warnings rather than INVALID,
+    /// and give reconciliation an indeterminate-commit band. Default true: a Phase 2 baseline is
+    /// fault-free, but a scenario with faults needs this, and leaving it on never loosens a clean
+    /// run's verdict beyond the conflict/pacing waivers a chaos run legitimately produces.</summary>
+    public bool ExpectFaults { get; set; } = true;
+
+    public void Validate()
+    {
+        if (Kind is not ("accounts" or "bank"))
+            throw new ScenarioException($"'workload.kind' must be 'accounts' or 'bank', got '{Kind}'");
+
+        if (string.IsNullOrWhiteSpace(Database) || Database is "default" or "system")
+            throw new ScenarioException($"'workload.database' must be a non-empty, non-reserved name, got '{Database}'");
+
+        if (Rows < 1)
+            throw new ScenarioException($"'workload.rows' must be >= 1, got {Rows}");
+
+        if (Mode is not ("open" or "closed"))
+            throw new ScenarioException($"'workload.mode' must be 'open' or 'closed', got '{Mode}'");
+
+        if (ReadPercent + WritePercent != 100)
+            throw new ScenarioException(
+                $"'workload.read_percent' + 'workload.write_percent' must equal 100, got {ReadPercent} + {WritePercent}");
+
+        if (Locking is not ("" or "optimistic" or "pessimistic"))
+            throw new ScenarioException($"'workload.locking' must be 'optimistic' or 'pessimistic', got '{Locking}'");
+
+        if (Isolation is not ("" or "read_committed" or "serializable"))
+            throw new ScenarioException($"'workload.isolation' must be 'read_committed' or 'serializable', got '{Isolation}'");
+
+        if (Workers < 1)
+            throw new ScenarioException($"'workload.workers' must be >= 1, got {Workers}");
+    }
+}

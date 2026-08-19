@@ -1,0 +1,27 @@
+# Zone-failure test: 6 nodes across 3 failure zones (2 per zone), RF=3 so each partition places one
+# replica per zone. Killing a whole zone removes one replica per partition — a 2-of-3 quorum must
+# survive. The bank invariant (conserved SUM(balance)) must hold across the zone loss and recovery.
+name: zone-failure
+cluster:
+  name: zonefail
+  nodes: 6
+  partitions: 6
+  replication_factor: 3
+  zones: [za, za, zb, zb, zc, zc]
+workload:
+  kind: bank
+  database: caraxes
+  rows: 20000
+  mode: closed
+  workers: 32
+  duration: 90s
+  warmup: 20s
+  read_percent: 50
+  write_percent: 50
+nemesis:
+  seed: 3
+  events:
+    - { at: 25s, fault: kill, target: "zone:za", duration: 30s }
+checks:
+  max_recovery_seconds: 60
+teardown: true

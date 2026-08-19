@@ -1,0 +1,21 @@
+# Fault-free baseline: 3-node RF=3, optimistic/read-committed, open-loop.
+# Proves the cluster + workload path end to end; the verdict should be PASS with 0 conflicts.
+name: smoke-optimistic
+cluster:
+  name: smoke-opt
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+workload:
+  database: caraxes
+  rows: 20000
+  mode: open
+  target_ops: 400
+  workers: 32
+  duration: 60s
+  warmup: 15s
+  read_percent: 60
+  write_percent: 40
+teardown: true

@@ -1,0 +1,15 @@
+# Cluster spec for the leader-balance test (used by: caraxes leader-balance --spec this).
+# 3 nodes, 9 partitions → fair share of 3 leaders per node. The test kills the busiest leader (its 3
+# leaderships pile onto the survivors), restarts it, and checks the balancer moves leadership back.
+# The balancer interval is shortened so it acts within the test's ~2.5 min watch window.
+name: leaderbal
+nodes: 3
+partitions: 9
+replication_factor: 3
+leader_balancer: true
+placement_rebalancer: true
+kahuna:
+  leader_balancer_interval_ms: 10000
+  leader_balancer_report_interval_ms: 2000
+  leader_balancer_report_ttl_ms: 8000
+  min_leader_stability_ms: 2000

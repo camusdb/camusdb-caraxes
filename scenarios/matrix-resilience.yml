@@ -1,0 +1,29 @@
+# Resilience sweep: optimistic vs pessimistic × {no fault, kill a follower}, on a 3-node RF=3
+# cluster. Every cell shares one image (built once). Reads across as a small grid in matrix-report.md.
+name: resilience
+cluster:
+  name: mx
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+workload:
+  database: caraxes
+  rows: 20000
+  mode: open
+  target_ops: 300
+  workers: 32
+  duration: 60s
+  warmup: 15s
+  read_percent: 60
+  write_percent: 40
+checks:
+  max_recovery_seconds: 45
+axes:
+  locking: [optimistic, pessimistic]
+  nemesis:
+    - name: none
+    - name: kill
+      seed: 7
+      events:
+        - { at: 20s, fault: kill, target: random, duration: 20s }
+teardown: true

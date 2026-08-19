@@ -1,0 +1,10 @@
+# 3-node baseline: RF=3 (each partition on every node at this size), leader balancer on.
+name: rf3-baseline
+nodes: 3
+partitions: 3
+replication_factor: 3
+placement_rebalancer: true
+leader_balancer: true
+locking: optimistic
+isolation: read_committed
+diagnostics: true

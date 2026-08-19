@@ -1,0 +1,11 @@
+# 5-node cluster with RF=3: true partial placement — each partition lives on 3 of 5 nodes,
+# so node loss triggers real repair moves. More partitions so placement has something to spread.
+name: rf3-five
+nodes: 5
+partitions: 8
+replication_factor: 3
+placement_rebalancer: true
+leader_balancer: true
+locking: optimistic
+isolation: read_committed
+diagnostics: true

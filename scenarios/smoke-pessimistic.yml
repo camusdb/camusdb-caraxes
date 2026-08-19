@@ -1,0 +1,20 @@
+# Fault-free baseline with pessimistic/serializable transactions — exercises the Phase 0
+# --locking/--isolation workload flags against a cluster configured the same way.
+name: smoke-pessimistic
+cluster:
+  name: smoke-pess
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  database: caraxes
+  rows: 20000
+  mode: closed
+  workers: 24
+  duration: 60s
+  warmup: 15s
+  read_percent: 50
+  write_percent: 50
+teardown: true

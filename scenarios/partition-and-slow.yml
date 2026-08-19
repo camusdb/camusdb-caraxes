@@ -1,0 +1,31 @@
+# Network chaos: isolate one node for 15s, then degrade another with 120ms latency for 15s.
+# Exercises partition tolerance and a slow-link straggler without any process ever dying.
+name: partition-and-slow
+cluster:
+  name: chaos-net
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+workload:
+  database: caraxes
+  rows: 20000
+  mode: open
+  target_ops: 300
+  workers: 32
+  duration: 70s
+  warmup: 15s
+  read_percent: 60
+  write_percent: 40
+nemesis:
+  seed: 11
+  events:
+    - at: 15s
+      fault: partition
+      target: camus3
+      duration: 15s
+    - at: 40s
+      fault: slow
+      target: camus2
+      duration: 15s
+      delay_ms: 120
+teardown: true

@@ -1,0 +1,38 @@
+# Disk-pressure test: each node's /data is a 1 GiB size-capped tmpfs, so the harness can exhaust free
+# space on one node on demand while normal operation stays comfortably above CamusDB's
+# min_free_disk_bytes write-admission watermark (default 64 MiB). Filling one node's disk must not
+# break the cluster (RF=3 keeps a quorum on the other two) or the bank invariant: the filled node
+# refuses new writes cleanly with CADB0536 (InsufficientDiskSpace) instead of corrupting or crashing,
+# and once the disk is freed it resumes admitting writes on its own (no restart).
+#
+# The tmpfs is sized with headroom on purpose. A tmpfs only a little larger than the watermark keeps
+# free space chronically below it once the dataset is seeded, so the gate fires run-wide and there is
+# no clean baseline to compare the fault against. 1 GiB against an 8k-row bank dataset keeps the clean
+# seconds healthy, so CADB0536 appears only inside the fill window and clears after the heal.
+#
+# Note: tmpfs data is RAM-backed and lost on restart, so this spec is for disk-pressure behavior, not
+# durability. Device-mapper latency/corruption faults need a Linux host and are not used here.
+name: disk-full
+cluster:
+  name: diskfull
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  data_tmpfs_mb: 1024
+workload:
+  kind: bank
+  database: caraxes
+  rows: 8000
+  mode: closed
+  workers: 24
+  duration: 50s
+  warmup: 12s
+  read_percent: 30
+  write_percent: 70
+nemesis:
+  seed: 9
+  events:
+    - { at: 18s, fault: fill-disk, target: random, duration: 15s }
+checks:
+  max_recovery_seconds: 60
+teardown: true

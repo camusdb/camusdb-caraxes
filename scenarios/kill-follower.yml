@@ -1,0 +1,28 @@
+# Chaos baseline: kill a random node ~20s into the run, keep it down 20s, then restart it.
+# The workload should survive via endpoint-pool failover; the cluster re-elects and the restarted
+# node rejoins. Verdict PASS requires the run to stay valid and reconcile (expect_faults tolerates
+# the conflicts/failures a kill legitimately produces) with no internal errors.
+name: kill-follower
+cluster:
+  name: chaos-kill
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+workload:
+  database: caraxes
+  rows: 20000
+  mode: open
+  target_ops: 300
+  workers: 32
+  duration: 60s
+  warmup: 15s
+  read_percent: 60
+  write_percent: 40
+nemesis:
+  seed: 7
+  events:
+    - at: 20s
+      fault: kill
+      target: random
+      duration: 20s
+teardown: true

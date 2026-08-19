@@ -1,0 +1,26 @@
+# Soak: seeded random nemesis on a 5-node RF=3 cluster — a fault every 10-18s from a mixed menu,
+# each held ~12s, for the length of the run. Reproducible via the seed.
+name: soak-random
+cluster:
+  name: chaos-soak
+  nodes: 5
+  partitions: 8
+  replication_factor: 3
+workload:
+  database: caraxes
+  rows: 40000
+  mode: open
+  target_ops: 500
+  workers: 48
+  duration: 180s
+  warmup: 20s
+  read_percent: 60
+  write_percent: 40
+nemesis:
+  seed: 42
+  random:
+    faults: [kill, pause, partition, slow]
+    min_interval: 10s
+    max_interval: 18s
+    duration: 12s
+teardown: true

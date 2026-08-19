@@ -1,0 +1,10 @@
+# 6-node cluster across 3 failure zones (2 per zone), RF=3. Used to verify that bootstrap
+# placement spreads each partition's 3 replicas one-per-zone. Kahuna 1.2.3 zone-aware placement.
+name: zonecheck
+nodes: 6
+partitions: 6
+replication_factor: 3
+zones: [za, za, zb, zb, zc, zc]
+placement_rebalancer: true
+leader_balancer: true
+diagnostics: true
