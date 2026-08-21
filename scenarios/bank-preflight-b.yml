@@ -1,0 +1,43 @@
+# Second two-hour optimistic-locking soak. Two changes from bank-optimistic-2h:
+#  - concurrency up from 24 to 64 workers over 16 connections, to push the retry loop harder;
+#  - nemesis cut to pause and slow every 5-8 minutes, so the error rate reflects contention
+#    rather than node loss. Kills and partitions produced every 100% error window and all three
+#    recovery-limit failures in the first run.
+# Same cluster, same seed, same 2000 rows, so the retry numbers compare directly.
+name: bank-preflight-b
+cluster:
+  name: bank-preflight-b
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 64
+  connections: 16
+  duration: 90s
+  warmup: 20s
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 25s
+    max_interval: 40s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: true
+  require_progress_under_fault: true
+teardown: true

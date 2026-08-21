@@ -1,0 +1,31 @@
+# Preflight for bank-optimistic-2h: the same cluster and workload shape, but tiny and short.
+# Its job is to prove the image build, cert path, seeding, bank workload, nemesis, and verdict all
+# work before the two-hour run commits to them. Not a measurement.
+name: bank-preflight
+cluster:
+  name: bank-preflight
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  events:
+    - { at: 20s, fault: kill, target: random, duration: 15s }
+checks:
+  max_recovery_seconds: 60
+teardown: true

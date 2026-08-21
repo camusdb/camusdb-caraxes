@@ -1,0 +1,30 @@
+# Memory diagnostic, not a chaos test. It reproduces run B's exact load with no faults at all, so
+# any memory growth is attributable to the workload rather than to fault injection or to restarts.
+# A sampler records per-node memory alongside it. The question it answers: is 2.2 GiB per node a
+# steady-state footprint, or does it grow without bound until the Docker VM OOM-kills a node?
+name: mem-diagnostic
+cluster:
+  name: mem-diag
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 64
+  connections: 16
+  duration: 50m
+  warmup: 1m
+  drain: 20s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+teardown: false
