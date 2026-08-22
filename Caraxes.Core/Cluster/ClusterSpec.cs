@@ -93,6 +93,20 @@ public sealed class ClusterSpec
     /// scenarios, not for kill/recovery durability tests. 0 (the default) keeps the named volume.</summary>
     public int DataTmpfsMb { get; set; }
 
+    /// <summary>When &gt; 0, each node container gets a hard memory limit of this many MiB
+    /// (compose <c>mem_limit</c>). This is the fix for the observed unbounded RSS growth: CamusDB
+    /// runs with Server GC, and with no cgroup limit each node sizes its heap against the whole
+    /// Docker VM — three nodes each grew past 2 GiB of mostly-empty committed heap (live managed
+    /// objects were ~190 MiB) until the VM OOM-killed one. The limit alone is not enough: the
+    /// runtime's default heap self-cap is 75% of the cgroup limit, and ~350-400 MiB of native
+    /// memory (RocksDB) sits outside the managed heap, so at 1536 MiB the two together meet the
+    /// limit and a loaded node still dies (soak run G, OOM at t+88m). The generator therefore
+    /// also sets <c>DOTNET_GCHeapHardLimitPercent</c> to 60% whenever a limit is set — see
+    /// <see cref="ComposeGenerator"/>. Measured guidance: limits below ~1 GiB starve the GC;
+    /// 1536-2048 is a good posture for the bank soaks on a 6-8 GiB Docker VM.
+    /// 0 (the default) keeps the old behavior: no limit.</summary>
+    public int MemoryLimitMb { get; set; }
+
     /// <summary>Raw passthrough into the generated config's <c>kahuna:</c> section, for knobs the
     /// spec does not model (election timing, pacing, WAL settings). Keys are written verbatim, so
     /// they must be valid CamusDB <c>kahuna.*</c> option names.</summary>
@@ -146,6 +160,14 @@ public sealed class ClusterSpec
 
         if (DataTmpfsMb < 0)
             throw new ClusterSpecException($"'data_tmpfs_mb' must be >= 0 (0 = named volume), got {DataTmpfsMb}");
+
+        // A tiny limit does not fail cleanly: the container boots, the runtime and RocksDB alone
+        // exceed it, and the node is OOM-killed mid-scenario in a way that reads as a database
+        // crash. Refuse limits below what the stack demonstrably needs to stand up.
+        if (MemoryLimitMb is not 0 and < 512)
+            throw new ClusterSpecException(
+                $"'memory_limit_mb' must be 0 (no limit) or >= 512, got {MemoryLimitMb}; " +
+                "native memory (RocksDB) alone uses ~350-400 MiB per node");
 
         foreach (int port in (int[])[BaseRestPort, BaseGrpcPort, BaseRaftPort])
             if (port is < 1 or > 65535)

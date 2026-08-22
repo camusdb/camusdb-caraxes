@@ -14,6 +14,11 @@ namespace Caraxes.Core.Cluster;
 /// image at build time, so certs and image must change together: <c>up</c> regenerates only when
 /// the SAN parameters changed (tracked in a marker file next to the certs) and always rebuilds the
 /// image afterwards, which re-bakes both the .pfx and the CA anchor.
+///
+/// <para><see cref="EnsureAsync"/> reports whether it wrote new certs precisely so the caller can
+/// hold up its half of that pairing. A caller that skips the image build after a regeneration
+/// leaves a fresh .pfx on disk against an image that still carries the previous CA anchor, and
+/// every inter-node handshake then fails with <c>UntrustedRoot</c>.</para>
 /// </summary>
 public static class CertProvisioner
 {
@@ -29,10 +34,15 @@ public static class CertProvisioner
         return !File.Exists(marker) || File.ReadAllText(marker).Trim() != SanFingerprint(spec);
     }
 
-    public static async Task EnsureAsync(ClusterSpec spec, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Regenerates the development certificate when this spec's SAN parameters differ from the
+    /// marker file. Returns <c>true</c> when it wrote new certs, in which case the caller MUST
+    /// rebuild the image before it starts any node — see the type summary for why.
+    /// </summary>
+    public static async Task<bool> EnsureAsync(ClusterSpec spec, CancellationToken cancellationToken = default)
     {
         if (!NeedsRegeneration(spec))
-            return;
+            return false;
 
         string certsDir = CertsDir(spec);
         if (!File.Exists(Path.Combine(certsDir, "generate.sh")))
@@ -57,6 +67,7 @@ public static class CertProvisioner
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         File.WriteAllText(Path.Combine(certsDir, MarkerFileName), SanFingerprint(spec) + "\n");
+        return true;
     }
 
     public static string CertsDir(ClusterSpec spec)

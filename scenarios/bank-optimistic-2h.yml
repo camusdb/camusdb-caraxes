@@ -13,6 +13,10 @@ cluster:
   locking: optimistic
   isolation: read_committed
   diagnostics: true
+  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
+  # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
+  # runs/probes/memory-gc-2026-08-22/.
+  memory_limit_mb: 1536
   camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
 workload:
   kind: bank

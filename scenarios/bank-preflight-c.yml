@@ -4,9 +4,9 @@
 #    rather than node loss. Kills and partitions produced every 100% error window and all three
 #    recovery-limit failures in the first run.
 # Same cluster, same seed, same 2000 rows, so the retry numbers compare directly.
-name: bank-optimistic-2h-b
+name: bank-preflight-c
 cluster:
-  name: bank-opt-2hb
+  name: bank-preflight-c
   nodes: 3
   partitions: 3
   replication_factor: 3
@@ -15,10 +15,6 @@ cluster:
   locking: optimistic
   isolation: read_committed
   diagnostics: true
-  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
-  # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
-  # runs/probes/memory-gc-2026-08-22/.
-  memory_limit_mb: 1536
   camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
 workload:
   kind: bank
@@ -27,8 +23,8 @@ workload:
   mode: closed
   workers: 64
   connections: 16
-  duration: 2h
-  warmup: 2m
+  duration: 90s
+  warmup: 20s
   drain: 30s
   read_percent: 50
   write_percent: 50
@@ -37,11 +33,11 @@ nemesis:
   seed: 42
   random:
     faults: [pause, slow]
-    min_interval: 300s
-    max_interval: 480s
+    min_interval: 25s
+    max_interval: 40s
     duration: 15s
 checks:
   max_recovery_seconds: 60
-  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_recovery: false
   require_progress_under_fault: true
-teardown: false
+teardown: true

@@ -39,25 +39,27 @@ public static class ComposeGenerator
 
         foreach (NodePlan node in plan.Nodes)
         {
-            services[node.Name] = new Dictionary<string, object>
+            Dictionary<string, object> environment = new()
+            {
+                ["CAMUS_RAFT_NODENAME"] = node.Name,
+                ["CAMUS_RAFT_NODEID"] = node.Index,
+                ["CAMUS_RAFT_HOST"] = node.Ip,
+                ["CAMUS_RAFT_PORT"] = node.RaftPort,
+                ["CAMUS_HTTP_PORT"] = 5095,
+                ["CAMUS_INITIAL_CLUSTER"] = node.InitialCluster,
+                ["CAMUS_INITIAL_CLUSTER_PARTITIONS"] = spec.Partitions,
+                // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
+                // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
+                ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
+            };
+
+            Dictionary<string, object> service = new()
             {
                 ["image"] = spec.EffectiveImage,
                 ["container_name"] = node.ContainerName,
                 ["restart"] = "no",
                 ["cap_add"] = new List<string> { "NET_ADMIN" },
-                ["environment"] = new Dictionary<string, object>
-                {
-                    ["CAMUS_RAFT_NODENAME"] = node.Name,
-                    ["CAMUS_RAFT_NODEID"] = node.Index,
-                    ["CAMUS_RAFT_HOST"] = node.Ip,
-                    ["CAMUS_RAFT_PORT"] = node.RaftPort,
-                    ["CAMUS_HTTP_PORT"] = 5095,
-                    ["CAMUS_INITIAL_CLUSTER"] = node.InitialCluster,
-                    ["CAMUS_INITIAL_CLUSTER_PARTITIONS"] = spec.Partitions,
-                    // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
-                    // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
-                    ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
-                },
+                ["environment"] = environment,
                 ["ports"] = new List<string>
                 {
                     $"{node.HostRestPort}:5095",
@@ -72,6 +74,24 @@ public static class ComposeGenerator
                     ["caraxes"] = new Dictionary<string, object> { ["ipv4_address"] = node.Ip },
                 },
             };
+
+            // A cgroup memory limit is what makes the node's Server GC self-cap: without one, each
+            // node sizes its heap against the whole Docker VM and three nodes race each other to
+            // the VM ceiling. The runtime's default self-cap (75% of the limit) still overcommits,
+            // because ~350-400 MiB of native memory (RocksDB) lives outside the managed heap: at a
+            // 1536 MiB limit, a 1152 MiB heap budget plus native memory meets the limit and a
+            // loaded node is OOM-killed anyway (soak run G, t+88m). So the heap gets an explicit
+            // 60% budget instead, which leaves ~600 MiB of a 1536 MiB limit for native memory.
+            // .NET reads GC env vars as hexadecimal: 3C = 60. The 0x prefix is deliberately
+            // omitted — YAML resolves a plain 0x3C to the integer 60, compose would pass "60",
+            // and the runtime would re-read that as hex (96%). "3C" stays a string end to end.
+            if (spec.MemoryLimitMb > 0)
+            {
+                service["mem_limit"] = $"{spec.MemoryLimitMb}m";
+                environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
+            }
+
+            services[node.Name] = service;
 
             // Only a named-volume data mount needs a top-level volume entry; a tmpfs mount does not.
             if (spec.DataTmpfsMb <= 0)

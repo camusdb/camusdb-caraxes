@@ -42,6 +42,7 @@ public static class ClusterSpecReader
         "image",
         "spare_certs",
         "data_tmpfs_mb",
+        "memory_limit_mb",
         "kahuna",
     };
 

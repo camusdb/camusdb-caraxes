@@ -156,4 +156,47 @@ public sealed class CertProvisionerTests
         ClusterSpec grown = ClusterSpecReader.Read("name: certs\nnodes: 4");
         Assert.That(CertProvisioner.SanFingerprint(small), Is.Not.EqualTo(CertProvisioner.SanFingerprint(grown)));
     }
+
+    [Test]
+    public void CertRegeneration_OverridesSkipBuild()
+    {
+        // The image bakes the .pfx and its CA anchor together. A skipped build after a
+        // regeneration would pair a new certificate with the previous anchor, and every
+        // inter-node handshake would then fail with UntrustedRoot.
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: true, certsRegenerated: true), Is.True);
+    }
+
+    [Test]
+    public void SkipBuild_HoldsWhenCertsAreUnchanged()
+    {
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: true, certsRegenerated: false), Is.False);
+    }
+
+    [Test]
+    public void BuildAlwaysRunsWhenNotSkipped()
+    {
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: false, certsRegenerated: false), Is.True);
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: false, certsRegenerated: true), Is.True);
+    }
+
+    [Test]
+    public async Task EnsureAsync_ReportsNoRegeneration_WhenMarkerMatches()
+    {
+        string certsDir = Path.Combine(Path.GetTempPath(), "caraxes-cert-" + Guid.NewGuid().ToString("N"), "docker", "certs");
+        Directory.CreateDirectory(certsDir);
+        try
+        {
+            string repo = Path.GetFullPath(Path.Combine(certsDir, "..", ".."));
+            ClusterSpec spec = ClusterSpecReader.Read($"name: certs\nnodes: 3\ncamusdb_repo: \"{repo}\"");
+
+            // No generate.sh exists here, so a false return also proves the script never ran.
+            File.WriteAllText(Path.Combine(certsDir, ".caraxes-sans"), CertProvisioner.SanFingerprint(spec) + "\n");
+
+            Assert.That(await CertProvisioner.EnsureAsync(spec), Is.False);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetFullPath(Path.Combine(certsDir, "..", "..")), recursive: true);
+        }
+    }
 }

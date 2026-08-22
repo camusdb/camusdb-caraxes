@@ -51,8 +51,11 @@ public sealed class MatrixRunner
             Console.WriteLine();
             Console.WriteLine($"===== cell {i + 1}/{cells.Count}: {cell.Name} =====");
 
-            // Build the shared image only on the first cell; every later cell reuses it (cells differ
-            // only in runtime config). A cell that itself fails still lets the sweep continue.
+            // Build the shared image only on the first cell; every later cell reuses it, because cells
+            // normally differ only in runtime config. A `nodes` axis is the exception: it moves the
+            // certificate's SAN parameters between cells, and the orchestrator then builds anyway so
+            // the image keeps its CA anchor paired with the new .pfx. A cell that itself fails still
+            // lets the sweep continue.
             ScenarioRunner runner = new(cell.Scenario, Path.Combine(matrixDir, "cells"));
             ScenarioVerdict verdict;
             try

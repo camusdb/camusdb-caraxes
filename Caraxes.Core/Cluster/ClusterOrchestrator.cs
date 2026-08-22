@@ -10,7 +10,8 @@ namespace Caraxes.Core.Cluster;
 /// <summary>
 /// Drives a cluster's lifecycle: generate artifacts (per-node configs + compose file) into the run
 /// directory, ensure certs, build the image, bring the fleet up, and wait until every node reports
-/// ready. Artifacts are regenerated on every command from the spec — the spec is the source of
+/// ready. A certificate regeneration forces the image build even when the caller asked to skip it —
+/// see <see cref="ShouldBuildImage"/>. Artifacts are regenerated on every command from the spec — the spec is the source of
 /// truth and the run directory is disposable output, so <c>down</c> works even after the run
 /// directory was deleted.
 /// </summary>
@@ -43,6 +44,16 @@ public sealed class ClusterOrchestrator
         File.WriteAllText(ComposeFilePath, ComposeGenerator.Generate(plan, configDirInCompose: "./config"));
     }
 
+    /// <summary>
+    /// Decides whether <c>up</c> builds the image. A caller asks to skip the build to save time when
+    /// only runtime config changed, but that request loses to a certificate regeneration: the image
+    /// bakes the .pfx and its CA anchor together, so a new certificate on disk against an old image
+    /// breaks every inter-node handshake with <c>UntrustedRoot</c>. The matrix runner reaches this
+    /// case without any flag, because it skips the build on every cell after the first and a
+    /// <c>nodes</c> axis changes the SAN parameters between cells.
+    /// </summary>
+    public static bool ShouldBuildImage(bool skipBuild, bool certsRegenerated) => !skipBuild || certsRegenerated;
+
     public async Task UpAsync(bool skipBuild = false, TimeSpan? readyTimeout = null, CancellationToken cancellationToken = default)
     {
         ClusterSpec spec = plan.Spec;
@@ -50,9 +61,12 @@ public sealed class ClusterOrchestrator
         WriteArtifacts();
         Console.WriteLine($"==> artifacts written to {runDir}");
 
-        await CertProvisioner.EnsureAsync(spec, cancellationToken).ConfigureAwait(false);
+        bool certsRegenerated = await CertProvisioner.EnsureAsync(spec, cancellationToken).ConfigureAwait(false);
 
-        if (!skipBuild)
+        if (skipBuild && certsRegenerated)
+            Console.WriteLine("==> certs changed; building anyway so the image re-bakes the matching CA anchor");
+
+        if (ShouldBuildImage(skipBuild, certsRegenerated))
         {
             Console.WriteLine($"==> building image {spec.EffectiveImage} from {spec.EffectiveCamusdbRepo}");
             await ProcessRunner.RunCheckedAsync(

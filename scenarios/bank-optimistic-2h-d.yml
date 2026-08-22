@@ -4,9 +4,9 @@
 #    rather than node loss. Kills and partitions produced every 100% error window and all three
 #    recovery-limit failures in the first run.
 # Same cluster, same seed, same 2000 rows, so the retry numbers compare directly.
-name: bank-optimistic-2h-b
+name: bank-optimistic-2h-d
 cluster:
-  name: bank-opt-2hb
+  name: bank-opt-2hd
   nodes: 3
   partitions: 3
   replication_factor: 3
@@ -25,7 +25,7 @@ workload:
   database: caraxes
   rows: 2000
   mode: closed
-  workers: 64
+  workers: 32
   connections: 16
   duration: 2h
   warmup: 2m

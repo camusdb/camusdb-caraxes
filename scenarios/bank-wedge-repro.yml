@@ -1,0 +1,63 @@
+# Fast reproduction of the "anchored at 1" wedge (Kommander feature d11fd5f9, task 5).
+#
+# The wedge needs exactly two ingredients, not two hours:
+#   1. Enough write volume that the WAL compacts, so a compaction floor sits well above entry 1.
+#      The bank workload at this concurrency produces that within the first minute or two.
+#   2. A leadership change on the busy partition. A 15s SIGSTOP pause forces one; the pause target
+#      does not have to be the leader, because the election churn on thaw is enough.
+#
+# On a build with the defect (Kommander <= 1.2.9 via Kahuna <= 1.2.4), each election makes the new
+# leader ship a backfill anchored at 1 (a no-report heartbeat ack fabricates nextIndex = 1), the
+# compacted WAL refuses it, the refusal never escalates, and the partition stops committing —
+# permanently. The three scheduled pauses below give three chances; runs B and D wedged on the
+# first or second equivalent fault. On 1.2.10 the refusal escalates to a needless full snapshot
+# per election (visible in node logs as "Escalating refused backfill"); on 1.2.11 neither the
+# refusal nor the snapshot occurs and this scenario passes clean.
+#
+# Detection is by COMMIT PROGRESS, never node liveness: every node reports ready while wedged
+# (task 4), so the checks that matter are require_progress_under_fault (a zero-op window is the
+# wedge) and the recovery limit. Reconciliation at the end fails too when the cluster is dead.
+# After the run, also grep node-logs for "Refusing non-contiguous backfill" and "Escalating
+# refused backfill" — both must be absent on a fixed build — and probe
+# GET /v1/cluster/health (commitStalled) plus /v1/cluster/backfill-status on a live wedge.
+name: bank-wedge-repro
+cluster:
+  name: bank-wedge-repro
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
+  # nodes race to the Docker VM ceiling: ~2.8 GiB/node of committed-but-mostly-empty GC heap
+  # over ~190 MiB of live objects, until the VM OOM-kills one (what ended runs C and E).
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 6m
+  warmup: 20s
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  events:
+    # 90s of writes first, so compaction has already advanced the floor before the first pause.
+    - { at: 90s,  fault: pause, target: camus1, duration: 15s }
+    - { at: 180s, fault: pause, target: camus2, duration: 15s }
+    - { at: 270s, fault: pause, target: camus3, duration: 15s }
+checks:
+  max_recovery_seconds: 60
+  require_recovery: true
+  require_progress_under_fault: true
+teardown: true

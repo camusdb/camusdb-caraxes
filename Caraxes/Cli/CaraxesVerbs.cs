@@ -24,7 +24,7 @@ public abstract class CommonOptions
 public sealed class UpOptions : CommonOptions
 {
     [Option("skip-build", Required = false, Default = false,
-        HelpText = "Reuse the existing image instead of rebuilding it from the camusdb repo")]
+        HelpText = "Reuse the existing image instead of rebuilding it from the camusdb repo; ignored when the dev certificate has to be regenerated")]
     public bool SkipBuild { get; set; }
 
     [Option("ready-timeout", Required = false, Default = 180,
@@ -66,7 +66,7 @@ public sealed class RunOptions
     public string? RunRoot { get; set; }
 
     [Option("skip-build", Required = false, Default = false,
-        HelpText = "Reuse the existing image instead of rebuilding it from the camusdb repo")]
+        HelpText = "Reuse the existing image instead of rebuilding it from the camusdb repo; ignored when the dev certificate has to be regenerated")]
     public bool SkipBuild { get; set; }
 }
 
@@ -92,6 +92,6 @@ public sealed class LeaderBalanceOptions
     public string? RunRoot { get; set; }
 
     [Option("skip-build", Required = false, Default = false,
-        HelpText = "Reuse the existing image instead of rebuilding it from the camusdb repo")]
+        HelpText = "Reuse the existing image instead of rebuilding it from the camusdb repo; ignored when the dev certificate has to be regenerated")]
     public bool SkipBuild { get; set; }
 }
