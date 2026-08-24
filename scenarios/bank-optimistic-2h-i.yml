@@ -1,0 +1,59 @@
+# Run I: verification soak for Kahuna 1.2.9 / Kommander 1.2.13 (the orphaned-reply fix).
+#
+# Same workload, nemesis and memory posture as runs G and H. Two changes:
+#  1. The build: Kommander 1.2.13 carries the a8138932 fix - a no-orphan rule in every term
+#     fence plus a 10s DeferredReplyTimeout, so a step-down racing an in-flight propose can no
+#     longer strand callers with no reply, no failure and no timeout.
+#  2. log_levels: Kommander at Information, as the eaa81e59 ticket recommends. CamusDB ships
+#     "Kommander": "Warning", which hid election outcomes and leader-balancer transfers and left
+#     run H with a silent tail. This also finally makes the bd589640 leader-balancer effect
+#     observable - it has been unverified since the gRPC suggestion mapping was fixed.
+#
+# What this run decides (per eaa81e59):
+#  - If the orphaned reply was the cause, the ~33.5-minute cliff disappears.
+#  - If a stall recurs, it now surfaces as client-visible ProposalTimeout / NodeIsNotLeader
+#    errors instead of silence, which points the residue at Kahuna/CamusDB rather than Kommander.
+#  - SUM(balance) reconciliation gets its seventh attempt; it has completed once.
+name: bank-optimistic-2h-i
+cluster:
+  name: bank-opt-2hi
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
+  # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
+  # runs/probes/memory-gc-2026-08-22/.
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false

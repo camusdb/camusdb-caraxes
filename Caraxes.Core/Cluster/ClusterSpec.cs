@@ -67,6 +67,17 @@ public sealed class ClusterSpec
     /// <summary>Maps to CamusDB <c>default_isolation_level</c>: read_committed | serializable.</summary>
     public string Isolation { get; set; } = "read_committed";
 
+    /// <summary>Maps to CamusDB <c>default_read_validation</c>: none | track_and_validate. Empty
+    /// (the default) omits the key so the engine default applies.
+    ///
+    /// Scope note, verified in Kahuna's TransactionCoordinator (RequiresReadSetValidation): an
+    /// optimistic transaction always validates its read set at commit regardless of this setting,
+    /// so the knob changes behaviour only for pessimistic transactions, where
+    /// <c>track_and_validate</c> adds a commit-time read-set check on top of the locks. It is
+    /// plumbed here so soak scenarios can sweep the setting explicitly instead of relying on the
+    /// shipped default.</summary>
+    public string ReadValidation { get; set; } = "";
+
     public bool KeyRangeSharding { get; set; }
 
     public bool DistributedQueryExecution { get; set; }
@@ -112,6 +123,27 @@ public sealed class ClusterSpec
     /// they must be valid CamusDB <c>kahuna.*</c> option names.</summary>
     public Dictionary<string, object> Kahuna { get; set; } = [];
 
+    /// <summary>Per-category log levels for the node containers, e.g.
+    /// <c>{ Kommander: Information }</c>. The entries are joined into CamusDB's
+    /// <c>CAMUS_LOG_FILTERS</c> environment variable (<c>Category=Level,...</c>), which its
+    /// Program.cs applies last so it outranks the per-category defaults.
+    ///
+    /// Note this deliberately does NOT use <c>Logging__LogLevel__*</c>: CamusDB calls
+    /// <c>ClearProviders()</c> and installs explicit <c>AddFilter</c> rules for Kahuna, Kommander
+    /// and Grpc, so the standard configuration path never reaches those categories. That was
+    /// verified the hard way — the variable arrived in the container and Kommander still logged
+    /// only at Warning.
+    ///
+    /// This exists because CamusDB ships <c>"Kommander": "Warning"</c>, which hides every
+    /// Kommander <c>Information</c> line — including election outcomes, leader-balancer transfers,
+    /// and (before they were raised to Warning) snapshot rescue. Two investigations were misled by
+    /// that filter: "snapshot mentions: 0" could not distinguish "never attempted" from "attempted
+    /// silently", and the run-H stall left a silent tail because election wins log at Information.
+    ///
+    /// Leave empty (the default) for normal runs — Information on Kommander is verbose. Set it for
+    /// a diagnostic run where leadership behaviour is the thing under test.</summary>
+    public Dictionary<string, string> LogLevels { get; set; } = [];
+
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
     private static readonly Regex SubnetPattern = new(@"^\d{1,3}\.\d{1,3}\.\d{1,3}$", RegexOptions.Compiled);
@@ -151,6 +183,10 @@ public sealed class ClusterSpec
 
         if (Isolation is not ("read_committed" or "serializable"))
             throw new ClusterSpecException($"'isolation' must be 'read_committed' or 'serializable', got '{Isolation}'");
+
+        if (ReadValidation is not ("" or "none" or "track_and_validate"))
+            throw new ClusterSpecException(
+                $"'read_validation' must be empty (engine default), 'none' or 'track_and_validate', got '{ReadValidation}'");
 
         if (MaxQueryParallelism < 1)
             throw new ClusterSpecException($"'max_query_parallelism' must be >= 1, got {MaxQueryParallelism}");

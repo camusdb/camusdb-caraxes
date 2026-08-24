@@ -40,6 +40,40 @@ public sealed class NodeConfigGeneratorTests
     }
 
     [Test]
+    public void ReadValidationOmittedByDefault()
+    {
+        // Empty read_validation must leave the key out entirely, so the engine default applies
+        // and configs generated before the option existed stay byte-identical.
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: cfg"));
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Not.Contain("default_read_validation"));
+    }
+
+    [Test]
+    public void ReadValidationEmittedWithTransactionDefaults()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: cfg",
+            "read_validation: track_and_validate")));
+
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Contain("default_read_validation: track_and_validate"));
+        // Grouped with the other transaction defaults, not appended at the end of the file.
+        Assert.That(
+            yml.IndexOf("default_read_validation", StringComparison.Ordinal),
+            Is.LessThan(yml.IndexOf("key_range_sharding", StringComparison.Ordinal)));
+    }
+
+    [Test]
+    public void ReadValidationRejectsUnknownValue()
+    {
+        Assert.Throws<ClusterSpecException>(
+            () => ClusterSpecReader.Read("name: cfg\nread_validation: sometimes"));
+    }
+
+    [Test]
     public void ZoneIsPerNode()
     {
         ClusterPlan plan = ClusterPlan.FromSpec(

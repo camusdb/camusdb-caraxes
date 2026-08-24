@@ -91,6 +91,16 @@ public static class ComposeGenerator
                 environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
             }
 
+            // CamusDB calls ClearProviders() and then installs explicit AddFilter rules for
+            // Kahuna, Kommander and Grpc, so the standard Logging__LogLevel__* configuration path
+            // does NOT reach those categories — verified: the env var arrives in the container and
+            // Kommander still logs only at Warning. CAMUS_LOG_FILTERS is CamusDB's own escape
+            // hatch, applied last in Program.cs so it outranks the named variables, and it accepts
+            // any category rather than only the three that have dedicated variables.
+            if (spec.LogLevels.Count > 0)
+                environment["CAMUS_LOG_FILTERS"] =
+                    string.Join(',', spec.LogLevels.Select(kv => $"{kv.Key}={kv.Value}"));
+
             services[node.Name] = service;
 
             // Only a named-volume data mount needs a top-level volume entry; a tmpfs mount does not.

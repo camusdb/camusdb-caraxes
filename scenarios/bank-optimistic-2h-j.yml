@@ -1,0 +1,60 @@
+# Run J: memory-footprint soak for Kahuna 1.3.0 / Kommander 1.3.0.
+#
+# Byte-for-byte run I, except the build. Run I is the reference measurement: it rode through the
+# seeded pause that killed runs F and H (the orphaned-reply fix held), then died of memory anyway -
+# camus2 OOM-killed at t+105m and camus1 in a GC death spiral, container Up at 110% CPU and 94% of
+# its cap with the REST port unreachable. Memory, not consensus, ended it.
+#
+# What changed in the build, per efa86ffa:
+#  - Kahuna/Kommander 1.2.13 -> 1.3.0 (a minor jump, so more than the cache sizing).
+#  - CamusDB sizes its cache floors to yield on small containers. The old fixed floors were the
+#    overcommit: a 1536 MiB node took a 320 MB block cache floor plus a 128 MB memtable floor plus
+#    an 8 MB per-actor floor multiplied by 32+ actors, ~700 MB pinned in caches for a working set of
+#    a few MB. The floors now yield to the proportional share once it falls below them.
+#  - Two CamusDB allocation commits: a bound query cache and a cache of fully-built decode plans.
+#
+# What this run decides:
+#  - Whether RSS plateaus below the cap instead of climbing into it. Read the plateau, not the
+#    absence of a kill: runs F and H "survived" on memory only because they had stopped serving.
+#  - Whether the 2-hour soak completes for the first time, and whether SUM(balance) reconciles
+#    (it has completed once in seven attempts).
+name: bank-optimistic-2h-j
+cluster:
+  name: bank-opt-2hj
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false
