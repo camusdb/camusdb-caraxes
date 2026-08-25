@@ -103,27 +103,30 @@ public sealed class ScenarioRunner
     }
 
     /// <summary>
-    /// Runs the measured workload and, if the scenario has a nemesis, drives its fault schedule
-    /// concurrently. The nemesis is timed from the workload's launch; when the workload container
-    /// exits, the nemesis is signalled to stop and heals everything still in effect before this
-    /// returns — so the cluster is quiescent (if not torn down) by the time the verdict is read.
+    /// Runs the measured workload with the node monitor sampling health and memory alongside it,
+    /// and, if the scenario has a nemesis, drives its fault schedule concurrently. The nemesis is
+    /// timed from the workload's launch; when the workload container exits, the nemesis is
+    /// signalled to stop and heals everything still in effect before this returns — so the cluster
+    /// is quiescent (if not torn down) by the time the verdict is read. The monitor runs for
+    /// every scenario, fault-free ones included: the health series is what lets the verdict catch
+    /// a node that died while its container stayed <c>Up</c>.
     /// </summary>
     private async Task<WorkloadInvocation> RunWorkloadWithNemesisAsync(
         WorkloadRunner workload, ClusterPlan plan, string artifactsDir, List<string> notes, CancellationToken cancellationToken)
     {
-        if (scenario.Nemesis is null)
-            return await workload.RunAsync(scenario, artifactsDir, "run", cancellationToken).ConfigureAwait(false);
-
         using HttpProbes probes = new();
-        NemesisRunner nemesis = new(plan, probes);
+        NodeMonitor monitor = new(plan, probes, runDir);
         string timelinePath = Path.Combine(runDir, "timeline.jsonl");
 
-        // The nemesis stops when the workload finishes; heal-on-stop runs inside NemesisRunner with a
-        // fresh token, so cancelling here never leaves a fault un-healed.
-        using CancellationTokenSource nemesisStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Both side tasks stop when the workload finishes; heal-on-stop runs inside NemesisRunner
+        // with a fresh token, so cancelling here never leaves a fault un-healed.
+        using CancellationTokenSource sideStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         Task<WorkloadInvocation> workloadTask = workload.RunAsync(scenario, artifactsDir, "run", cancellationToken);
-        Task nemesisTask = nemesis.RunAsync(scenario.Nemesis, timelinePath, nemesisStop.Token);
+        Task monitorTask = monitor.RunAsync(sideStop.Token);
+        Task? nemesisTask = scenario.Nemesis is null
+            ? null
+            : new NemesisRunner(plan, probes).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
 
         WorkloadInvocation result;
         try
@@ -132,10 +135,11 @@ public sealed class ScenarioRunner
         }
         finally
         {
-            nemesisStop.Cancel();
+            sideStop.Cancel();
             try
             {
-                await nemesisTask.ConfigureAwait(false);
+                if (nemesisTask is not null)
+                    await nemesisTask.ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -143,9 +147,19 @@ public sealed class ScenarioRunner
                 // never the thing that decides the verdict.
                 notes.Add($"nemesis reported: {e.Message}");
             }
+
+            try
+            {
+                await monitorTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                notes.Add($"node monitor reported: {e.Message}");
+            }
         }
 
-        notes.Add($"nemesis timeline: {timelinePath}");
+        if (scenario.Nemesis is not null)
+            notes.Add($"nemesis timeline: {timelinePath}");
         return result;
     }
 
@@ -204,6 +218,9 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
+        if (scenario.Checks.RequireNodeHealth)
+            GradeNodeHealth(notes, ref passed);
+
         return new ScenarioVerdict(passed, run.ExitCode, summary.Valid, reconciliationPassed, runDir, notes)
         {
             Analysis = analysis,
@@ -256,6 +273,50 @@ public sealed class ScenarioRunner
         }
 
         return analysis;
+    }
+
+    /// <summary>
+    /// Grades the node-health probe series against the fault timeline. An outage no fault explains
+    /// fails the run: this is the guard against the dead-but-<c>Up</c> case, where a node process
+    /// aborts, its container keeps reporting <c>Up</c>, and every other check still reads green.
+    /// A missing series (an old run directory, or the monitor itself failed) is reported as a
+    /// note, never silently treated as healthy.
+    /// </summary>
+    private void GradeNodeHealth(List<string> notes, ref bool passed)
+    {
+        string healthPath = Path.Combine(runDir, "node-health.csv");
+        if (!File.Exists(healthPath))
+        {
+            notes.Add("node health: no node-health.csv produced; node liveness is UNVERIFIED for this run");
+            return;
+        }
+
+        IReadOnlyList<FaultWindow> windows = FaultTimeline.Parse(Path.Combine(runDir, "timeline.jsonl"));
+        IReadOnlyList<NodeOutage> outages =
+            NodeHealthAnalysis.Analyze(healthPath, windows, scenario.Checks.MaxRecoverySeconds);
+
+        if (outages.Count == 0)
+        {
+            notes.Add("node health: every node answered /ping at every sample");
+            return;
+        }
+
+        foreach (NodeOutage outage in outages)
+        {
+            double seconds = (outage.EndUtc - outage.StartUtc).TotalSeconds;
+            if (outage.Excused)
+            {
+                notes.Add(
+                    $"node health: {outage.Node} unreachable {outage.StartUtc:HH:mm:ss}–{outage.EndUtc:HH:mm:ss}Z " +
+                    $"({outage.Samples} sample(s)) — explained by an active fault or too short to grade");
+                continue;
+            }
+
+            notes.Add(
+                $"  CHECK FAILED: node {outage.Node} stopped answering /ping from {outage.StartUtc:HH:mm:ss}Z " +
+                $"for {seconds:N0}+ s ({outage.Samples} samples) with no fault active — the node died on its own");
+            passed = false;
+        }
     }
 
     private void WriteAnalysisReport(FaultAnalysis analysis)

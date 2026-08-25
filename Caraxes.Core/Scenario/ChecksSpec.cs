@@ -28,6 +28,12 @@ public sealed class ChecksSpec
     /// (availability under fault). A window with zero completed ops means a total outage.</summary>
     public bool RequireProgressUnderFault { get; set; } = true;
 
+    /// <summary>Every node must keep answering <c>/ping</c> throughout the measured window, except
+    /// while a fault targeting it (or the whole cluster) is active plus recovery grace. Container
+    /// state is deliberately not consulted: a node process has aborted while its container stayed
+    /// <c>Up</c>, and that run must FAIL, not pass on green docker state.</summary>
+    public bool RequireNodeHealth { get; set; } = true;
+
     public void Validate()
     {
         if (MaxRecoverySeconds <= 0)

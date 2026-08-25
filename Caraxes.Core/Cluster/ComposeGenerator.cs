@@ -51,6 +51,18 @@ public static class ComposeGenerator
                 // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
                 // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
                 ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
+
+                // A native crash (SIGSEGV in RocksDB/gRPC/runtime) exits 139 with nothing in the
+                // container log — soak runs have hit exactly that, unattributably. These make the
+                // runtime write a minidump (stacks, no heap — small) plus a JSON crash report with
+                // per-thread native frames into /data, which is a persistent volume, so the
+                // evidence survives the container's death and even its restart. Dump type is
+                // decimal here (unlike the GC variables, this one is parsed as a plain integer):
+                // 1 = mini.
+                ["DOTNET_DbgEnableMiniDump"] = 1,
+                ["DOTNET_DbgMiniDumpType"] = 1,
+                ["DOTNET_DbgMiniDumpName"] = "/data/crash-%p.dmp",
+                ["DOTNET_EnableCrashReport"] = 1,
             };
 
             Dictionary<string, object> service = new()

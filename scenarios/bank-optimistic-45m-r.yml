@@ -1,0 +1,76 @@
+# Run R: run Q repeated for a clean full window, with harness-side node monitoring.
+#
+# Run Q answered two questions and left one open. The Kommander 1.3.2 rescue fix held (one
+# escalation, zero RescueNotConverging), and conservation was exact at scan time AND on a quiesced
+# re-read 15 minutes later. But camus3's process aborted (SIGABRT, finalizer OOM) at ~minute 35 of
+# 45 while its container stayed Up, so run Q is not a like-for-like repeat of runs N-P and cannot
+# clear the lost-update hole. The abort is filed as Kommander 2411e7d0; the tipping allocation is
+# the backfill WAL range read (RocksDbWAL.ReadLogsRange under BackfillSender).
+#
+# Engine build under test (unchanged from run Q):
+#   Kommander      1.3.2  (nuget.org — carries both snapshot-rescue fixes)
+#   Kahuna         1.3.5  (packed locally; = published 1.3.4 engine + the Kommander bump)
+#   CamusDB.Core   references Kahuna.Core 1.3.5
+#
+# New in the harness for this run: the node monitor samples every node's /ping and per-container
+# docker memory (memory-samples.csv, node-health.csv) every 30 s, and the verdict FAILS a node
+# that stops answering outside a fault window — run Q's dead-but-Up camus3 passed silently, and
+# this run must not be able to repeat that. The memory series also gives any crash an RSS curve,
+# which runs P and Q both lacked.
+#
+# The scenario body matches runs K/L/M/N/O/P/Q exactly except for the scenario name and the
+# cluster name (seed 42, 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows,
+# optimistic / read_committed, 45m measure, same nemesis cadence, Kahuna and Kommander at
+# Information).
+#
+# teardown: false, so a deficit can be re-read after quiescence and node logs collected.
+#
+# Pass questions, in priority order:
+#   1. Does SUM(balance) conserve exactly over a FULL window with all three nodes alive? Runs N
+#      and O lost 3 and 2 units durably; run Q lost none but lost a node. The per-transfer ledger
+#      (transfer-ledger.csv + row-baseline.csv) names victim rows by arithmetic if a deficit
+#      recurs.
+#   2. Does the node set survive the whole window? No abort, and the new node-health check stays
+#      green. If a node dies anyway, memory-samples.csv now shows the RSS curve to its death.
+#   3. Does throughput hold near 280 ops/s past minute 25?
+name: bank-optimistic-45m-r
+cluster:
+  name: bank-opt-45mr
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

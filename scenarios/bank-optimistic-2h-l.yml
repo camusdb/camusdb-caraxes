@@ -1,0 +1,67 @@
+# Run L: verification of the SUM(balance) atomicity fix on Kahuna 1.3.2.
+#
+# Byte-for-byte run K apart from the build and the cluster name, so the series stays controlled:
+#   run I  Kommander 1.2.13 - no stall; died of memory (camus2 OOM at t+105m).
+#   run J  Kommander 1.3.0  - stall at t+33.5m on the seeded `pause camus2`; 86 minutes of zero
+#                             throughput; no OOM.
+#   run K  Kahuna 1.3.1     - stall fixed and memory fixed. 1,805,784 ops at 250.8 ops/s.
+#                             SUM(balance) fell 3 units: 2993071553 -> 2993071550, VersionsMatch true.
+#   run L  Kahuna 1.3.2     - this run.
+#
+# Root cause of the run-K loss, now fixed in KvTableStore: an unconfirmed Kahuna read (exhausted
+# MustRetry, WaitingForReplication, or a per-key Errored) was converted into BranchKvValue.Miss.
+# The row then read as absent, the UPDATE's locate phase matched 0 rows, the statement reported
+# success, and the transaction committed with one transfer leg silently dropped. The read folded no
+# observation, so commit validation had nothing to catch. Both read paths now raise
+# TransactionMustRetry on any non-confirmed response type.
+#
+# Three questions, in priority order:
+#  1. Does SUM(balance) conserve exactly over ~1.8M transfers? That is the fix under test.
+#  2. Does the TransferOperation tripwire fire? An UPDATE matching 0 rows after a successful SELECT
+#     now throws instead of committing a half transfer, so any surviving instance of the bug class
+#     appears as a loud failed transfer rather than a silent drift.
+#  3. Do the run-K stall and memory results hold? Kommander stays at 1.3.1 under Kahuna 1.3.2, so a
+#     regression here would come from the Kahuna change, not from a Kommander bump.
+#
+# read_validation is deliberately left unset, exactly as in run K. The engine default is `none`.
+# Changing it here would confound the fix with an isolation-level change.
+name: bank-optimistic-2h-l
+cluster:
+  name: bank-opt-2hl
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false

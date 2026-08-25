@@ -27,7 +27,7 @@ public static class ScenarioSpecReader
 
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "max_recovery_seconds", "require_recovery", "require_progress_under_fault",
+        "max_recovery_seconds", "require_recovery", "require_progress_under_fault", "require_node_health",
     };
 
     private static readonly HashSet<string> AllowedNemesisKeys = new(StringComparer.OrdinalIgnoreCase)
