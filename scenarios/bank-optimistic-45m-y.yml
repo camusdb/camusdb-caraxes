@@ -1,0 +1,91 @@
+# Run Y: window 1 of 2 for the monotonic durable current head (kahuna 3bb6e5d, Kahuna 1.3.11).
+#
+# Run X (same build as the passing run W) failed: -1 durable, one key wedged with the settle-time
+# witness PASSING (nothing armed, 127 cannot-heal errors), and 38 rows' scan-visible state frozen
+# up to 186 commits behind while aggregates were fully caught up (kahuna 9d59c382, CamusDB
+# 1ca59ddd). Kahuna 1.3.11 implements a monotonic durable current head: a reconcile that finds
+# the durable row below the committed head recovers the exact head revision from local retained
+# history and re-promotes it through the overlay + persistence path; range-read handling changed
+# alongside. Only Kahuna changes vs runs W/X.
+#
+# NEW BAR (from 9d59c382): TWO consecutive clean windows, each passing: exact conservation in
+# BOTH read views (aggregate AND full row scan), zero rows outside bands in the row-scan view,
+# zero keys below committed head, zero multi-minute refusal streaks, all nodes healthy.
+# Run V (Kahuna 1.3.9) could not seed: the settle-time witness's false-miss rate — already ~27k
+# no-op re-drives per node in run U, hidden because they were cheap — became a self-inflicted
+# storm once repairs parked and laddered (0e44e7c). ~1,000 re-drives per node in under a minute,
+# nearly all under one secondary-index bucket, each retrying without ever confirming; the actor
+# and read scheduler backed up, batched requests expired, seeding timed out at 500/2000 rows.
+# Diagnosis on kahuna a703d068.
+#
+# Kahuna 1.3.10 (kahuna 56b0464, "Only verify missing rows in the replicator") answers all three
+# asks: on an overlay miss, an off-actor verification read (overlay folded over the flushed
+# backend) separates "flushed" from "missing", so the common false miss resolves silently; only
+# a verified-missing ROW warns, counts, and drives; and the armed ladder (0e44e7c) now only ever
+# runs for real misses.
+#
+# Engine build under test:
+#   Kommander      1.3.3  (nuget.org — unchanged since run S)
+#   Kahuna         1.3.10 (local pack from kahuna 56b0464; 0e44e7c is the committed 1.3.9
+#                          parked/armed repair)
+#   CamusDB.Core   references Kahuna.Core 1.3.10
+#
+# Only Kahuna changes vs runs U/V, so any shift is attributable to these two commits.
+#
+# The scenario body matches runs K..V exactly except for the scenario and cluster names (seed 42,
+# 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows, optimistic /
+# read_committed, 45m measure, same nemesis cadence, Kahuna/Kommander at Information).
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+#
+# Pass questions — the a703d068 close-out bar, plus the run-V seed gate:
+#   0. SEED GATE (checked in-flight, before the window is allowed to run): 2,000 rows seed
+#      first-try with near-zero "re-driving the committed mutation" lines. Run U logged 27k per
+#      node; an accurate witness should log a handful, at fault boundaries only.
+#   1. SUM(balance) conserves exactly, at scan time AND on a quiesced re-read.
+#   2. Zero keys end the run with materialized version below their committed head (per-row
+#      ledger check, not just the aggregate).
+#   3. Zero multi-minute refusal streaks: a wedge onset must heal via the re-driven parked
+#      repair (short burst acceptable; storm to run end is not).
+#   4. All nodes healthy every sample; throughput back at the un-wedged 233-268 ops/s band.
+name: bank-optimistic-45m-y
+cluster:
+  name: bank-opt-45my
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

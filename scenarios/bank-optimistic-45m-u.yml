@@ -1,0 +1,78 @@
+# Run U: verification soak for the settle-time materialization witness (kahuna f3f3559).
+#
+# Run T (Kahuna 1.3.7) proved the streak watchdog works and the coherence reconcile fires — but
+# the reconcile hydrated from the wedged node's OWN durable state, which was itself behind the
+# committed head, so it no-oped forever: one key stayed frozen at "validated 8 / head 9" for 46
+# minutes (202,790 refusals) and the onset commit's -1 debit leg never materialized, leaving
+# SUM(balance) +1 durable (the partner's credit landed, the debit did not).
+#
+# Kahuna 1.3.8 (kahuna f3f3559, "The witness is now the unflushed overlay") attacks the root: at
+# settle time, the unflushed overlay is the witness of whether this node's replicator processed
+# the commit's kv record. An absent or older overlay entry means the record's apply never ran
+# here (a skipped consumer apply at a leadership boundary), and the settled intent — which still
+# carries the full mutation — re-drives it. A false miss costs one idempotent no-op. The
+# coherence reconcile also now logs an explicit error when the local durable row is below the
+# committed head, so a wedge that survives is loud, not inferred.
+#
+# Engine build under test:
+#   Kommander      1.3.3  (nuget.org — unchanged since run S)
+#   Kahuna         1.3.8  (local pack from kahuna f3f3559)
+#   CamusDB.Core   references Kahuna.Core 1.3.8
+#
+# Only Kahuna changes vs run T, so any shift is attributable to f3f3559.
+#
+# The scenario body matches runs K..T exactly except for the scenario and cluster names (seed 42,
+# 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows, optimistic /
+# read_committed, 45m measure, same nemesis cadence, Kahuna/Kommander at Information).
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+#
+# Pass questions, in priority order:
+#   1. Does SUM(balance) conserve exactly, at scan time AND on a quiesced re-read? Runs S and T
+#      lost exactly the wedge-onset commits (-2 and +1).
+#   2. Do wedges still form, and if one forms does it heal? No key may end the run with
+#      materialized version behind committed head; refusal streaks must terminate. The new
+#      cannot-heal error line firing at all is a finding.
+#   3. Does the node set survive the whole window (node-health green, no aborts)?
+#   4. Does throughput recover to run S's level (233-268 ops/s buckets) with no wedge dragging?
+name: bank-optimistic-45m-u
+cluster:
+  name: bank-opt-45mu
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

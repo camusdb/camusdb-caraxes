@@ -1,0 +1,75 @@
+# Run Z: window 2 of 2 for the monotonic durable current head (kahuna 3bb6e5d, Kahuna 1.3.11).
+#
+# Run Y (window 1, identical build) passed the full bar: exact conservation in BOTH read views
+# (aggregate AND full row scan, all three nodes, quiesced), zero rows outside their ambiguity
+# bands (24 ambiguous rows all explained by committed indeterminate transfers), zero keys below
+# committed head, ZERO refusal / re-drive / cannot-heal / recovery lines across all nodes for the
+# whole window, all nodes healthy. Throughput averaged 208 ops/s (buckets 190-236), ~10% below
+# the 233-268 reference band with no wedge present — consistent with the overhead already noted
+# on kahuna a703d068.
+#
+# THE BAR (from kahuna 9d59c382): TWO consecutive clean windows. Run W passed and the identical
+# run X then failed, so one clean window is not evidence of stability. This run is the second
+# window; it must pass the same checklist as run Y:
+#   0. SEED GATE: 2,000 rows seed first-try with zero "re-driving the committed mutation" lines.
+#   1. Exact conservation in BOTH read views: aggregate SUM(balance) AND a full row-scan sum,
+#      quiesced, on every node, equal to the seeded baseline.
+#   2. Zero rows outside their ambiguity bands in the ROW-SCAN view (per-row ledger check).
+#   3. Zero keys end the run with materialized version below their committed head.
+#   4. Zero multi-minute refusal streaks; any wedge onset must heal quickly and loudly.
+#   5. All nodes healthy every sample; throughput noted against the 233-268 ops/s band.
+#
+# Engine build under test (identical to run Y — nothing changes between the two windows):
+#   Kommander      1.3.3  (nuget.org — unchanged since run S)
+#   Kahuna         1.3.11 (local pack from kahuna 3bb6e5d, "Implemented monotonic durable
+#                          current head": a reconcile that finds the durable row below the
+#                          committed head recovers the head revision from local retained history
+#                          and re-promotes it through the overlay + persistence path)
+#   CamusDB.Core   references Kahuna.Core 1.3.11
+#
+# The scenario body matches runs K..Y exactly except for the scenario and cluster names (seed 42,
+# 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows, optimistic /
+# read_committed, 45m measure, same nemesis cadence, Kahuna/Kommander at Information).
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+name: bank-optimistic-45m-z
+cluster:
+  name: bank-opt-45mz
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

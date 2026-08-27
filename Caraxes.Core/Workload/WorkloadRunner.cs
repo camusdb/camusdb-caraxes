@@ -135,6 +135,14 @@ public sealed class WorkloadRunner
         ];
         if (scenario.Workload.ExpectFaults)
             workloadArgs.Add("--expect-faults");
+
+        // 0 means "leave the workload's own default" rather than passing an explicit 0, which the
+        // workload would clamp to a 1-second budget and reintroduce the false-unavailable verdict.
+        if (scenario.Workload.ReconcileTimeout > 0)
+        {
+            workloadArgs.Add("--reconcile-timeout");
+            workloadArgs.Add(scenario.Workload.ReconcileTimeout.ToString());
+        }
         AppendCommonFlags(workloadArgs, scenario.Workload);
 
         Console.WriteLine(

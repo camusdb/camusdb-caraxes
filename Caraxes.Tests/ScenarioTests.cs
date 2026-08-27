@@ -67,6 +67,30 @@ public sealed class ScenarioSpecTests
     }
 
     [Test]
+    public void ReconcileTimeout_ParsesAndDefaultsToZeroMeaningWorkloadDefault()
+    {
+        ScenarioSpec parsed = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              reconcile_timeout: 900
+            """);
+
+        Assert.That(parsed.Workload.ReconcileTimeout, Is.EqualTo(900));
+
+        // Unset means "leave the workload's own default"; WorkloadRunner omits the flag entirely
+        // rather than passing 0, which the workload would clamp to a 1-second budget.
+        ScenarioSpec unset = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            """);
+
+        Assert.That(unset.Workload.ReconcileTimeout, Is.EqualTo(0));
+    }
+
+    [Test]
     public void UnknownRootKey_IsRejected()
     {
         ScenarioException ex = Assert.Throws<ScenarioException>(

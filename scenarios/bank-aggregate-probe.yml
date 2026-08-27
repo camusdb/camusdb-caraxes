@@ -1,0 +1,46 @@
+# Aggregate-scan probe. NOT a soak — a measurement rig.
+#
+# Question: is `SELECT SUM(balance)` already near its client timeout on a clean 2,000-row seed, or
+# does bank write volume degrade it? Every bank verdict depends on that aggregate, so if it is slow
+# when clean, every reconciliation result downstream is unreliable.
+#
+# Design notes:
+#   - NO nemesis. Earlier runs all carried faults, so a hang could always be blamed on a paused
+#     node. This rig removes that explanation: any failure here is load-driven.
+#   - A 5s measured window, so the run barely adds write volume of its own. The workload captures
+#     SUM(version) and SUM(balance) after the seed check and again at reconciliation, so a PASS
+#     proves the aggregate path works twice on an almost-clean table.
+#   - pessimistic / read_committed, matching bank-pessimistic-rc-preflight, so the probe measures
+#     the same configuration that failed.
+#   - teardown: false, so load can be added incrementally against the same cluster afterwards and
+#     the aggregate re-probed after each step to find where it breaks.
+name: bank-aggregate-probe
+cluster:
+  name: bank-agg-probe
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: pessimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 8
+  connections: 4
+  duration: 5s
+  warmup: 0s
+  drain: 5s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: false
+teardown: false

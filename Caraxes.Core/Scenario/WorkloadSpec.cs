@@ -77,6 +77,19 @@ public sealed class WorkloadSpec
     /// run's verdict beyond the conflict/pacing waivers a chaos run legitimately produces.</summary>
     public bool ExpectFaults { get; set; } = true;
 
+    /// <summary>Seconds the workload's reconciliation keeps retrying its aggregate reads while the
+    /// cluster is still settling, before reporting "could not verify". 0 leaves the workload default
+    /// (600s).
+    ///
+    /// This exists because a cluster can finish the measured window while a node is still draining
+    /// internal read work, and stay slow to answer an aggregate for minutes. Measured on the
+    /// 2026-08-26 bank soak: reconciliation gave up 5.5 minutes after drain and the same
+    /// SUM(balance) succeeded 78 seconds later in 7 seconds — a false "cluster stayed unavailable",
+    /// with the conservation invariant left unverified. Reconciliation is post-measurement, so
+    /// waiting longer costs wall-clock only and never touches the measured numbers. Raise it for
+    /// long soaks; lower it for smoke scenarios that should fail fast.</summary>
+    public int ReconcileTimeout { get; set; }
+
     public void Validate()
     {
         if (Kind is not ("accounts" or "bank"))

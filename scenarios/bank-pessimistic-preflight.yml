@@ -1,0 +1,69 @@
+# Preflight for bank-pessimistic-45m — a 90-second proof of the pessimistic bank path.
+#
+# Purpose: the 45m soak costs most of an hour. This run proves the lock-based write path works
+# end to end first. It uses the same cluster shape and the same two knobs under test:
+#   locking: pessimistic and isolation: serializable.
+#
+# Three differences from the soak, all for speed:
+#   1. duration 90s and warmup 20s, instead of 45m and 2m.
+#   2. Nemesis cadence every 25-40s, instead of every 300-480s. A 90s window needs faults early.
+#   3. teardown: false, so the ports free up for the soak immediately.
+#
+# Treat this as a gate, not as evidence of stability. It answers four questions:
+#   0. Does the cluster accept 'pessimistic' + 'serializable' and reach ready state?
+#   1. Do the 2,000 rows seed first-try, with zero "re-driving the committed mutation" lines?
+#   2. Does the workload make progress under locks, and at what throughput?
+#   3. Does SUM(balance) hold over a short window?
+#
+# A PASS here does not predict the soak's verdict. A FAIL here saves 45 minutes.
+#
+# 2026-08-26: teardown changed from true to false. This scenario is now also the MATCHED PARTNER of
+# bank-pessimistic-rc-preflight.yml — the two differ in isolation alone (serializable here,
+# read_committed there), at equal duration, load profile and nemesis cadence. The pair measures
+# whether the snapshot prefix-from-disk read amplification (kahuna feature
+# 94779e22-e4a8-4498-8389-7630a709a8ff) tracks the isolation knob without a duration confound.
+# The counters must survive the run, so the cluster is left up. Read them per node with:
+#   docker exec bank-pess-pre-camusN sh -c 'grep read_bytes /proc/1/io'
+# Tear down by hand afterwards:
+#   docker compose -f runs/clusters/bank-pess-pre/compose.yml down -v
+name: bank-pessimistic-preflight
+cluster:
+  name: bank-pess-pre
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: pessimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 90s
+  warmup: 20s
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 25s
+    max_interval: 40s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

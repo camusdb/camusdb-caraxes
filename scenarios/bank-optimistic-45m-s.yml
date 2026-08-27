@@ -1,0 +1,79 @@
+# Run S: verification soak for the InvalidateOrApplyHandler materialization fix (kahuna 9ad68f7).
+#
+# Run R (same body) completed a full window with all nodes alive and lost SUM(balance) -81,
+# durable and attributed by the transfer ledger to four rows with contiguous windows of
+# committed-but-unmaterialized updates, alongside two keys wedged in fence-refusal storms frozen
+# at "validated N / head N+1" for 31 and 5 minutes (kahuna ticket e018a22e). The fix: a replica
+# holding a write intent deferred its own transaction's replicated materialization forever (the
+# routed force-resident apply reaches only the resolution-time leader, so an old leader that lost
+# leadership mid-transaction never got another signal); reads then served the superseded revision
+# while the fence's committed head advanced on the replicated settle. The handler now applies the
+# intent-owning transaction's own materialization, idempotently against the force-resident apply.
+#
+# Engine build under test (updated after three failed seed attempts on the 9ad68f7 pack):
+#   Kommander      1.3.3  (nuget.org — rides along with Kahuna 1.3.6's dependency bump; adds
+#                          per-peer byte accounting in the dispatcher, see Kommander 2411e7d0)
+#   Kahuna         1.3.6  (local pack from kahuna 67345ec: the 9ad68f7 materialization fix with
+#                          InvalidateOrApplyHandler made fully synchronous again — the 9ad68f7
+#                          pack awaited a backend disk read inside the KeyValueActor loop and
+#                          could not even seed, filed as kahuna 759481c9)
+#   CamusDB.Core   references Kahuna.Core 1.3.6
+#
+# NOTE: two components change vs run R (Kahuna 1.3.5->1.3.6 AND Kommander 1.3.2->1.3.3), so a
+# throughput shift is not attributable to one of them without a follow-up.
+#
+# The scenario body matches runs K/L/M/N/O/P/Q/R exactly except for the scenario and cluster
+# names (seed 42, 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows,
+# optimistic / read_committed, 45m measure, same nemesis cadence, Kahuna/Kommander Information).
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+#
+# Pass questions, in priority order:
+#   1. Does SUM(balance) conserve exactly, at scan time AND on a quiesced re-read? Run R lost 81.
+#   2. Are the fence-refusal storms gone? Runs Q and R both wedged keys at a frozen
+#      "validated N / head N+1" pair for ~30 minutes (137k-166k refusal lines per key). After the
+#      fix, refusals should be sparse and their revision pairs should advance.
+#   3. Does the node set survive the whole window (node-health check green, no aborts)?
+#   4. Does throughput recover toward run K's 250-280 ops/s now that hot keys cannot wedge
+#      read-only? Run R held 193-238 with two keys wedged.
+name: bank-optimistic-45m-s
+cluster:
+  name: bank-opt-45ms
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

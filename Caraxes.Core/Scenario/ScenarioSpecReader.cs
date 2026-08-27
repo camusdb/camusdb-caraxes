@@ -40,7 +40,7 @@ public static class ScenarioSpecReader
         "kind", "database", "seed", "rows", "payload_bytes", "batch", "mode", "target_ops", "workers",
         "read_percent", "write_percent", "writes_per_transaction", "duration", "warmup", "drain",
         "connections", "max_in_flight", "locking", "isolation", "no_auto_prepare", "request_timeout",
-        "expect_faults",
+        "expect_faults", "reconcile_timeout",
     };
 
     public static ScenarioSpec ReadFile(string path)

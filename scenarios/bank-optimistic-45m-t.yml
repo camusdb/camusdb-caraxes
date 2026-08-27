@@ -1,0 +1,76 @@
+# Run T: verification soak for the streak-triggered coherence reconcile (kahuna 233d039).
+#
+# Run S (Kahuna 1.3.6) ran a full window at run-K throughput and reduced the loss to -2 durable,
+# with both units attributed exactly: each was the single head-advancing commit at the onset of a
+# fence-refusal wedge, and each wedged key then refused every write to run end (157k / 48.6k
+# refusal lines at a frozen "validated N / head N+1" pair). Kahuna ticket e018a22e's remaining
+# asks: materialize the onset commit, make the wedge self-heal, add a watchdog.
+#
+# Kahuna 1.3.7 (kahuna 233d039) answers with a streak-triggered coherence reconcile: a
+# fence-refusal streak at a frozen (validated base, committed head) pair fires a repair hook,
+# outside the apply gate, that re-drives convergence from the node's own durable state — which
+# both re-materializes the missing onset commit and un-wedges the key. New metrics accompany it.
+#
+# Engine build under test:
+#   Kommander      1.3.3  (nuget.org — unchanged from run S)
+#   Kahuna         1.3.7  (local pack from kahuna 233d039)
+#   CamusDB.Core   references Kahuna.Core 1.3.7
+#
+# Only Kahuna changes vs run S, so any shift is attributable to 233d039.
+#
+# The scenario body matches runs K..S exactly except for the scenario and cluster names (seed 42,
+# 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows, optimistic /
+# read_committed, 45m measure, same nemesis cadence, Kahuna/Kommander at Information).
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+#
+# Pass questions, in priority order:
+#   1. Does SUM(balance) conserve exactly, at scan time AND on a quiesced re-read? Run S lost
+#      exactly the two wedge-onset commits.
+#   2. Do refusal storms self-heal? A wedge may still BEGIN, but a frozen pair must not persist:
+#      refusal streaks should terminate with the reconcile (grep the new repair/reconcile
+#      signals), and no key should end the run with materialized version behind committed head.
+#   3. Does the node set survive the whole window (node-health green, no aborts)?
+#   4. Does throughput hold at run S's level (233-268 ops/s buckets)? The reconcile must not
+#      cost the recovered throughput.
+name: bank-optimistic-45m-t
+cluster:
+  name: bank-opt-45mt
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

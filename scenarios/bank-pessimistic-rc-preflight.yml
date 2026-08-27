@@ -1,0 +1,69 @@
+# Discriminator preflight: pessimistic locking with READ_COMMITTED isolation.
+#
+# Why this scenario exists. bank-pessimistic-45m changed two knobs from run Z at once — locking to
+# pessimistic AND isolation to serializable. That run wedged: two nodes each read 645-692 GiB from
+# a 118 MB data directory, and the cluster could no longer serve SELECT SUM(balance) thirty minutes
+# after the load stopped. Four FairReadScheduler threads
+# (kommander/Kommander/WAL/IO/FairReadScheduler.cs) burned the CPU.
+#
+# The suspect is the isolation knob, not the lock knob. In kahuna,
+# TryScanByPrefixFromDiskHandler does a full prefix scan and then walks persisted revision history
+# per key, through GetKeyValueRevisionAtOrBefore, whenever the scan carries a read timestamp. Only
+# a Serializable read-only transaction pins that timestamp. SELECT SUM(balance) is exactly such a
+# query, and the bank workload leaves each of the 2,000 hot rows with hundreds of revisions.
+#
+# This scenario is the true one-variable delta from run Z: locking is pessimistic, isolation stays
+# read_committed. Everything else equals bank-pessimistic-preflight.
+#
+# How to read the result:
+#   - PASS with normal disk reads: the lock path is fine. The wedge belongs to the serializable
+#     snapshot scan path, and the next step is a kahuna fix, not a scenario change.
+#   - FAIL or heavy read amplification: the lock path contributes too, and pessimistic locking
+#     needs its own investigation.
+#
+# Check the disk reads, not only the verdict. A 90s window on 2,000 rows should read far less than
+# the 118 MB store. Measure per node with:
+#   docker exec bank-pess-rc-pre-camusN sh -c 'grep read_bytes /proc/1/io'
+#
+# teardown: false, so the read counters survive the run. Tear down by hand afterwards.
+name: bank-pessimistic-rc-preflight
+cluster:
+  name: bank-pess-rc-pre
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: pessimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 90s
+  warmup: 20s
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 25s
+    max_interval: 40s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false
