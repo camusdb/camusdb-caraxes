@@ -103,6 +103,47 @@ changed sum is direct evidence of an atomicity break. This invariant is checked 
 **never waived** — unlike conflicts, an atomicity violation is a correctness failure a chaos run must
 catch. See `scenarios/bank-kill.yml`.
 
+### Many-table workload (`fanout`) and range auto-split
+
+`workload.kind: fanout` is the bank transfer spread over many tables. `workload.tables: N` cuts the
+seeded rows into N contiguous blocks, one table each, and every transfer moves its two legs between
+two *different* tables. Two things follow:
+
+- **Every partition carries write traffic.** A table (and each of its eligible secondary indexes) is
+  one key space, so the single-table dataset lives on one partition under hash routing and on one
+  range under key-range routing. N tables occupy N key spaces.
+- **The conserved sum is a whole-dataset sum.** Reconciliation reads `SUM(balance)` per table and
+  compares the total, because a transfer's two legs land in different tables. The invariant is
+  otherwise identical to `bank`, and still never waived.
+
+`tables` must not exceed `rows` (an empty table is created and never used, so the run would test less
+than it claims), and `fanout` needs at least 2. The same `tables` value is passed to the seeding
+`init` and the measured `run`, so they cannot disagree about the schema.
+
+This is what makes **range auto-split** reachable: a range only divides when it holds enough keys, or
+when its partition is saturated. Turn it on in the `cluster:` block —
+
+```yml
+cluster:
+  key_range_sharding: true   # a hash-routed space has no range descriptor to split
+  partitions: 4              # a child range needs a partition to move to (2 is the minimum)
+  leader_balancer: true      # nothing else moves the child leader off the hot node
+  kahuna:
+    range_split_threshold: 2000       # count branch: keys in a range before it is a candidate
+    range_split_min_range_size: 250   # the threshold must be at least twice this
+    range_split_load_threshold: 200   # load branch: sustained log ops/sec for a hot partition
+    enable_load_reports: true
+```
+
+Both branches are off unless a threshold is set, and a node whose preconditions are unmet logs one
+warning per cause and **starts anyway** — so a misconfigured split scenario looks like a working one
+until `SHOW ENGINE STATS` reports `kahuna.range.splits` of zero. Check that counter before reporting
+a split run as a pass. See `scenarios/split-preflight.yml` (short, fault-free, proves the path),
+`scenarios/split-optimistic-45m.yml` (the fanout soak), and
+`scenarios/bank-optimistic-split-45m.yml` (the bank soak with only the split settings changed, so it
+compares directly against the bank runs). CamusDB's `docs/key-range-sharding.md` documents the
+engine side.
+
 ## Matrix sweeps
 
 `caraxes matrix --matrix <yml>` runs a cartesian sweep and writes a cross-cell `matrix-report.md`:

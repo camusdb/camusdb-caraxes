@@ -48,15 +48,18 @@ public sealed class WorkloadRunner
     }
 
     /// <summary>
-    /// Publishes the workload once (framework-dependent, so the same output runs under the node
-    /// image's runtime) unless it is already present. Returns the publish directory.
+    /// Publishes the workload (framework-dependent, so the same output runs under the node image's
+    /// runtime). Returns the publish directory.
+    ///
+    /// <para>This publishes on every run rather than reusing whatever is already in the directory. It
+    /// used to skip when the DLL existed, which silently pinned every scenario to the binary built by
+    /// the first run that ever used that directory: correctness checks added to the workload afterwards
+    /// never executed, and their absence from the verdict was indistinguishable from them passing. A
+    /// repeat publish is incremental and costs a few seconds; running an unknown, older correctness
+    /// check costs the meaning of every run in between.</para>
     /// </summary>
-    public async Task EnsurePublishedAsync(bool force = false, CancellationToken cancellationToken = default)
+    public async Task EnsurePublishedAsync(CancellationToken cancellationToken = default)
     {
-        string dll = Path.Combine(publishDir, "CamusDB.Workload.dll");
-        if (!force && File.Exists(dll))
-            return;
-
         string project = Path.Combine(plan.Spec.EffectiveCamusdbRepo, "CamusDB.Workload", "CamusDB.Workload.csproj");
         if (!File.Exists(project))
             throw new InvalidOperationException(
@@ -87,7 +90,9 @@ public sealed class WorkloadRunner
         ];
         AppendCommonFlags(workloadArgs, scenario.Workload);
 
-        Console.WriteLine($"==> seeding {scenario.Workload.Rows} rows into '{scenario.Workload.Database}'");
+        Console.WriteLine(
+            $"==> seeding {scenario.Workload.Rows} rows over {scenario.Workload.Tables} table(s) " +
+            $"into '{scenario.Workload.Database}'");
         return await RunContainerAsync(workloadArgs, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
     }
 
@@ -151,8 +156,15 @@ public sealed class WorkloadRunner
         return await RunContainerAsync(workloadArgs, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Flags that must be identical on <c>init</c> and <c>run</c>. The table count belongs here: it
+    /// shapes the schema the seeder writes, and a <c>run</c> that disagrees with the <c>init</c> looks
+    /// for tables that were never created.
+    /// </summary>
     private static void AppendCommonFlags(List<string> args, Caraxes.Core.Scenario.WorkloadSpec workload)
     {
+        args.Add("--tables");
+        args.Add(workload.Tables.ToString());
         if (workload.NoAutoPrepare)
             args.Add("--no-auto-prepare");
         if (workload.RequestTimeout > 0)

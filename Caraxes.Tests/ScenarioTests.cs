@@ -127,6 +127,52 @@ public sealed class ScenarioSpecTests
         Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
             "name: s\ncluster:\n  name: c\nworkload:\n  database: system"));
     }
+
+    [Test]
+    public void TablesDefaultsToOneAndParses()
+    {
+        Assert.That(ScenarioSpecReader.Read(Minimal).Workload.Tables, Is.EqualTo(1),
+            "the historical single-table dataset stays the default");
+
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              kind: fanout
+              rows: 32000
+              tables: 8
+            """);
+
+        Assert.That(spec.Workload.Kind, Is.EqualTo("fanout"));
+        Assert.That(spec.Workload.Tables, Is.EqualTo(8));
+    }
+
+    [Test]
+    public void UnknownWorkloadKind_IsRejected()
+    {
+        ScenarioException ex = Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
+            "name: s\ncluster:\n  name: c\nworkload:\n  kind: fanuot"))!;
+        Assert.That(ex.Message, Does.Contain("fanuot"));
+    }
+
+    [Test]
+    public void FanoutNeedsAtLeastTwoTables()
+    {
+        ScenarioException ex = Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
+            "name: s\ncluster:\n  name: c\nworkload:\n  kind: fanout\n  rows: 100"))!;
+        Assert.That(ex.Message, Does.Contain("tables"));
+    }
+
+    [Test]
+    public void MoreTablesThanRows_IsRejected()
+    {
+        // Every table over the row count would be created and never written, so the run would exercise
+        // fewer key spaces than the scenario says it does.
+        ScenarioException ex = Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
+            "name: s\ncluster:\n  name: c\nworkload:\n  rows: 4\n  tables: 8"))!;
+        Assert.That(ex.Message, Does.Contain("must not exceed"));
+    }
 }
 
 [TestFixture]

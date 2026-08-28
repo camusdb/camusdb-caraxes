@@ -37,7 +37,7 @@ public static class ScenarioSpecReader
 
     private static readonly HashSet<string> AllowedWorkloadKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "kind", "database", "seed", "rows", "payload_bytes", "batch", "mode", "target_ops", "workers",
+        "kind", "database", "seed", "rows", "tables", "payload_bytes", "batch", "mode", "target_ops", "workers",
         "read_percent", "write_percent", "writes_per_transaction", "duration", "warmup", "drain",
         "connections", "max_in_flight", "locking", "isolation", "no_auto_prepare", "request_timeout",
         "expect_faults", "reconcile_timeout",

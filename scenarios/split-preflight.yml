@@ -1,0 +1,101 @@
+# Auto-split preflight. NOT a soak — a rig that proves the split path works before a long run uses it.
+#
+# Question: with key-range routing on and the count branch armed, does a range actually divide, and
+# does the cluster stay correct while it does? Every split scenario after this one assumes the answer,
+# so it is measured here first, on a short window, with no faults to blame.
+#
+# Why this needs the fanout workload. A table (and each of its eligible secondary indexes) is one key
+# space. The single-table bank dataset therefore gives the splitter two spaces to work with, both
+# owned by whichever partition hash-routing picked. The fanout workload seeds the rows over several
+# tables and moves every transfer between two of them, so all four partitions carry write traffic and
+# every table space is large enough to be a split candidate.
+#
+# Shape of the expected result, from the count branch alone:
+#   - 4 tables x 1,500 rows. A range is a split candidate at ~1,200 sampled keys, and a child may not
+#     fall below 200 keys, so a 1,500-key space divides once into two ~750-key children and then stops
+#     (750 is below the threshold). The owner index on each table is INT64-keyed, so it is eligible
+#     and follows the same path.
+#   - That is up to 8 splits (4 table spaces + 4 index spaces), each adding one partition.
+#   - The load branch is also armed, at a threshold this run is unlikely to reach; it is on so that a
+#     split it does fire is visible here rather than for the first time in a 45-minute soak.
+#
+# How to read the run:
+#   1. The workload verdict must PASS: exact SUM(balance) conservation over all four tables, the
+#      seeded row count intact, no lost operations. A transfer refused mid-split (CADB0504/CADB0502)
+#      is retried by the driver and must not change the sum.
+#   2. `SHOW ENGINE STATS` on any node reports kahuna.range.splits > 0. Zero splits with all
+#      preconditions met is the finding, not a pass — check the startup warnings first: each inert
+#      precondition is logged once per node at boot.
+#   3. kahuna.range.split.no_relief_skips / .indivisible_refusals separate "not hot yet" from
+#      "hot, and refused".
+#
+# teardown: false, so the engine stats and the placement map can be read after the run.
+name: split-preflight
+cluster:
+  name: split-preflight
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 2048
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  kahuna:
+    # Count branch. The threshold must be at least 2 x the minimum child size or the node refuses to
+    # start, and 1,200 over 200 leaves plenty of room.
+    range_split_threshold: 1200
+    range_split_min_range_size: 200
+    # Load branch. All three gates are AND-combined and must hold for the whole window, sampled at the
+    # poll interval; the poll interval must stay below the window.
+    range_split_load_threshold: 200
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    # A fresh child is left alone this long before it can be re-evaluated; it must be at least
+    # min_leader_stability_ms (5,000 by default) or the node refuses to start.
+    range_split_settle_window_ms: 10000
+    range_split_indivisible_cooldown_ms: 300000
+    # Keep terminal transaction records for the whole run. A leaked write is only decidable against the
+    # record that names its transaction's commit-or-abort decision, and at the default five minutes that
+    # record is already reclaimed by the time a ten-minute window closes — every leak found so far was
+    # undecidable for exactly this reason. Both bounds must move together: age pruning and the size cap
+    # evict independently, and the default cap of 10,000 is far below a run's committed transaction count.
+    #
+    # This is an investigation setting, not a default. Kahuna reads the same TTL as the horizon past which
+    # an absent record stops meaning "never initialized", so a run configured this way does not have
+    # identical recovery behaviour to one left at the default.
+    transaction_outcome_retention_ttl_ms: 3600000
+    transaction_outcome_retention_max: 200000
+    # Gossip the load reports the load branch reads. The leader balancer above already implies them;
+    # this is set explicitly so the signal does not depend on that switch staying on.
+    enable_load_reports: true
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 6000
+  tables: 4
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  # True even though this scenario injects no faults. An armed splitter aborts in-flight
+  # transactions on its own: a split attempt quiesces the moving half, and the transactions caught
+  # in it come back as "already RolledBack" (CADB0501) or "Unknown transaction" (CADB0400). Those
+  # are inherent to the feature under test, so the non-conflicting baseline contract cannot hold
+  # here and would report INVALID for a reason that is not a defect. The aborts stay visible in
+  # errors.json and in the validity warnings either way, and the SUM(balance) invariant is never
+  # waived by this flag — an atomicity break still fails the run.
+  expect_faults: true
+teardown: false

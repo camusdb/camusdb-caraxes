@@ -15,10 +15,13 @@ namespace Caraxes.Core.Scenario;
 /// </summary>
 public sealed class WorkloadSpec
 {
-    /// <summary>Write shape: <c>accounts</c> (shard-disjoint read-modify-write, conflict-free) or
+    /// <summary>Write shape: <c>accounts</c> (shard-disjoint read-modify-write, conflict-free),
     /// <c>bank</c> (contended transfers across the keyspace with a conserved <c>SUM(balance)</c>
-    /// atomicity invariant checked post-run). Bank is the stronger anomaly detector under contention
-    /// and faults.</summary>
+    /// atomicity invariant checked post-run), or <c>fanout</c> (bank transfers whose two legs always
+    /// land in different tables; requires <see cref="Tables"/> &gt;= 2). Bank is the stronger anomaly
+    /// detector under contention and faults; fanout keeps that invariant and adds the placement
+    /// pressure — every table is a separate key space, so a many-table dataset loads every partition
+    /// and, under <c>key_range_sharding</c>, gives the range splitter something to split.</summary>
     public string Kind { get; set; } = "accounts";
 
     /// <summary>Database the workload seeds and drives; <c>init</c> creates it if absent.</summary>
@@ -27,6 +30,13 @@ public sealed class WorkloadSpec
     public ulong Seed { get; set; } = 1847;
 
     public long Rows { get; set; } = 100_000;
+
+    /// <summary>How many tables the seeded rows are spread over. 1 (the default) is the historical
+    /// single-table dataset — one key space, so one partition under hash routing and one range under
+    /// key-range routing. A higher count cuts the rows into that many contiguous blocks, one table
+    /// each, which is what puts load on every partition and makes auto-split reachable. Must not
+    /// exceed <see cref="Rows"/>; <c>fanout</c> needs at least 2.</summary>
+    public int Tables { get; set; } = 1;
 
     public int PayloadBytes { get; set; } = 256;
 
@@ -92,14 +102,27 @@ public sealed class WorkloadSpec
 
     public void Validate()
     {
-        if (Kind is not ("accounts" or "bank"))
-            throw new ScenarioException($"'workload.kind' must be 'accounts' or 'bank', got '{Kind}'");
+        if (Kind is not ("accounts" or "bank" or "fanout"))
+            throw new ScenarioException($"'workload.kind' must be 'accounts', 'bank' or 'fanout', got '{Kind}'");
 
         if (string.IsNullOrWhiteSpace(Database) || Database is "default" or "system")
             throw new ScenarioException($"'workload.database' must be a non-empty, non-reserved name, got '{Database}'");
 
         if (Rows < 1)
             throw new ScenarioException($"'workload.rows' must be >= 1, got {Rows}");
+
+        if (Tables < 1)
+            throw new ScenarioException($"'workload.tables' must be >= 1, got {Tables}");
+
+        // An empty table is created, never read, and never splits, so the run would test a smaller
+        // placement than the scenario claims — and say nothing about it.
+        if (Tables > Rows)
+            throw new ScenarioException(
+                $"'workload.tables' ({Tables}) must not exceed 'workload.rows' ({Rows}); every table needs at least one row");
+
+        if (Kind == "fanout" && Tables < 2)
+            throw new ScenarioException(
+                $"'workload.kind: fanout' moves each transfer between two different tables, so 'workload.tables' must be >= 2, got {Tables}");
 
         if (Mode is not ("open" or "closed"))
             throw new ScenarioException($"'workload.mode' must be 'open' or 'closed', got '{Mode}'");

@@ -98,6 +98,35 @@ public sealed class NodeConfigGeneratorTests
         Assert.That(yml, Does.Not.Contain("replication_factor: 3"));
         Assert.That(yml, Does.Contain("heartbeat_interval_ms: 250"));
     }
+
+    [Test]
+    public void AutoSplitSettingsReachTheNodeConfig()
+    {
+        // A split scenario is inert unless all of these land in the file together: key-range routing
+        // (a hash-routed space has no range to split), a load-report source, and the thresholds
+        // themselves. The node logs a warning and starts anyway for each missing one, so a typo here
+        // costs a whole soak before it is noticed.
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: splitting",
+            "key_range_sharding: true",
+            "partitions: 4",
+            "kahuna:",
+            "  range_split_threshold: 1500",
+            "  range_split_min_range_size: 250",
+            "  range_split_load_threshold: 200",
+            "  range_split_load_imbalance_max: 0.8",
+            "  enable_load_reports: true")));
+
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Contain("key_range_sharding: true"));
+        Assert.That(yml, Does.Contain("enable_leader_balancer: true"), "nothing else moves a child leader off the hot node");
+        Assert.That(yml, Does.Contain("range_split_threshold: 1500"));
+        Assert.That(yml, Does.Contain("range_split_min_range_size: 250"));
+        Assert.That(yml, Does.Contain("range_split_load_threshold: 200"));
+        Assert.That(yml, Does.Contain("range_split_load_imbalance_max: 0.8"));
+        Assert.That(yml, Does.Contain("enable_load_reports: true"));
+    }
 }
 
 [TestFixture]
