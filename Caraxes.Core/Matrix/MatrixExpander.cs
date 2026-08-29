@@ -33,6 +33,7 @@ public static class MatrixExpander
         List<AxisOption> nodes = Axis("nodes", "n", matrix.Axes.Nodes, v => v.ToString(), (s, v) => s.Cluster.Nodes = v);
         List<AxisOption> sharding = Axis("sharding", "shard", matrix.Axes.Sharding, v => v ? "on" : "off", (s, v) => s.Cluster.KeyRangeSharding = v);
         List<AxisOption> parallelism = Axis("parallelism", "par", matrix.Axes.Parallelism, v => v.ToString(), (s, v) => s.Cluster.MaxQueryParallelism = v);
+        List<AxisOption> workers = Axis("workers", "w", matrix.Axes.Workers, v => v.ToString(), (s, v) => s.Workload.Workers = v);
 
         List<AxisOption> nemesis = matrix.Axes.Nemesis.Count == 0
             ? [new AxisOption(null, null, null, _ => { })]
@@ -48,8 +49,9 @@ public static class MatrixExpander
             foreach (AxisOption n in nodes)
                 foreach (AxisOption sh in sharding)
                     foreach (AxisOption par in parallelism)
-                        foreach (AxisOption nem in nemesis)
-                            cells.Add(BuildCell(matrix, sharedImage, [l, n, sh, par, nem]));
+                        foreach (AxisOption w in workers)
+                            foreach (AxisOption nem in nemesis)
+                                cells.Add(BuildCell(matrix, sharedImage, [l, n, sh, par, w, nem]));
 
         return cells;
     }
@@ -60,9 +62,10 @@ public static class MatrixExpander
         ScenarioSpec scenario = new()
         {
             Cluster = CloneCluster(matrix.Cluster),
-            Workload = CloneWorkload(matrix.Workload),
-            Checks = CloneChecks(matrix.Checks),
+            Workload = matrix.Workload.Clone(),
+            Checks = matrix.Checks.Clone(),
             Teardown = matrix.Teardown,
+            SettleSeconds = matrix.SettleSeconds,
         };
         scenario.Cluster.Image = sharedImage;
 
@@ -106,22 +109,6 @@ public static class MatrixExpander
         DistributedQueryExecution = c.DistributedQueryExecution, MaxQueryParallelism = c.MaxQueryParallelism,
         Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts,
         Kahuna = new Dictionary<string, object>(c.Kahuna),
-    };
-
-    private static WorkloadSpec CloneWorkload(WorkloadSpec w) => new()
-    {
-        Database = w.Database, Seed = w.Seed, Rows = w.Rows, PayloadBytes = w.PayloadBytes, Batch = w.Batch,
-        Mode = w.Mode, TargetOps = w.TargetOps, Workers = w.Workers, ReadPercent = w.ReadPercent,
-        WritePercent = w.WritePercent, WritesPerTransaction = w.WritesPerTransaction, Duration = w.Duration,
-        Warmup = w.Warmup, Drain = w.Drain, Connections = w.Connections, MaxInFlight = w.MaxInFlight,
-        Locking = w.Locking, Isolation = w.Isolation, NoAutoPrepare = w.NoAutoPrepare, RequestTimeout = w.RequestTimeout,
-        ExpectFaults = w.ExpectFaults,
-    };
-
-    private static ChecksSpec CloneChecks(ChecksSpec c) => new()
-    {
-        MaxRecoverySeconds = c.MaxRecoverySeconds, RequireRecovery = c.RequireRecovery,
-        RequireProgressUnderFault = c.RequireProgressUnderFault,
     };
 
     private sealed record AxisOption(string? CoordinateKey, string? NamePrefix, string? Label, Action<ScenarioSpec> Apply);

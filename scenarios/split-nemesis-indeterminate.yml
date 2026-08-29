@@ -1,0 +1,135 @@
+# Auto-split under faults that make commit outcomes genuinely unknown to the client.
+#
+# Question: when a transfer's commit outcome is unknowable — the coordinator was unreachable at the
+# moment it answered — does the cluster still apply both legs or neither, while ranges are splitting?
+#
+# Why this scenario exists. The split-preflight runs reached zero atomicity violations, but every one
+# of them recorded `RowsInAmbiguityBand: 0` and no CADB0400/CADB0501 at all. The path where every
+# historical leak occurred — a transfer whose outcome the client never learned — simply stopped
+# occurring. "The precondition no longer arises" and "the defect is fixed" are different claims, and
+# the preflight can only demonstrate the first. This scenario manufactures the precondition.
+#
+# How an indeterminate outcome is produced. A fault must interrupt the commit round trip *after* the
+# commit was submitted; a failure before that is an ordinary abort and applies nothing. `partition` is
+# the primary fault here for exactly that reason: the coordinator stays alive and may well finish the
+# commit durably, while the client's connection to it is gone and no verdict comes back. That is the
+# definition of an indeterminate outcome, and it is the shape the atomicity checks have never yet
+# been able to exercise. `kill` is mixed in because it interrupts at a different point — the process
+# dies mid-flight rather than answering into a broken path — and `pause` because a coordinator that
+# stalls past the client's deadline is a third distinct way to lose the answer.
+#
+# The timeline is explicit rather than random so that every fault is guaranteed to land inside the
+# measured window and the run is reproducible. Offsets are from the start of the workload run, which
+# begins with a 1-minute warm-up, so the measured window spans 60s to 660s. The last fault heals at
+# 620s, leaving recovery observable before the window closes.
+#
+# How to read the run:
+#   1. `Indeterminate` must be > 0 and `RowsInAmbiguityBand` must be > 0. If they are zero the
+#      scenario failed at its own job and says nothing about atomicity — check that faults actually
+#      landed during the measured window before reading any verdict.
+#   2. The per-row attribution is the verdict. `UncountedWriteRows` is a leg that survived a
+#      transaction the client never committed; `LostWriteRows` is a committed write that never
+#      applied; `HalfAppliedTransfers` is a transfer that moved value into one row without moving it
+#      out of the other. That last check exists for this scenario specifically — an indeterminate
+#      transfer leaves both its rows inside their own bands, so nothing else can see it.
+#   3. SUM(balance) conservation still holds under faults. A transfer is atomic or it is nothing, so
+#      an indeterminate commit that applied both legs conserves the sum exactly as one that applied
+#      neither. A changed sum is a genuine break and is never waived.
+#   4. Splits must still complete. The point is ambiguity *and* splits together; a run where the
+#      splitter never fires has not tested the path this scenario targets.
+name: split-nemesis-indeterminate
+cluster:
+  name: split-nemesis
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 2048
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  kahuna:
+    # Split configuration identical to split-preflight, so the two runs stay comparable and the
+    # splitter fires at the same points in the dataset's growth.
+    range_split_threshold: 1200
+    range_split_min_range_size: 200
+    range_split_load_threshold: 200
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    range_split_settle_window_ms: 10000
+    range_split_indivisible_cooldown_ms: 300000
+    enable_load_reports: true
+    # Keep terminal transaction records for the whole run. Under faults this matters more than in the
+    # preflight: an indeterminate transfer is only decidable against the record that names its
+    # transaction's outcome, and at the default five minutes that record is reclaimed long before a
+    # ten-minute window closes. Both bounds must move together — age pruning and the size cap evict
+    # independently, and the default cap of 10,000 is far below a run's committed transaction count.
+    transaction_outcome_retention_ttl_ms: 3600000
+    transaction_outcome_retention_max: 200000
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 6000
+  tables: 4
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  # Seeded so 'random' target selection repeats across runs of this file.
+  seed: 42
+  events:
+    # Partition first, while the dataset is still growing toward its split thresholds.
+    - fault: partition
+      target: camus1
+      at: 90s
+      duration: 20s
+    # A hard interruption: the process dies rather than answering into a broken path.
+    - fault: kill
+      target: random
+      at: 180s
+      duration: 20s
+    - fault: partition
+      target: camus2
+      at: 270s
+      duration: 20s
+    # A stalled coordinator: alive, reachable, and silent past the client's deadline.
+    - fault: pause
+      target: random
+      at: 360s
+      duration: 15s
+    - fault: partition
+      target: camus3
+      at: 450s
+      duration: 20s
+    - fault: kill
+      target: random
+      at: 540s
+      duration: 20s
+    # Last fault heals at 620s, 40 seconds before the measured window closes, so its recovery is
+    # observed rather than truncated by the end of the run.
+    - fault: partition
+      target: camus1
+      at: 600s
+      duration: 20s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: true
+  require_progress_under_fault: true
+# teardown: false, so the placement map, the engine stats and the durable stores can be read after
+# the run — and so a store snapshot can be taken while record retention still holds the records that
+# decide each indeterminate transfer.
+teardown: false

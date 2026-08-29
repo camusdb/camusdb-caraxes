@@ -80,6 +80,30 @@ public sealed class ClusterPlan
     /// with no host-side trust changes. The container gRPC port is the fixed 5096.</summary>
     public string InternalWorkloadEndpointPool =>
         string.Join(',', Nodes.Select(n => $"https://{n.Name}:5096"));
+
+    /// <summary>
+    /// Every node's in-cluster Prometheus endpoint as <c>name=url</c> pairs, for the workload's
+    /// per-node metric collection.
+    ///
+    /// <para>Named by the node, because a scrape carries no identity of its own: the resource
+    /// attributes ride in <c>target_info</c>, not in the samples, so only the collector — which chose
+    /// the URL — can say which node produced a series. Getting the name right here is what makes
+    /// "one leader carried every write" a readable finding rather than a flat total.</para>
+    ///
+    /// <para>Plain HTTP on the container's fixed 5095: unlike the gRPC port, the REST listener is not
+    /// TLS inside the network, which is also why <see cref="HostRestUrls"/> uses <c>http</c>.</para>
+    /// </summary>
+    public string InternalMetricsEndpoints =>
+        string.Join(',', Nodes.Select(n => $"{n.Name}=http://{n.Name}:5095/metrics"));
+
+    /// <summary>
+    /// Every node's in-cluster HTTP API base as <c>name=url</c> pairs, for the workload's cluster
+    /// fact capture: <c>/v1/version</c>, <c>/v1/cluster/health</c> and a node-local
+    /// <c>SHOW VARIABLES</c>. Asking each node separately is the point — the configuration statement
+    /// answers for whichever node served it, and nodes in a cluster can legitimately differ.
+    /// </summary>
+    public string InternalNodeEndpoints =>
+        string.Join(',', Nodes.Select(n => $"{n.Name}=http://{n.Name}:5095"));
 }
 
 /// <summary>One node's derived identity: docker names, addresses, ports, and zone.</summary>

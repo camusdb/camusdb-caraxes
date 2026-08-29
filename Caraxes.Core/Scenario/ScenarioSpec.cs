@@ -36,6 +36,21 @@ public sealed class ScenarioSpec
     /// inspection (the run still completes and artifacts are collected either way).</summary>
     public bool Teardown { get; set; } = true;
 
+    /// <summary>
+    /// Seconds to wait, after seeding and before the measured window opens, for every partition to
+    /// have a resolvable leader. 0 skips the wait.
+    ///
+    /// <para>A node answers <c>/v1/cluster/health</c> as ready before leadership has settled, and
+    /// seeding itself creates the tables whose ranges then have to be placed. Measuring across that
+    /// settlement charges the run for an election it did not cause, which is exactly the kind of
+    /// noise that makes two runs of the same configuration disagree. Waiting costs wall-clock outside
+    /// the measured window and nothing else.</para>
+    ///
+    /// <para>The wait is a best effort: if leadership has not settled by the deadline the run
+    /// proceeds and says so, because a scenario that never starts reports nothing at all.</para>
+    /// </summary>
+    public int SettleSeconds { get; set; } = 30;
+
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
     public void Validate()
@@ -43,6 +58,9 @@ public sealed class ScenarioSpec
         if (string.IsNullOrWhiteSpace(Name) || !NamePattern.IsMatch(Name))
             throw new ScenarioException(
                 $"'name' must be a non-empty lowercase [a-z0-9-] identifier, got '{Name}'");
+
+        if (SettleSeconds < 0)
+            throw new ScenarioException($"'settle_seconds' must be >= 0, got {SettleSeconds}");
 
         Cluster.Validate();
         Workload.Validate();

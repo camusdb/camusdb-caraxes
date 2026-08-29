@@ -1,0 +1,75 @@
+# Capacity baseline — the M0 reproduction target for the cluster throughput plan.
+#
+# PURPOSE. This is not a chaos scenario. It is the fault-free, fully instrumented run whose number a
+# later optimization is measured against, so everything here exists to make one throughput figure
+# reproducible and comparable:
+#
+#   - node_metrics      per-node time series for the whole run, so "one leader carried the writes"
+#                       and "a backlog was still growing" are readable findings rather than guesses
+#   - cluster_facts     what each node was actually running: loaded Kahuna/Kommander versions, its
+#                       resolved configuration, and where the workload's ranges sat
+#   - settle_seconds    leadership resolves before the measured window opens, so the run is not
+#                       charged for an election it did not cause
+#   - require_*         a run whose generator may have been the limiter, or that cannot say which
+#                       build produced it, fails instead of contributing a number nobody can use
+#
+# SHAPE. Deliberately identical to the bank-optimistic-45m series (runs K..Z), which is the workload
+# that produced the reported ~208 ops/s: 3 nodes, RF 3, 32 workers over 16 connections, 2,000
+# contended rows, optimistic / read_committed, 50/50 read/write. Only the measured window is shorter
+# and the nemesis is absent. Do not "improve" the shape — a faster figure on a different workload
+# answers a different question, and the plan's target is a paired ratio against this one.
+#
+# HOW TO USE IT. Run it at least three times before changing any knob. --tag keeps each repetition's
+# artifacts instead of overwriting the one before it:
+#
+#   for i in 1 2 3; do
+#     dotnet run --project Caraxes -- run --scenario scenarios/capacity-baseline.yml --tag r$i
+#   done
+#
+#   CamusDB.Workload baseline --runs runs/scenarios/capacity-baseline-r1/artifacts/run,\
+#                                    runs/scenarios/capacity-baseline-r2/artifacts/run,\
+#                                    runs/scenarios/capacity-baseline-r3/artifacts/run
+#
+# That reports the median and the spread, and names the write p99 to freeze as the latency budget.
+# Pass it to every later comparison:
+#
+#   CamusDB.Workload compare --baseline runs/scenarios/capacity-baseline-r2/artifacts/run \
+#                            --candidate <later run> --p99-budget-ms <frozen p99>
+#
+# expect_faults stays true because the bank shape contends on purpose: its transfers collide, and a
+# conflict is the design working, not a defect. It waives conflicts and open-loop pacing only; the
+# conservation invariant and the per-row ledger check are never waived.
+name: capacity-baseline
+cluster:
+  name: capacity-baseline
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+teardown: true

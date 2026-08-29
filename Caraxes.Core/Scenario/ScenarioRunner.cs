@@ -42,13 +42,27 @@ public sealed class ScenarioRunner
 
     private readonly ClusterOrchestrator orchestrator;
 
-    public ScenarioRunner(ScenarioSpec scenario, string? runRoot = null)
+    /// <summary>
+    /// <paramref name="runTag"/> suffixes the run directory, so repeated runs of one scenario keep
+    /// their artifacts instead of overwriting each other.
+    ///
+    /// <para>A baseline is established by repetition — the plan asks for at least three matched runs
+    /// and a reported median, range and variation — and without a tag the second run deletes the
+    /// first run's evidence before producing its own. The cluster directory is deliberately not
+    /// tagged: runs are sequential and each tears its fleet down, so they share one cluster identity.</para>
+    /// </summary>
+    public ScenarioRunner(ScenarioSpec scenario, string? runRoot = null, string? runTag = null)
     {
         this.scenario = scenario;
         string root = runRoot ?? Path.Combine(Environment.CurrentDirectory, "runs");
-        runDir = Path.Combine(root, "scenarios", scenario.Name);
+        string directoryName = string.IsNullOrWhiteSpace(runTag) ? scenario.Name : $"{scenario.Name}-{Sanitize(runTag)}";
+        runDir = Path.Combine(root, "scenarios", directoryName);
         orchestrator = new ClusterOrchestrator(scenario.Cluster, Path.Combine(root, "clusters"));
     }
+
+    /// <summary>Keeps a tag usable as a directory name; anything else becomes a hyphen.</summary>
+    public static string Sanitize(string tag)
+        => string.Concat(tag.Trim().Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '-'));
 
     public async Task<ScenarioVerdict> RunAsync(bool skipBuild = false, CancellationToken cancellationToken = default)
     {
@@ -76,6 +90,8 @@ public sealed class ScenarioRunner
                 return Finalize(new ScenarioVerdict(false, init.ExitCode, false, false, runDir, notes), init, run);
             }
 
+            await SettleAsync(plan, notes, cancellationToken).ConfigureAwait(false);
+
             run = await RunWorkloadWithNemesisAsync(workload, plan, artifactsDir, notes, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -100,6 +116,65 @@ public sealed class ScenarioRunner
         }
 
         return Finalize(BuildVerdict(run!, artifactsDir, notes), init, run);
+    }
+
+    /// <summary>
+    /// Waits for partition leadership to settle before the measured window opens, and records where it
+    /// settled.
+    ///
+    /// <para>This sits after seeding on purpose. A node reports ready long before leadership is
+    /// resolved, and seeding creates the very tables whose ranges then have to be placed — so the
+    /// settlement that matters is the one that follows the data, not the one that follows startup.</para>
+    ///
+    /// <para>Best effort by design: an unsettled cluster still runs, and the note says leadership had
+    /// not resolved. A scenario that refused to start would report nothing at all, which is worse
+    /// evidence than a run with a caveat attached.</para>
+    /// </summary>
+    private async Task SettleAsync(ClusterPlan plan, List<string> notes, CancellationToken cancellationToken)
+    {
+        if (scenario.SettleSeconds <= 0)
+        {
+            notes.Add("leader settling skipped (settle_seconds: 0); the measured window may include an election");
+            return;
+        }
+
+        Console.WriteLine($"==> waiting up to {scenario.SettleSeconds}s for partition leadership to settle");
+        using HttpProbes probes = new();
+
+        Caraxes.Core.LeaderBalance.LeaderSnapshot snapshot = await Caraxes.Core.LeaderBalance.LeaderObservation
+            .WaitForStableAsync(plan, probes, TimeSpan.FromSeconds(scenario.SettleSeconds), cancellationToken)
+            .ConfigureAwait(false);
+
+        string placement = snapshot.Format(plan.Nodes.Select(n => n.Name).ToList());
+
+        if (snapshot.TotalPartitions > 0 && snapshot.ResolvedPartitions == snapshot.TotalPartitions)
+        {
+            notes.Add($"leadership settled before the measured window: {placement}");
+        }
+        else
+        {
+            notes.Add(
+                $"leadership had NOT settled after {scenario.SettleSeconds}s: {placement}; " +
+                "the measured window may include an election");
+        }
+
+        // Leadership concentrated on one node is the hot-partition condition, and it is invisible in a
+        // throughput number: the run reads as a three-node result while one node's disk and Raft
+        // group did all the durable work. Naming it here means a later reader does not have to infer
+        // it from the per-node series.
+        List<string> nodeNames = plan.Nodes.Select(n => n.Name).ToList();
+        if (nodeNames.Count > 1 && snapshot.ResolvedPartitions > 1)
+        {
+            string busiest = nodeNames.OrderByDescending(snapshot.LeadersOn).First();
+            if (snapshot.LeadersOn(busiest) == snapshot.ResolvedPartitions)
+                notes.Add(
+                    $"every resolved partition is led by '{busiest}'; this run loads one leader, so its " +
+                    "throughput is that node's capacity rather than the cluster's");
+            else if (snapshot.Imbalance(nodeNames) > 1)
+                notes.Add($"leadership is uneven across nodes ({placement}); expect one node to carry more durable work");
+        }
+
+        Console.WriteLine($"    {placement}");
     }
 
     /// <summary>
@@ -218,6 +293,9 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
+        GradeClusterFacts(outputDir, notes, ref passed);
+        GradeClientHeadroom(outputDir, notes, ref passed);
+
         if (scenario.Checks.RequireNodeHealth)
             GradeNodeHealth(notes, ref passed);
 
@@ -225,6 +303,117 @@ public sealed class ScenarioRunner
         {
             Analysis = analysis,
         };
+    }
+
+    /// <summary>
+    /// Records what the cluster said it was: the build and durability fingerprint, and any node that
+    /// could not be asked or answered that it was not ready.
+    ///
+    /// <para>The fingerprint is the note that matters most in a retained artifact. A throughput number
+    /// with no record of the build that produced it can never be compared against another run, and the
+    /// most common way two "identical" runs differ is a dependency version nobody changed on
+    /// purpose.</para>
+    /// </summary>
+    private void GradeClusterFacts(string outputDir, List<string> notes, ref bool passed)
+    {
+        ClusterFactsSummary? facts = WorkloadArtifacts.ReadClusterFacts(outputDir);
+
+        if (facts is null)
+        {
+            string message = scenario.Workload.ClusterFacts
+                ? "no cluster-facts.json produced; this run cannot say which build or durability settings it measured"
+                : "cluster facts not captured (workload.cluster_facts: false)";
+            notes.Add(message);
+
+            if (scenario.Checks.RequireClusterFacts)
+            {
+                notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and no cluster facts were captured");
+                passed = false;
+            }
+            return;
+        }
+
+        notes.Add($"cluster fingerprint: {facts.DurabilityFingerprint} " +
+                  $"({string.Join(", ", Versions(facts))})");
+
+        List<string> unhealthy = facts.Nodes.Where(n => n.Ready != true).Select(n => n.Node).ToList();
+        if (unhealthy.Count > 0)
+        {
+            notes.Add($"node(s) not reporting ready when facts were captured: {string.Join(", ", unhealthy)}");
+            if (scenario.Checks.RequireClusterFacts)
+            {
+                notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and a node did not report ready");
+                passed = false;
+            }
+        }
+
+        foreach (ClusterFactsNode node in facts.Nodes)
+        {
+            foreach (string error in node.Errors)
+                notes.Add($"  node '{node.Node}' could not answer {error}");
+        }
+        foreach (string error in facts.Errors)
+            notes.Add($"  cluster fact capture: {error}");
+
+        bool incomplete = facts.Nodes.Any(n => n.Errors.Count > 0) || facts.Errors.Count > 0;
+        if (incomplete && scenario.Checks.RequireClusterFacts)
+        {
+            notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and part of the capture did not answer");
+            passed = false;
+        }
+    }
+
+    /// <summary>
+    /// One line for the load generator's own headroom, and a failure when a capacity scenario asked
+    /// for it. A generator that ran out of CPU or sat at its in-flight cap produces a flat curve that
+    /// reads exactly like a saturated cluster.
+    /// </summary>
+    private void GradeClientHeadroom(string outputDir, List<string> notes, ref bool passed)
+    {
+        ClientResourcesSummary? client = WorkloadArtifacts.ReadClientResources(outputDir);
+
+        if (client is null)
+        {
+            notes.Add("no client-resources.json produced; the load generator's own headroom is unknown");
+            if (scenario.Checks.RequireClientHeadroom)
+            {
+                notes.Add("  CHECK FAILED: checks.require_client_headroom is on and the generator was not measured");
+                passed = false;
+            }
+            return;
+        }
+
+        notes.Add($"client headroom: {(client.HeadroomAvailable ? "OK" : "SUSPECT")} " +
+                  $"(CPU {client.CpuUtilization:P0} of {client.ProcessorCount} core(s), " +
+                  $"{client.AllocatedMbPerSecond:N0} MB/s allocated, peak pool queue {client.PeakThreadPoolQueue})");
+
+        foreach (string warning in client.Warnings)
+            notes.Add($"  generator warning: {warning}");
+
+        if (!client.HeadroomAvailable && scenario.Checks.RequireClientHeadroom)
+        {
+            notes.Add("  CHECK FAILED: checks.require_client_headroom is on and the generator may have been the limiter");
+            passed = false;
+        }
+    }
+
+    /// <summary>The engine versions worth naming in a one-line note: the storage and consensus
+    /// libraries, whose change explains a throughput difference that no scenario file records.</summary>
+    private static IEnumerable<string> Versions(ClusterFactsSummary facts)
+    {
+        ClusterFactsNode? node = facts.Nodes.FirstOrDefault();
+        if (node is null)
+            return ["no node answered"];
+
+        List<string> parts = [];
+        if (node.Server is not null)
+            parts.Add($"server {node.Server}");
+        foreach (ClusterFactsComponent component in node.Components)
+        {
+            if (component.Name is "Kahuna.Core" or "Kommander" or "Nixie")
+                parts.Add($"{component.Name} {component.Version}");
+        }
+        return parts.Count > 0 ? parts : ["no versions reported"];
     }
 
     private Verdict.FaultAnalysis? RunFaultCorrelation(string outputDir, List<string> notes, ref bool passed)

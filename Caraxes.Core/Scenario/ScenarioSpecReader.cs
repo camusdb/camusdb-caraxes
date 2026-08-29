@@ -22,12 +22,13 @@ public static class ScenarioSpecReader
 {
     private static readonly HashSet<string> AllowedRootKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "name", "cluster", "workload", "nemesis", "checks", "teardown",
+        "name", "cluster", "workload", "nemesis", "checks", "teardown", "settle_seconds",
     };
 
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "max_recovery_seconds", "require_recovery", "require_progress_under_fault", "require_node_health",
+        "require_client_headroom", "require_cluster_facts",
     };
 
     private static readonly HashSet<string> AllowedNemesisKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -40,7 +41,7 @@ public static class ScenarioSpecReader
         "kind", "database", "seed", "rows", "tables", "payload_bytes", "batch", "mode", "target_ops", "workers",
         "read_percent", "write_percent", "writes_per_transaction", "duration", "warmup", "drain",
         "connections", "max_in_flight", "locking", "isolation", "no_auto_prepare", "request_timeout",
-        "expect_faults", "reconcile_timeout",
+        "expect_faults", "reconcile_timeout", "node_metrics", "metrics_interval", "cluster_facts",
     };
 
     public static ScenarioSpec ReadFile(string path)

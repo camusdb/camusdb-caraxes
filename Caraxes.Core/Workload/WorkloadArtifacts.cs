@@ -81,6 +81,75 @@ public sealed class ReconciliationSummary
     public List<string> Failures { get; set; } = [];
 }
 
+/// <summary>One assembly a node reported loading.</summary>
+public sealed class ClusterFactsComponent
+{
+    public string Name { get; set; } = "";
+
+    public string Version { get; set; } = "";
+}
+
+/// <summary>What one node reported about itself when the run captured its facts.</summary>
+public sealed class ClusterFactsNode
+{
+    public string Node { get; set; } = "";
+
+    public string? Server { get; set; }
+
+    public List<ClusterFactsComponent> Components { get; set; } = [];
+
+    /// <summary>Null when the node did not answer the readiness probe at all.</summary>
+    public bool? Ready { get; set; }
+
+    /// <summary>Probes this node could not answer; each one is a fact the manifest is missing.</summary>
+    public List<string> Errors { get; set; } = [];
+}
+
+/// <summary>
+/// The subset of <c>cluster-facts.json</c> a scenario verdict reasons about: which build answered,
+/// whether every node was ready, and the fingerprint that decides whether two runs may be compared.
+/// The file also carries each node's full configuration and the workload tables' range placement,
+/// which stay in the artifact for a human or a later report stage.
+/// </summary>
+public sealed class ClusterFactsSummary
+{
+    public string CapturedAtUtc { get; set; } = "";
+
+    public List<ClusterFactsNode> Nodes { get; set; } = [];
+
+    public List<string> Errors { get; set; } = [];
+
+    public string DurabilityFingerprint { get; set; } = "";
+}
+
+/// <summary>
+/// The subset of <c>client-resources.json</c> the verdict reasons about.
+///
+/// <para>It answers one question: was the load generator itself the thing that ran out? A generator
+/// that was CPU-bound, pausing for GC, or held at its in-flight cap produces a flat throughput curve
+/// that reads exactly like a saturated cluster, and a scenario that reports that number as the
+/// cluster's capacity is reporting a measurement of itself.</para>
+/// </summary>
+public sealed class ClientResourcesSummary
+{
+    public double CpuUtilization { get; set; }
+
+    public int ProcessorCount { get; set; }
+
+    public double AllocatedMbPerSecond { get; set; }
+
+    public double GcPauseFraction { get; set; }
+
+    public long PeakThreadPoolQueue { get; set; }
+
+    public double RequiredInFlight { get; set; }
+
+    public List<string> Warnings { get; set; } = [];
+
+    /// <summary>True when nothing suggested the generator limited the result.</summary>
+    public bool HeadroomAvailable => Warnings.Count == 0;
+}
+
 /// <summary>Loads the workload's JSON artifacts from a run directory. A missing or malformed file
 /// surfaces as null so the caller distinguishes "the workload produced no summary" (it crashed
 /// before writing one) from a summary that merely reports an invalid run.</summary>
@@ -97,6 +166,16 @@ public static class WorkloadArtifacts
 
     public static ReconciliationSummary? ReadReconciliation(string outputDir) =>
         ReadJson<ReconciliationSummary>(Path.Combine(outputDir, "reconciliation.json"));
+
+    /// <summary>Null when the run did not capture cluster facts (the scenario turned them off, or the
+    /// workload predates them) — which is itself worth reporting, since the run then cannot say what
+    /// build it measured.</summary>
+    public static ClusterFactsSummary? ReadClusterFacts(string outputDir) =>
+        ReadJson<ClusterFactsSummary>(Path.Combine(outputDir, "cluster-facts.json"));
+
+    /// <summary>Null when the measured window caught too few samples to compute a delta.</summary>
+    public static ClientResourcesSummary? ReadClientResources(string outputDir) =>
+        ReadJson<ClientResourcesSummary>(Path.Combine(outputDir, "client-resources.json"));
 
     private static T? ReadJson<T>(string path) where T : class
     {

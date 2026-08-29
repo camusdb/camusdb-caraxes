@@ -100,6 +100,42 @@ public sealed class WorkloadSpec
     /// long soaks; lower it for smoke scenarios that should fail fast.</summary>
     public int ReconcileTimeout { get; set; }
 
+    /// <summary>
+    /// Collect a per-node metric time series for the whole run (<c>node-metrics.csv</c>), and with it
+    /// the per-node sections of <c>bottleneck-report.md</c>: work distribution, batch density, commit
+    /// path, and backlog growth.
+    ///
+    /// <para>Default true, because a cluster run without it cannot answer the questions a cluster run
+    /// exists to answer — whether one leader carried the load, and whether a queue was still growing
+    /// when the window closed. It needs the cluster's <c>diagnostics</c> on; with diagnostics off the
+    /// scrape has nothing to serve and the flag is skipped with a note rather than producing an empty
+    /// series.</para>
+    /// </summary>
+    public bool NodeMetrics { get; set; } = true;
+
+    /// <summary>Scrape interval for <see cref="NodeMetrics"/>. Minimum 1s, enforced by the workload.</summary>
+    public string MetricsInterval { get; set; } = "5s";
+
+    /// <summary>
+    /// Ask every node what it is running and write <c>cluster-facts.json</c>: the assembly versions it
+    /// loaded, whether it was ready, the configuration it resolved, and where the workload's tables
+    /// sat. Default true — this is the evidence that lets a later comparison refuse two runs that were
+    /// not on the same build or durability settings, and it costs one round of metadata calls after
+    /// the measured window.
+    /// </summary>
+    public bool ClusterFacts { get; set; } = true;
+
+    /// <summary>
+    /// An independent copy, field for field.
+    ///
+    /// <para>Deliberately a memberwise clone rather than a hand-written field list. A matrix sweep
+    /// copies this template once per cell, and a hand-written copy silently drops whatever field is
+    /// added to this class next — which is not a compile error, it is a run that measures something
+    /// other than what the file asked for and reports it as if it were. Every field here is a value
+    /// type or a string, so a shallow copy is a complete one.</para>
+    /// </summary>
+    public WorkloadSpec Clone() => (WorkloadSpec)MemberwiseClone();
+
     public void Validate()
     {
         if (Kind is not ("accounts" or "bank" or "fanout"))
@@ -139,5 +175,8 @@ public sealed class WorkloadSpec
 
         if (Workers < 1)
             throw new ScenarioException($"'workload.workers' must be >= 1, got {Workers}");
+
+        if (NodeMetrics && string.IsNullOrWhiteSpace(MetricsInterval))
+            throw new ScenarioException("'workload.metrics_interval' must be a duration such as 5s when node metrics are collected");
     }
 }

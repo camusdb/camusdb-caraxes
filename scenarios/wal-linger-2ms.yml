@@ -1,0 +1,68 @@
+# WAL group-commit linger A/B — arm: 2 ms.
+#
+# THE EXPERIMENT. The five-run baseline measured WAL operations per batch at exactly 1.00 on every
+# node, while the KV layer coalesced at 3.5-4.7 entries per batch. /v1/engine-settings then showed
+# why: the cluster runs RaftWalGroupCommitLingerMs = 0, so the WAL scheduler flushes immediately and
+# never has a second operation to accumulate. This is not tuning a value — it is turning group commit
+# on for the first time.
+#
+# THE PREDICTION, which can fail. If lingering lets one flush carry more than one operation, then
+# WAL ops/batch rises above 1.00 and throughput follows WITHOUT the tail growing in proportion. If
+# ops/batch stays at 1.00 at every arm, the constraint is upstream of the WAL scheduler and the
+# linger is the wrong knob. Either outcome is a result.
+#
+# SHAPE. Identical to scenarios/capacity-baseline.yml in every respect except the linger, including
+# the 10-minute window and 32 workers — the operating point the concurrency sweep measured, not the
+# 64 that looked fastest but exceeded the latency budget.
+#
+# COMPARING THE ARMS. The 0 ms arm is the control: same build, same window, within-experiment. The
+# earlier five baseline runs predate the engine-settings capture, so they cannot anchor this. The
+# comparison must waive exactly the knob under test and nothing else:
+#
+#   CamusDB.Workload compare \
+#     --baseline runs/scenarios/wal-linger-0ms-<rep>/artifacts/run \
+#     --candidate runs/scenarios/wal-linger-2ms-<rep>/artifacts/run \
+#     --allow engine.RaftWalGroupCommitLingerMs --p99-budget-ms 602
+#
+# A waiver of that one setting still refuses a run whose fsync or storage settings moved with it.
+#
+# READ IT AGAINST THE TAIL. The frozen write-p99 budget is 602 ms. Throughput bought by adding to
+# that tail is trading the wrong way; a linger that lowers it is worth recording even if throughput
+# is flat.
+name: wal-linger-2ms
+cluster:
+  name: wallinger2
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  image: "caraxes/camusdb:wal-linger"
+  kahuna:
+    wal_group_commit_linger_ms: 2
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+teardown: true

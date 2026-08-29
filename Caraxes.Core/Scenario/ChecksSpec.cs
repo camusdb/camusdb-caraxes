@@ -34,6 +34,31 @@ public sealed class ChecksSpec
     /// <c>Up</c>, and that run must FAIL, not pass on green docker state.</summary>
     public bool RequireNodeHealth { get; set; } = true;
 
+    /// <summary>
+    /// Fail the run when the load generator's own resource check flagged it — CPU-bound, pausing for
+    /// GC, backed up in its thread pool, or pinned at its in-flight cap.
+    ///
+    /// <para>Default false, because a reliability scenario asks whether the cluster stayed correct
+    /// under fault, and a generator working hard does not invalidate that answer. Turn it on for a
+    /// <b>capacity</b> scenario, where the whole claim is that the number measured is the cluster's:
+    /// there, a flagged generator means the run measured itself.</para>
+    /// </summary>
+    public bool RequireClientHeadroom { get; set; }
+
+    /// <summary>
+    /// Fail the run when every node reported ready and every fact was captured is not true — that is,
+    /// when a node could not be asked what it was running, or answered that it was not ready.
+    ///
+    /// <para>Default false so a scenario on an older node image, whose <c>/v1/version</c> does not
+    /// exist yet, still runs. Turn it on for a run whose result has to be reproducible later, where a
+    /// missing build fingerprint means the number can never be compared against anything.</para>
+    /// </summary>
+    public bool RequireClusterFacts { get; set; }
+
+    /// <summary>An independent copy, field for field. Memberwise for the reason given on
+    /// <see cref="WorkloadSpec.Clone"/>: a hand-written list silently drops the next field added.</summary>
+    public ChecksSpec Clone() => (ChecksSpec)MemberwiseClone();
+
     public void Validate()
     {
         if (MaxRecoverySeconds <= 0)

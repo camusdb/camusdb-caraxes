@@ -1,0 +1,58 @@
+# Concurrency sweep — the first Phase 1 experiment: is the baseline concurrency-starved, and does
+# WAL batching respond to offered concurrency?
+#
+# WHY THIS SWEEP. The five baseline runs measured WAL operations per batch at exactly 1.00 on every
+# node while the KV layer coalesced at ~3.7 entries per batch. Nothing coalesces at the WAL layer.
+# Before turning any linger knob, this establishes whether that ratio is a property of the WAL path
+# or simply a consequence of too little work arriving at once: more concurrent commits give group
+# commit more to combine, and if the ratio moves with workers, the linger A/B has a much clearer
+# question to answer.
+#
+# It also answers the plan's own first Phase 1 item — find the saturation point. The baseline runs at
+# 32 workers, chosen because the historical bank series used it, never because it was measured.
+#
+# SHAPE. Identical to scenarios/capacity-baseline.yml except that the measured window is 5 minutes
+# rather than 10, and workers vary. Five minutes is inside the plan's 5-10 minute band for a capacity
+# run, and this sweep asks a relative question across its own cells rather than producing a number to
+# compare against the baseline median. Do NOT compare a cell's throughput to the 307.48 ops/s
+# baseline: different window, so `compare` will refuse it, correctly.
+#
+# READING IT. Per cell, from bottleneck-report.md:
+#   - completed ops/s          does throughput still rise with workers?
+#   - KV entries per batch     does the partition scheduler coalesce more under more concurrency?
+#   - WAL operations per batch does group commit coalesce at all, at any concurrency?
+#   - write p99                against the frozen 602 ms budget; past the knee this runs away
+# Throughput that rises while p99 rises faster is a queue forming, not capacity being used.
+#
+#   dotnet run --project Caraxes -- matrix --matrix scenarios/matrix-concurrency-sweep.yml
+name: concurrency-sweep
+cluster:
+  name: consweep
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+axes:
+  workers: [8, 16, 32, 64, 128]
+teardown: true

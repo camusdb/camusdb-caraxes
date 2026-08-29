@@ -144,6 +144,81 @@ a split run as a pass. See `scenarios/split-preflight.yml` (short, fault-free, p
 compares directly against the bank runs). CamusDB's `docs/key-range-sharding.md` documents the
 engine side.
 
+### Performance evidence (per-node metrics, cluster facts, comparability)
+
+A reliability scenario asks whether the cluster stayed correct. A **capacity** scenario asks how fast
+it went, and that question needs evidence a single throughput number cannot carry: which node did the
+work, what was still growing when the window closed, and which build produced the figure. Every
+scenario collects it by default.
+
+**Per-node metric time series.** The workload scrapes each node's `/metrics` for the whole run and
+writes `node-metrics.csv` next to the other artifacts. Counter deltas are cut to the measured window,
+so seeding and warm-up are excluded, and each node keeps its own series — which is what turns "one
+leader carried every write" into a readable finding. `bottleneck-report.md` gains sections for
+per-node work distribution, batch density, commit path, and backlog growth. Needs the cluster's
+`diagnostics: true` (the default); with diagnostics off the collection is skipped and says so.
+
+**Cluster facts.** Each node is asked what it is running — the Kahuna, Kommander and Nixie assembly
+versions it actually loaded, whether it was ready, the configuration it resolved, and where the
+workload's ranges sat — into `cluster-facts.json`, reduced to one `durabilityFingerprint`. Two runs
+whose fingerprints differ were not on the same build or durability settings and must not be compared.
+
+**Load-generator headroom.** `client-resources.json` records the generator's own CPU, allocation, GC
+pauses, thread-pool backlog and in-flight requirement. A generator that ran out of CPU produces a flat
+curve that reads exactly like a saturated cluster.
+
+```yaml
+workload:
+  node_metrics: true      # per-node time series (default true)
+  metrics_interval: 5s    # scrape interval, minimum 1s
+  cluster_facts: true     # versions, readiness, config, ranges (default true)
+settle_seconds: 30        # wait for leadership to resolve AFTER seeding, before measuring; 0 skips
+checks:
+  require_client_headroom: true   # fail if the generator may have been the limiter (capacity runs)
+  require_cluster_facts: true     # fail if the run cannot say which build it measured
+```
+
+Both new checks default to **false**, so an existing reliability scenario keeps its verdict. Turn them
+on for a capacity run, where a client-bound number or an unattributable build makes the result
+worthless.
+
+`settle_seconds` runs after seeding rather than after startup: a node reports ready long before
+leadership resolves, and seeding creates the very tables whose ranges then have to be placed. It is
+best effort — an unsettled cluster still runs, with the caveat recorded in the verdict.
+
+**Establishing a baseline.** One run is a number; a baseline is a number with a known spread, and
+without the spread there is no telling a real improvement from two runs of an unchanged system. Use
+`--tag` so repetitions keep their artifacts instead of overwriting each other, then aggregate:
+
+```bash
+for i in 1 2 3; do
+  dotnet run --project Caraxes -- run --scenario scenarios/capacity-baseline.yml --tag r$i
+done
+
+CamusDB.Workload baseline --runs \
+  runs/scenarios/capacity-baseline-r1/artifacts/run,\
+  runs/scenarios/capacity-baseline-r2/artifacts/run,\
+  runs/scenarios/capacity-baseline-r3/artifacts/run
+```
+
+It reports the median, the min/max spread and the coefficient of variation, refuses a set whose runs
+were not the same experiment, excludes an invalid run from the statistics rather than letting it drag
+the median, and names the write p99 to freeze as the latency budget. Exit 1 means no baseline was
+established — fewer than three usable runs, or a spread above 10%.
+
+**Comparing two runs.** `CamusDB.Workload compare` refuses a pair whose workload shape, client
+version or build fingerprint differs, rather than reporting a meaningless ratio:
+
+```bash
+CamusDB.Workload compare \
+  --baseline runs/scenarios/capacity-baseline-r2/artifacts/run \
+  --candidate runs/scenarios/<later>/artifacts/run \
+  --require-ratio 10.0 --require-ops 2100 --p99-budget-ms <frozen p99>
+```
+
+Exit 3 means the runs are not comparable; exit 1 means a gate failed. `scenarios/capacity-baseline.yml`
+is the fault-free, fully instrumented baseline to reproduce before any tuning.
+
 ## Matrix sweeps
 
 `caraxes matrix --matrix <yml>` runs a cartesian sweep and writes a cross-cell `matrix-report.md`:

@@ -22,6 +22,10 @@ public sealed record WorkloadInvocation(int ExitCode)
     public bool UsageError => ExitCode == 2;
 }
 
+/// <summary>The measured run's command line plus anything the operator should hear about how it was
+/// composed — notably a capture that was asked for and had to be skipped.</summary>
+public sealed record WorkloadRunPlan(IReadOnlyList<string> Args, IReadOnlyList<string> Notes);
+
 /// <summary>
 /// Drives <c>CamusDB.Workload</c> against a running cluster from inside the cluster's Docker
 /// network. The workload runs in a one-shot container based on the node image — which already
@@ -114,6 +118,24 @@ public sealed class WorkloadRunner
         if (Directory.Exists(hostOutput))
             Directory.Delete(hostOutput, recursive: true);
 
+        WorkloadRunPlan runPlan = BuildRunArgs(plan, scenario, containerOutputSubdir);
+
+        Console.WriteLine(
+            $"==> running workload ({scenario.Workload.Mode}-loop, {scenario.Workload.Duration}, " +
+            $"{scenario.EffectiveLocking}/{scenario.EffectiveIsolation})");
+        foreach (string note in runPlan.Notes)
+            Console.WriteLine($"    {note}");
+
+        return await RunContainerAsync(runPlan.Args, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds the measured run's command line. Separated from the invocation so the argument
+    /// construction — which decides what evidence a run collects — is testable without docker.
+    /// </summary>
+    public static WorkloadRunPlan BuildRunArgs(
+        ClusterPlan plan, Caraxes.Core.Scenario.ScenarioSpec scenario, string containerOutputSubdir)
+    {
         List<string> workloadArgs =
         [
             "run",
@@ -148,12 +170,37 @@ public sealed class WorkloadRunner
             workloadArgs.Add("--reconcile-timeout");
             workloadArgs.Add(scenario.Workload.ReconcileTimeout.ToString());
         }
-        AppendCommonFlags(workloadArgs, scenario.Workload);
 
-        Console.WriteLine(
-            $"==> running workload ({scenario.Workload.Mode}-loop, {scenario.Workload.Duration}, " +
-            $"{scenario.EffectiveLocking}/{scenario.EffectiveIsolation})");
-        return await RunContainerAsync(workloadArgs, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
+        List<string> notes = [];
+
+        // Per-node metric collection needs something to scrape. Asking for it on a cluster with
+        // diagnostics off would produce a series of nothing but failed scrapes, which reads like a
+        // dead fleet — so it is skipped, and the skip is said out loud rather than inferred later
+        // from an artifact that is missing.
+        if (scenario.Workload.NodeMetrics && plan.Spec.Diagnostics)
+        {
+            workloadArgs.Add("--metrics-endpoint");
+            workloadArgs.Add(plan.InternalMetricsEndpoints);
+            workloadArgs.Add("--metrics-interval");
+            workloadArgs.Add(scenario.Workload.MetricsInterval);
+            notes.Add($"collecting per-node metrics every {scenario.Workload.MetricsInterval} from {plan.Nodes.Count} node(s)");
+        }
+        else if (scenario.Workload.NodeMetrics)
+        {
+            notes.Add("per-node metrics NOT collected: the cluster spec has 'diagnostics: false', so no node serves /metrics");
+        }
+
+        // Cluster facts do not need diagnostics: /v1/version, /v1/cluster/health and SHOW VARIABLES
+        // are always served. A node image built before /v1/version existed simply records that probe
+        // as failed and still contributes the rest.
+        if (scenario.Workload.ClusterFacts)
+        {
+            workloadArgs.Add("--node-endpoint");
+            workloadArgs.Add(plan.InternalNodeEndpoints);
+        }
+
+        AppendCommonFlags(workloadArgs, scenario.Workload);
+        return new WorkloadRunPlan(workloadArgs, notes);
     }
 
     /// <summary>

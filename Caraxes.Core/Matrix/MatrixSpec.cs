@@ -33,6 +33,10 @@ public sealed class MatrixSpec
 
     public bool Teardown { get; set; } = true;
 
+    /// <summary>Seconds each cell waits for partition leadership to settle before measuring; see
+    /// <see cref="ScenarioSpec.SettleSeconds"/>. Applies to every cell.</summary>
+    public int SettleSeconds { get; set; } = 30;
+
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
     public void Validate()
@@ -58,6 +62,17 @@ public sealed class MatrixAxes
 
     public List<int> Parallelism { get; set; } = [];
 
+    /// <summary>
+    /// Load-generator worker counts — the concurrency sweep. Each value becomes one cell that runs the
+    /// full measured pipeline at that many in-flight workers.
+    ///
+    /// <para>Distinct from <see cref="Parallelism"/>, which sets the cluster's
+    /// <c>max_query_parallelism</c>: that governs how one query fans out inside the engine, this
+    /// governs how much work the client offers at once. Only the second one answers "is the baseline
+    /// concurrency-starved, and where is the knee".</para>
+    /// </summary>
+    public List<int> Workers { get; set; } = [];
+
     /// <summary>Named fault presets; each becomes one column of the sweep. A preset with no
     /// <c>events</c>/<c>random</c> is a fault-free baseline cell.</summary>
     public List<NemesisPreset> Nemesis { get; set; } = [];
@@ -75,6 +90,10 @@ public sealed class MatrixAxes
         foreach (int p in Parallelism)
             if (p < 1)
                 throw new ScenarioException($"'axes.parallelism' values must be >= 1, got {p}");
+
+        foreach (int w in Workers)
+            if (w < 1)
+                throw new ScenarioException($"'axes.workers' values must be >= 1, got {w}");
 
         foreach (NemesisPreset preset in Nemesis)
             preset.Validate();

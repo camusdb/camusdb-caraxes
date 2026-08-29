@@ -69,7 +69,7 @@ static async Task<int> RunScenarioAsync(RunOptions options, CancellationToken ca
     try
     {
         ScenarioSpec scenario = ScenarioSpecReader.ReadFile(options.Scenario);
-        ScenarioRunner runner = new(scenario, options.RunRoot);
+        ScenarioRunner runner = new(scenario, options.RunRoot, options.Tag);
         ScenarioVerdict verdict = await runner.RunAsync(options.SkipBuild, cancellationToken).ConfigureAwait(false);
         // A failed scenario is a non-zero exit so a matrix driver or CI can branch on it.
         return verdict.Passed ? 0 : 1;
