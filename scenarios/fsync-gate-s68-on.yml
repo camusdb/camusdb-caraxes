@@ -1,0 +1,61 @@
+# Single-fsync correctness gate — REPEAT, fault seed 68, arm wal_single_fsync_commit = true.
+#
+# WHY REPEATS. The first gate pass (seed 91) failed the OFF arm with real data loss — SUM(balance)
+# off by 1, and row 346 short by 5 with ZERO indeterminate attempts, so no ambiguity band explains
+# it — while the ON arm passed. One failure and one pass cannot separate "the flag helps" from "the
+# flag got lucky". These seeds establish whether the loss reproduces, and at what rate in each arm.
+#
+# READ THE SET, NOT THE RUN. A single pass is not evidence of durability. What matters is the tally
+# across seeds: OFF failing consistently while ON passes consistently would be meaningful; both
+# failing at similar rates would mean the flag is irrelevant to the defect; ON failing on any seed
+# closes the question against it immediately.
+#
+# Identical to fsync-gate-kill-{on,off}.yml except the fault seed, so these are directly comparable
+# to the run that found the defect.
+name: fsync-gate-s68-on
+cluster:
+  name: fsgs68on
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  image: "caraxes/camusdb:fsync-gate"
+  kahuna:
+    wal_sync_writes: true
+    wal_single_fsync_commit: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+nemesis:
+  seed: 68
+  random:
+    faults: [kill]
+    min_interval: 60s
+    max_interval: 90s
+    duration: 20s
+checks:
+  require_cluster_facts: true
+  require_progress_under_fault: true
+  require_recovery: false
+  max_recovery_seconds: 120
+teardown: true

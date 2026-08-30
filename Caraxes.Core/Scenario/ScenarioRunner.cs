@@ -69,6 +69,27 @@ public sealed class ScenarioRunner
         Directory.CreateDirectory(runDir);
         List<string> notes = [];
 
+        // Ambient host load, sampled before the harness starts anything of its own. A machine already
+        // busy with unrelated work distorts every number this run produces, and nothing else in the
+        // harness can see it: the generator reports its own health, and a load average from inside the
+        // container describes the Docker VM rather than the host it competes on.
+        HostLoadSample? hostLoad = HostLoad.Read();
+        if (hostLoad is null)
+        {
+            notes.Add("ambient host load was not measured on this platform; contention cannot be ruled out");
+        }
+        else if (HostLoad.IsContended(hostLoad))
+        {
+            notes.Add(
+                $"HOST WAS BUSY BEFORE THE RUN: load {hostLoad.One:N2} over {hostLoad.ProcessorCount} core(s) " +
+                $"({hostLoad.PerCore:P0} per core). Unrelated work competed with this measurement; treat its " +
+                "throughput as a lower bound and re-run on a quiet machine before quoting a number.");
+        }
+        else
+        {
+            notes.Add($"ambient host load before the run: {hostLoad.One:N2} over {hostLoad.ProcessorCount} core(s)");
+        }
+
         ClusterPlan plan = orchestrator.Plan;
         WorkloadRunner workload = new(plan, Path.Combine(runDir, "workload-bin"));
         string artifactsDir = Path.Combine(runDir, "artifacts");
@@ -293,6 +314,7 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
+        GradeHostLoad(notes, ref passed);
         GradeClusterFacts(outputDir, notes, ref passed);
         GradeClientHeadroom(outputDir, notes, ref passed);
 
@@ -303,6 +325,33 @@ public sealed class ScenarioRunner
         {
             Analysis = analysis,
         };
+    }
+
+    /// <summary>
+    /// Fails the run when the host was busy before it started and the scenario asked for a quiet
+    /// machine. Off by default: a reliability scenario still answers its question on a loaded box,
+    /// and only a capacity claim depends on the machine being idle.
+    /// </summary>
+    private void GradeHostLoad(List<string> notes, ref bool passed)
+    {
+        if (!scenario.Checks.RequireQuietHost)
+            return;
+
+        HostLoadSample? sample = HostLoad.Read();
+        if (sample is null)
+        {
+            notes.Add("  CHECK FAILED: checks.require_quiet_host is on and host load could not be measured");
+            passed = false;
+            return;
+        }
+
+        if (HostLoad.IsContended(sample))
+        {
+            notes.Add(
+                $"  CHECK FAILED: checks.require_quiet_host is on and host load is {sample.One:N2} over " +
+                $"{sample.ProcessorCount} core(s)");
+            passed = false;
+        }
     }
 
     /// <summary>
@@ -336,11 +385,17 @@ public sealed class ScenarioRunner
         notes.Add($"cluster fingerprint: {facts.DurabilityFingerprint} " +
                   $"({string.Join(", ", Versions(facts))})");
 
+        // Node readiness at capture time is graded only for a fault-free run. Under a nemesis a node
+        // is legitimately down or still restarting when the facts are taken, and failing the run for
+        // that grades the fault injection rather than the cluster. A chaos run that lost no data would
+        // otherwise be reported as a failure — which is exactly what happened on fault seed 17.
+        bool faultFree = scenario.Nemesis is null;
         List<string> unhealthy = facts.Nodes.Where(n => n.Ready != true).Select(n => n.Node).ToList();
         if (unhealthy.Count > 0)
         {
-            notes.Add($"node(s) not reporting ready when facts were captured: {string.Join(", ", unhealthy)}");
-            if (scenario.Checks.RequireClusterFacts)
+            notes.Add($"node(s) not reporting ready when facts were captured: {string.Join(", ", unhealthy)}" +
+                      (faultFree ? "" : " (expected under an injected fault; not graded)"));
+            if (scenario.Checks.RequireClusterFacts && faultFree)
             {
                 notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and a node did not report ready");
                 passed = false;
@@ -355,10 +410,19 @@ public sealed class ScenarioRunner
         foreach (string error in facts.Errors)
             notes.Add($"  cluster fact capture: {error}");
 
+        // Same reasoning: under a fault, a node that cannot answer a probe is the fault working. What
+        // the check must still guarantee in both cases is that the run knows WHICH BUILD it measured,
+        // which the fingerprint carries as long as any node answered.
         bool incomplete = facts.Nodes.Any(n => n.Errors.Count > 0) || facts.Errors.Count > 0;
-        if (incomplete && scenario.Checks.RequireClusterFacts)
+        if (incomplete && scenario.Checks.RequireClusterFacts && faultFree)
         {
             notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and part of the capture did not answer");
+            passed = false;
+        }
+
+        if (scenario.Checks.RequireClusterFacts && facts.Nodes.All(n => n.Components.Count == 0))
+        {
+            notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and no node reported its build");
             passed = false;
         }
     }

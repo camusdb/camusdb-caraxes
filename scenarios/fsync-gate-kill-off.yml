@@ -1,0 +1,79 @@
+# Single-fsync CORRECTNESS GATE — kill faults, arm: wal_single_fsync_commit = false.
+#
+# WHAT THIS DECIDES. The single-fsync A/B measured 1.38x, but it moves the acknowledgement point from
+# the leader's own second fsync to propose-quorum-durable. So the only question that matters is
+# whether an acknowledged write can be lost. A throughput run cannot answer it; this can.
+#
+# SIGKILL is the hardest process fault: no graceful shutdown, so anything the node had not yet
+# flushed is gone. That is precisely the window single-fsync widens — the ack is released before the
+# leader's own commit-marker flush, so a kill in between is the case the flag has to survive.
+#
+# HOW LOSS IS DETECTED. The bank workload conserves SUM(balance) across every transfer, and its
+# per-row ledger attributes every terminal attempt to an exact row. Both are checked after the run,
+# on a quiesced cluster, and **neither is ever waived** — expect_faults waives conflicts and pacing
+# shortfalls only. A lost acknowledged write changes the conserved sum, or leaves a row outside its
+# ambiguity band. Either fails the run.
+#
+# GATE CONDITIONS COVERED (from the cluster-throughput plan):
+#   1. an acknowledged proposal survives leader kill -9 before the lazy commit-marker flush
+#   2. follower restart and log re-supply reconstruct the same committed frontier
+#   3. a leadership change with lazy markers pending neither loses nor double-applies a commit
+#   5. restart and reopen preserve every acknowledged row and index mutation (partial: kill heals by
+#      restarting the node, so the post-run reconciliation reads a cluster whose members restarted
+#      mid-run — it is not a full simultaneous cluster restart)
+#   6. deferred materialization still converges and drains after the crash
+#
+# WHY BOTH ARMS. The off arm is the control. If ON fails where OFF passes, the failure belongs to the
+# flag. If BOTH fail, the defect is pre-existing and single-fsync is not what caused it — a
+# distinction worth having before anyone reports a durability bug against this flag.
+#
+# NOT A THROUGHPUT RUN. Numbers from these runs are not comparable to the capacity baseline: faults
+# are injected throughout. require_quiet_host is deliberately OFF — contention does not cause data
+# loss, and a correctness gate must not be blocked by a busy machine.
+name: fsync-gate-kill-off
+cluster:
+  name: fsgatekilloff
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  image: "caraxes/camusdb:fsync-gate"
+  kahuna:
+    wal_sync_writes: true
+    wal_single_fsync_commit: false
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+nemesis:
+  seed: 91
+  random:
+    faults: [kill]
+    min_interval: 60s
+    max_interval: 90s
+    duration: 20s
+checks:
+  require_cluster_facts: true
+  require_progress_under_fault: true
+  require_recovery: false
+  max_recovery_seconds: 120
+teardown: true

@@ -55,6 +55,17 @@ public sealed class ChecksSpec
     /// </summary>
     public bool RequireClusterFacts { get; set; }
 
+    /// <summary>
+    /// Fail the run when the host was already busy with unrelated work before it started.
+    ///
+    /// <para>Default false: a reliability scenario still answers its question on a loaded machine.
+    /// Turn it on for a <b>capacity</b> run, where the number is meaningless if something else was
+    /// taking cores. A six-run A/B was measured on a contended box and had to be discarded — its
+    /// control arm read 13% below two earlier measurements of the same configuration, and nothing in
+    /// the harness noticed.</para>
+    /// </summary>
+    public bool RequireQuietHost { get; set; }
+
     /// <summary>An independent copy, field for field. Memberwise for the reason given on
     /// <see cref="WorkloadSpec.Clone"/>: a hand-written list silently drops the next field added.</summary>
     public ChecksSpec Clone() => (ChecksSpec)MemberwiseClone();

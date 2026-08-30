@@ -446,3 +446,77 @@ public sealed class MatrixCellInheritanceTests
         Assert.That(cells[0].Scenario.Workload, Is.Not.SameAs(cells[1].Scenario.Workload));
     }
 }
+
+/// <summary>
+/// Covers the ambient host-load reading. It exists because a six-run A/B was measured against an
+/// unrelated process taking 2.3 cores, and every other signal looked healthy: the load generator
+/// reported 4% CPU and no warnings, because the generator was fine — the machine underneath was not.
+/// </summary>
+[TestFixture]
+public sealed class HostLoadTests
+{
+    [Test]
+    public void ReadsALoadAverageOnThisPlatform()
+    {
+        HostLoadSample? sample = HostLoad.Read();
+
+        // macOS and Linux both provide getloadavg; a null here on either would mean the P/Invoke
+        // broke, which is exactly the regression worth catching.
+        Assert.That(sample, Is.Not.Null);
+        Assert.That(sample!.ProcessorCount, Is.GreaterThan(0));
+        Assert.That(sample.One, Is.GreaterThanOrEqualTo(0));
+    }
+
+    [Test]
+    public void NormalisesLoadAgainstTheCoreCount()
+    {
+        // 30.9 on 10 cores was the reading that invalidated a measurement; 2.6 on 10 was the quiet
+        // machine it was re-run on.
+        Assert.That(new HostLoadSample(30.9, 21.2, 12.9, 10).PerCore, Is.EqualTo(3.09).Within(0.01));
+        Assert.That(new HostLoadSample(2.65, 3.66, 15.62, 10).PerCore, Is.EqualTo(0.265).Within(0.01));
+    }
+
+    [Test]
+    public void CallsAnOversubscribedHostContended()
+        => Assert.That(HostLoad.IsContended(new HostLoadSample(30.9, 21.2, 12.9, 10)), Is.True);
+
+    [Test]
+    public void LeavesAQuietHostAlone()
+        => Assert.That(HostLoad.IsContended(new HostLoadSample(2.65, 3.66, 15.62, 10)), Is.False);
+
+    [Test]
+    public void JudgesOnTheOneMinuteAverageNotTheFifteen()
+    {
+        // The 15-minute figure still carries the earlier contention long after the machine is free,
+        // so judging on it would refuse a run on a box that is now quiet.
+        Assert.That(HostLoad.IsContended(new HostLoadSample(2.0, 3.0, 25.0, 10)), Is.False);
+    }
+
+    [Test]
+    public void DefaultsTheQuietHostCheckOff()
+    {
+        // A reliability scenario still answers its question on a loaded machine; only a capacity
+        // claim depends on the box being idle.
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            """);
+
+        Assert.That(spec.Checks.RequireQuietHost, Is.False);
+    }
+
+    [Test]
+    public void AcceptsTheQuietHostCheck()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            checks:
+              require_quiet_host: true
+            """);
+
+        Assert.That(spec.Checks.RequireQuietHost, Is.True);
+    }
+}
