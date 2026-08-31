@@ -23,6 +23,7 @@ public static class ScenarioSpecReader
     private static readonly HashSet<string> AllowedRootKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "name", "cluster", "workload", "nemesis", "checks", "teardown", "settle_seconds",
+        "capture_node_logs", "node_log_tail",
     };
 
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)

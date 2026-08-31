@@ -182,6 +182,75 @@ public sealed class ClusterOrchestrator
         Console.WriteLine($"workload endpoint pool: {plan.WorkloadEndpointPool}");
     }
 
+    /// <summary>
+    /// Writes every node's container log into <paramref name="destinationDir"/> as
+    /// <c>node-log-{node}.txt</c>, and returns one note per node that could not be captured.
+    ///
+    /// <para>Must be called BEFORE teardown. A container's log dies with the container, so once
+    /// <see cref="DownAsync"/> has run the evidence is gone — and the log is where a whole class of
+    /// diagnostic witness lives, the kind emitted once at a leadership change rather than counted
+    /// into a metric the sampler scrapes. A gate run that reproduced a data-loss defect was left
+    /// unattributable exactly this way: the metric witnesses survived in the scraped series and the
+    /// log-only ones did not.</para>
+    ///
+    /// <para>Best effort by construction: it never throws, because losing a log must not also lose
+    /// the teardown that frees the port and subnet for the next run. Every failure comes back as a
+    /// note so the run says out loud that capture did not happen — silence here would read as
+    /// "captured", which is the failure this method exists to prevent.</para>
+    /// </summary>
+    /// <param name="tail">Last N lines per node; 0 or less captures the whole log. Bound it only
+    /// when disk forces the issue: a promotion fingerprint printed early in a ten-minute run is
+    /// exactly what a tail discards.</param>
+    public async Task<IReadOnlyList<string>> CaptureLogsAsync(
+        string destinationDir,
+        int tail = 0,
+        CancellationToken cancellationToken = default)
+    {
+        List<string> notes = [];
+
+        try
+        {
+            Directory.CreateDirectory(destinationDir);
+        }
+        catch (Exception e)
+        {
+            notes.Add($"node logs were not captured: could not create '{destinationDir}': {e.Message}");
+            return notes;
+        }
+
+        foreach (NodePlan node in plan.Nodes)
+        {
+            string destination = Path.Combine(destinationDir, $"node-log-{node.Name}.txt");
+
+            List<string> arguments = ["logs"];
+            if (tail > 0)
+            {
+                arguments.Add("--tail");
+                arguments.Add(tail.ToString());
+            }
+
+            arguments.Add(node.ContainerName);
+
+            try
+            {
+                (int exitCode, long bytes) = await ProcessRunner
+                    .RunToFileAsync("docker", arguments, destination, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (exitCode != 0)
+                    notes.Add($"node log capture for '{node.Name}' exited {exitCode}; see {Path.GetFileName(destination)}");
+                else if (bytes == 0)
+                    notes.Add($"node log capture for '{node.Name}' produced an empty log");
+            }
+            catch (Exception e)
+            {
+                notes.Add($"node log capture for '{node.Name}' failed: {e.Message}");
+            }
+        }
+
+        return notes;
+    }
+
     public async Task LogsAsync(string nodeName, int tail = 200, CancellationToken cancellationToken = default)
     {
         NodePlan? node = plan.Nodes.FirstOrDefault(n => n.Name == nodeName);

@@ -21,6 +21,7 @@ public static class MatrixReader
     private static readonly HashSet<string> AllowedRootKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "name", "cluster", "workload", "checks", "axes", "teardown", "settle_seconds",
+        "capture_node_logs", "node_log_tail",
     };
 
     private static readonly HashSet<string> AllowedAxesKeys = new(StringComparer.OrdinalIgnoreCase)

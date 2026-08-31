@@ -51,6 +51,33 @@ public sealed class ScenarioSpec
     /// </summary>
     public int SettleSeconds { get; set; } = 30;
 
+    /// <summary>
+    /// Copy every node's container log into the run artifacts before the cluster is torn down.
+    /// Default true.
+    ///
+    /// <para>Defaults on because a container log is destroyed with its container, and the run that
+    /// most needs it is the one that already failed. Some diagnostic witnesses are log lines rather
+    /// than counters — printed once at a leadership change, never scraped into the metric series —
+    /// so a torn-down fleet turns a reproduced failure into an unattributable one. Capture costs a
+    /// few seconds and some disk; losing the evidence costs another soak.</para>
+    ///
+    /// <para>Set false only when the logs are certain to be worthless and disk is tight. Capture is
+    /// best effort either way: a failure to read a log is reported as a note and never fails the
+    /// run or skips teardown.</para>
+    /// </summary>
+    public bool CaptureNodeLogs { get; set; } = true;
+
+    /// <summary>
+    /// Last N lines captured per node when <see cref="CaptureNodeLogs"/> is on. Default 0 = the
+    /// whole log.
+    ///
+    /// <para>Prefer the whole log. A tail keeps the end of the run, but the lines that explain a
+    /// late failure — a promotion fingerprint, a fence decision — are usually printed when the
+    /// event happened, which for a ten-minute fault run is nowhere near the end. Bound this only
+    /// when disk actually forces it.</para>
+    /// </summary>
+    public int NodeLogTail { get; set; }
+
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
     public void Validate()
@@ -61,6 +88,10 @@ public sealed class ScenarioSpec
 
         if (SettleSeconds < 0)
             throw new ScenarioException($"'settle_seconds' must be >= 0, got {SettleSeconds}");
+
+        if (NodeLogTail < 0)
+            throw new ScenarioException(
+                $"'node_log_tail' must be >= 0, got {NodeLogTail}; use 0 to capture the whole log");
 
         Cluster.Validate();
         Workload.Validate();

@@ -100,15 +100,26 @@ public static class MatrixExpander
         return cleaned.Trim('-');
     }
 
+    /// <summary>
+    /// Hand-written copy of every <see cref="ClusterSpec"/> field. A field missed here silently
+    /// reverts to its default in every cell, so the sweep measures a different environment than the
+    /// matrix asked for — <c>memory_limit_mb</c> was dropped this way once, and sweep cells ran with
+    /// no memory cap while the baseline they inform ran at 1536 MB. A reflection test walks the full
+    /// property list, so adding a <see cref="ClusterSpec"/> field without extending this copy fails
+    /// the build's tests instead of skewing a measurement.
+    /// </summary>
     private static ClusterSpec CloneCluster(ClusterSpec c) => new()
     {
         Name = c.Name, Nodes = c.Nodes, Partitions = c.Partitions, ReplicationFactor = c.ReplicationFactor,
         PlacementRebalancer = c.PlacementRebalancer, LeaderBalancer = c.LeaderBalancer, Zones = [.. c.Zones],
         Subnet = c.Subnet, FirstIp = c.FirstIp, BaseRestPort = c.BaseRestPort, BaseGrpcPort = c.BaseGrpcPort,
-        BaseRaftPort = c.BaseRaftPort, Locking = c.Locking, Isolation = c.Isolation, KeyRangeSharding = c.KeyRangeSharding,
+        BaseRaftPort = c.BaseRaftPort, Locking = c.Locking, Isolation = c.Isolation,
+        ReadValidation = c.ReadValidation, KeyRangeSharding = c.KeyRangeSharding,
         DistributedQueryExecution = c.DistributedQueryExecution, MaxQueryParallelism = c.MaxQueryParallelism,
         Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts,
+        DataTmpfsMb = c.DataTmpfsMb, MemoryLimitMb = c.MemoryLimitMb,
         Kahuna = new Dictionary<string, object>(c.Kahuna),
+        LogLevels = new Dictionary<string, string>(c.LogLevels),
     };
 
     private sealed record AxisOption(string? CoordinateKey, string? NamePrefix, string? Label, Action<ScenarioSpec> Apply);

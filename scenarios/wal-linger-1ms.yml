@@ -22,11 +22,11 @@
 #   CamusDB.Workload compare \
 #     --baseline runs/scenarios/wal-linger-0ms-<rep>/artifacts/run \
 #     --candidate runs/scenarios/wal-linger-1ms-<rep>/artifacts/run \
-#     --allow engine.RaftWalGroupCommitLingerMs --p99-budget-ms 602
+#     --allow engine.RaftWalGroupCommitLingerMs --p99-budget-ms 545
 #
 # A waiver of that one setting still refuses a run whose fsync or storage settings moved with it.
 #
-# READ IT AGAINST THE TAIL. The frozen write-p99 budget is 602 ms. Throughput bought by adding to
+# READ IT AGAINST THE TAIL. The frozen write-p99 budget is 545 ms (was 602 before the 2026-08-31 re-freeze on Kahuna 1.5.5-fence1). Throughput bought by adding to
 # that tail is trading the wrong way; a linger that lowers it is worth recording even if throughput
 # is flat.
 name: wal-linger-1ms

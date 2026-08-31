@@ -32,7 +32,7 @@
 #   CamusDB.Workload compare \
 #     --baseline runs/scenarios/wal-fsync-off-<rep>/artifacts/run \
 #     --candidate runs/scenarios/wal-fsync-on-<rep>/artifacts/run \
-#     --allow engine.RaftWalSingleFsyncCommit --p99-budget-ms 602
+#     --allow engine.RaftWalSingleFsyncCommit --p99-budget-ms 545
 name: wal-fsync-on
 cluster:
   name: walfsyncon

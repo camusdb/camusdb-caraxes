@@ -39,6 +39,13 @@
 # expect_faults stays true because the bank shape contends on purpose: its transfers collide, and a
 # conflict is the design working, not a defect. It waives conflicts and open-loop pacing only; the
 # conservation invariant and the per-row ledger check are never waived.
+# FREEZE RECORD (update on every re-freeze; keep the history so old comparisons stay legible):
+#   2026-08-31 — 347.39 completed ops/s median, CV 3.4%, write p99 545 ms. Three reps (k155r1..r3),
+#     server 0.11.2, Kahuna.Core 1.5.5-fence1, Kommander 1.4.5, single-fsync commit ON by default,
+#     fingerprint sha256:93f870b50e37fd6b. Doc: runs/scenarios/capacity-baseline-k155r3/baseline.md
+#   2026-08-29 — 307.48 completed ops/s median, CV 4.8%, write p99 602 ms. Five reps (r2..r6),
+#     server 0.11.1, Kahuna.Core 1.4.14, Kommander 1.4.2, single-fsync OFF in cluster mode,
+#     fingerprint sha256:a9e6657b522842c4. Doc: runs/scenarios/capacity-baseline-r6/baseline.md
 name: capacity-baseline
 cluster:
   name: capacity-baseline
@@ -72,4 +79,8 @@ settle_seconds: 60
 checks:
   require_client_headroom: true
   require_cluster_facts: true
+  # The baseline anchors every later ratio, and a fault-free run has no other contamination guard:
+  # an unquiet host once cost a six-run A/B (CV 15%/22% against a 4% baseline). Hold the baseline
+  # to the same bar as the A/B arms that will be judged against it.
+  require_quiet_host: true
 teardown: true

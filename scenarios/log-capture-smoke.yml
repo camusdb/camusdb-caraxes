@@ -1,0 +1,32 @@
+# Smoke scenario for node log capture: the shortest run that still stands up a real fleet, drives
+# real traffic, and tears it down. Its only job is to prove node-log-<node>.txt lands in the run
+# artifacts BEFORE teardown removes the containers — a unit test cannot show that, because the bug
+# it guards against is an ordering mistake against Docker.
+name: log-capture-smoke
+cluster:
+  name: logcapsmoke
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  image: "caraxes/camusdb:fsync-gate"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 200
+  mode: closed
+  workers: 8
+  connections: 4
+  duration: 30s
+  warmup: 5s
+  drain: 5s
+  read_percent: 50
+  write_percent: 50
+  node_metrics: true
+  metrics_interval: 5s
+settle_seconds: 30
+teardown: true

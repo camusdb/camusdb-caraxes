@@ -118,6 +118,25 @@ public sealed class ScenarioRunner
         }
         finally
         {
+            // Before teardown, always: the log dies with the container, and the run that most needs
+            // it is the one that just failed. Captured even when teardown is off, so a run directory
+            // is self-contained evidence rather than a pointer to a fleet someone will later remove.
+            if (scenario.CaptureNodeLogs)
+            {
+                Console.WriteLine("==> capturing node logs");
+                IReadOnlyList<string> captureNotes = await orchestrator
+                    .CaptureLogsAsync(Path.Combine(artifactsDir, "run"), scenario.NodeLogTail, cancellationToken)
+                    .ConfigureAwait(false);
+
+                notes.AddRange(captureNotes);
+            }
+            else
+            {
+                notes.Add(
+                    "node logs were not captured (capture_node_logs: false); log-only diagnostics for " +
+                    "this run are gone once the cluster is torn down");
+            }
+
             if (scenario.Teardown)
             {
                 Console.WriteLine("==> tearing down cluster");

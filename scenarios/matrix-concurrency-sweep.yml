@@ -14,14 +14,14 @@
 # SHAPE. Identical to scenarios/capacity-baseline.yml except that the measured window is 5 minutes
 # rather than 10, and workers vary. Five minutes is inside the plan's 5-10 minute band for a capacity
 # run, and this sweep asks a relative question across its own cells rather than producing a number to
-# compare against the baseline median. Do NOT compare a cell's throughput to the 307.48 ops/s
+# compare against the baseline median. Do NOT compare a cell's throughput to the 347.39 ops/s
 # baseline: different window, so `compare` will refuse it, correctly.
 #
 # READING IT. Per cell, from bottleneck-report.md:
 #   - completed ops/s          does throughput still rise with workers?
 #   - KV entries per batch     does the partition scheduler coalesce more under more concurrency?
 #   - WAL operations per batch does group commit coalesce at all, at any concurrency?
-#   - write p99                against the frozen 602 ms budget; past the knee this runs away
+#   - write p99                against the frozen 545 ms budget (was 602); past the knee this runs away
 # Throughput that rises while p99 rises faster is a queue forming, not capacity being used.
 #
 #   dotnet run --project Caraxes -- matrix --matrix scenarios/matrix-concurrency-sweep.yml
