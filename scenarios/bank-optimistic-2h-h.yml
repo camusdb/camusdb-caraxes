@@ -29,7 +29,7 @@ cluster:
   # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
   # runs/probes/memory-gc-2026-08-22/.
   memory_limit_mb: 1536
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

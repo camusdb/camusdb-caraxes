@@ -56,7 +56,7 @@ cluster:
   log_levels:
     Kommander: Information
     Kahuna: Information
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

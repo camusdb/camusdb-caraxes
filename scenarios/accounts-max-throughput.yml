@@ -1,0 +1,66 @@
+# MAXIMUM ACHIEVABLE THROUGHPUT on this host, with contention removed from the picture.
+#
+# WHY A DIFFERENT WORKLOAD. Every capacity number so far came from `kind: bank`, whose transfers
+# collide on purpose: two random rows per transfer over a small keyspace, so conflict rate climbs
+# with concurrency and a large share of the work at high worker counts is optimistic retry. The
+# ceiling sweep made that concrete -- 35,466 retry attempts across 22,940 transactions at 512
+# workers over 2,000 rows. That is the right shape for an anomaly detector and the wrong shape for
+# the question "how fast can this machine go".
+#
+# `kind: accounts` is shard-disjoint read-modify-write and conflict-free by construction, over the
+# default 100,000-row keyspace rather than 2,000. What it measures is the commit path itself.
+#
+# NOT A REPLACEMENT FOR THE CAPACITY BASELINE. Different workload kind, different keyspace, and a
+# raised connection count -- so its numbers must never be re-frozen as the baseline or compared
+# against a bank run. It answers a hardware-capability question, not a regression question.
+#
+# CONNECTIONS ARE RAISED to 64. The bank sweep held 16 and showed a peak pool queue of 6-9, which
+# is small but not zero; at 512 workers that is 32 workers per connection. Since this run is not
+# being compared to those, the pool is widened so it cannot be mistaken for the ceiling.
+#
+# MEMORY IS RAISED to 6144 MB purely to foreclose the argument. The ceiling sweep established that
+# node memory never exceeded 1169 MiB at any concurrency -- below even the 1536 MB shipping cap --
+# so this changes nothing and is set only so no one has to re-derive that.
+#
+# BOTH GUARDS ARE ON. require_quiet_host and require_client_headroom both fail the run rather than
+# warn. A maximum-throughput claim is exactly the case where a contended host or a saturated load
+# generator must not be allowed to pass quietly as a low number.
+#
+# HOW IT IS DRIVEN. Worker count is swept by copying this file per cell and substituting `workers`
+# and the two names, running each cell as its own `run` with a wait for host load to fall in
+# between. The `matrix` command starts cells back to back, which is what left three of the five
+# ceiling-sweep cells reporting HOST WAS BUSY and therefore reporting lower bounds.
+name: accounts-max-throughput
+cluster:
+  name: accountsmax
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 100000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_quiet_host: true
+teardown: true

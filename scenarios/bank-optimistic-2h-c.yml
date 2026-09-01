@@ -28,7 +28,7 @@ cluster:
   kahuna:
     rocksdb_shared_memory_budget_mb: 64
     rocksdb_shared_memtable_budget_mb: 16
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

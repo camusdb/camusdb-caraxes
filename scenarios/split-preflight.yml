@@ -76,7 +76,7 @@ cluster:
     # Gossip the load reports the load branch reads. The leader balancer above already implies them;
     # this is set explicitly so the signal does not depend on that switch staying on.
     enable_load_reports: true
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: fanout
   database: caraxes

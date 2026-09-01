@@ -9,7 +9,7 @@ cluster:
   replication_factor: 3
   locking: optimistic
   isolation: read_committed
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

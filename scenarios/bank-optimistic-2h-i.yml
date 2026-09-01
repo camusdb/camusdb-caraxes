@@ -31,7 +31,7 @@ cluster:
   memory_limit_mb: 1536
   log_levels:
     Kommander: Information
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

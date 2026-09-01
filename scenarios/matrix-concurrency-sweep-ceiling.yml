@@ -1,0 +1,54 @@
+# CEILING SWEEP — what this host can actually achieve, memory deliberately unconstrained.
+#
+# NOT COMPARABLE to matrix-concurrency-sweep.yml or to any frozen capacity baseline. That sweep
+# pins memory_limit_mb: 1536 (the Mac mini shipping shape) so its cells can be read against the
+# freeze record. This one raises the cap to 6144 MB per node to answer a different question: where
+# does THIS machine top out when node memory is not the constraint. Treat its numbers as a separate
+# line of evidence and never re-freeze a baseline from them.
+#
+# WHY 6144 AND NOT UNLIMITED. An unlimited container lets the .NET GC size its heaps against all
+# 31 GB of host RAM; three of those plus the load generator is how a box starts swapping, which
+# would measure the swap subsystem rather than the cluster. 6144 MB is 4x the observed peak
+# (1236 MiB at the 1536 cap) and 5x the shipping cap, so memory cannot bind, while 3 x 6 GB = 18 GB
+# leaves ~13 GB for the generator, the page cache and the host.
+#
+# WHAT TO EXPECT. Node CPU already averages ~5.4 cores across the three nodes and peaks near 12 of
+# this box's 16 threads during the fault gate, with the workload generator containerised alongside.
+# The ceiling is far more likely to be CPU than memory. That is a finding either way.
+#
+# READ THE TOP CELLS WITH CARE. connections stays at 16, unchanged from the comparable sweep, so at
+# 256 and 512 workers there are 16 and 32 workers per connection. A flattening there may be the
+# client's connection pool rather than the cluster. require_client_headroom is left at its default
+# (off) so a saturated generator reports rather than fails the cell -- check client-resources.json
+# per cell before calling any number a ceiling.
+name: concurrency-sweep-ceiling
+cluster:
+  name: consweepceil
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+axes:
+  workers: [32, 64, 128, 256, 512]
+teardown: true

@@ -8,6 +8,7 @@
 using NUnit.Framework;
 using Caraxes.Core.Cluster;
 using Caraxes.Core.Scenario;
+using Caraxes.Core.Workload;
 
 namespace Caraxes.Tests;
 
@@ -49,6 +50,38 @@ public sealed class NodeLogCaptureTests
 
         Assert.That(spec.CaptureNodeLogs, Is.False);
         Assert.That(spec.NodeLogTail, Is.EqualTo(500));
+    }
+
+    /// <summary>
+    /// The capture writes node-log-{node}.txt into the same directory the workload container filled
+    /// with its own artifacts. Under rootful Docker on Linux that container is root unless told
+    /// otherwise, so the directory lands root-owned and every capture fails with "Access to the
+    /// path ... is denied" — a whole campaign can finish with no node logs and still report PASS,
+    /// because the logs are diagnostics rather than a pass condition. This pins the mapping that
+    /// prevents it, and pins that macOS is left alone.
+    /// </summary>
+    [Test]
+    public void WorkloadContainerRunsAsTheInvokingUserOnLinuxOnly()
+    {
+        IReadOnlyList<string> args = WorkloadRunner.BuildUserArgs();
+
+        if (OperatingSystem.IsLinux())
+        {
+            int user = args.ToList().IndexOf("--user");
+            Assert.That(user, Is.GreaterThanOrEqualTo(0),
+                "without --user the container writes the artifacts directory as root and the "
+                + "harness cannot add node logs to it");
+            Assert.That(args[user + 1], Does.Match(@"^\d+:\d+$"),
+                "docker needs a numeric uid:gid; a name would have to exist inside the image");
+            Assert.That(args, Does.Contain("HOME=/tmp"),
+                "the mapped uid has no home inside the image, so HOME must point somewhere writable");
+        }
+        else
+        {
+            Assert.That(args, Is.Empty,
+                "Docker Desktop already maps container UIDs onto the host user; pinning a host uid "
+                + "the image has no passwd entry for would break runs that currently work");
+        }
     }
 
     [Test]

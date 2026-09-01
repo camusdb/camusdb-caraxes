@@ -41,7 +41,7 @@ cluster:
   isolation: read_committed
   diagnostics: true
   memory_limit_mb: 1536
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
   image: "caraxes/camusdb:wal-linger"
   kahuna:
     wal_group_commit_linger_ms: 0

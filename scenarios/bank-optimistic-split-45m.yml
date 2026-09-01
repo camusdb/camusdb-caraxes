@@ -63,7 +63,7 @@ cluster:
     range_split_settle_window_ms: 10000
     range_split_indivisible_cooldown_ms: 300000
     enable_load_reports: true
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

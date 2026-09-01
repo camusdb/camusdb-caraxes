@@ -73,7 +73,7 @@ cluster:
     # independently, and the default cap of 10,000 is far below a run's committed transaction count.
     transaction_outcome_retention_ttl_ms: 3600000
     transaction_outcome_retention_max: 200000
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: fanout
   database: caraxes

@@ -15,7 +15,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   diagnostics: true
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

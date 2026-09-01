@@ -36,7 +36,7 @@ cluster:
   isolation: read_committed
   diagnostics: true
   memory_limit_mb: 1536
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  camusdb_repo: "~/camusdb"
   image: "caraxes/camusdb:fsync-gate"
   kahuna:
     wal_sync_writes: true

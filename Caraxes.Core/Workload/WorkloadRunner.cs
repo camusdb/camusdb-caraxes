@@ -221,6 +221,29 @@ public sealed class WorkloadRunner
         }
     }
 
+    /// <summary>
+    /// The <c>--user</c> (and matching <c>HOME</c>) arguments the workload container needs so its
+    /// artifacts are owned by whoever invoked the harness, or an empty list where the platform
+    /// already does that.
+    ///
+    /// <para>Under rootful Docker on Linux the container runs as root, so everything it writes into
+    /// the bind-mounted artifacts directory lands <c>root:root</c> — the run directory included.
+    /// The harness then cannot write <c>node-log-{node}.txt</c> beside those artifacts and every
+    /// capture fails with "Access to the path … is denied", which is how a whole gate campaign can
+    /// finish with no node logs at all. Running the container as the invoking user fixes the
+    /// ownership at the source, so both the container and the harness can write the directory.</para>
+    ///
+    /// <para>Docker Desktop on macOS already maps container UIDs onto the host user, so files come
+    /// out host-owned there and this must stay empty: pinning a macOS UID the image has no passwd
+    /// entry for would break runs that currently work. <c>HOME</c> is redirected because the
+    /// mapped UID likewise has no home directory inside the image, and a runtime that decides to
+    /// write under <c>$HOME</c> must not fail on a directory it cannot create.</para>
+    /// </summary>
+    public static IReadOnlyList<string> BuildUserArgs() =>
+        OperatingSystem.IsLinux()
+            ? ["--user", $"{Libc.getuid()}:{Libc.getgid()}", "-e", "HOME=/tmp"]
+            : [];
+
     private async Task<WorkloadInvocation> RunContainerAsync(
         IReadOnlyList<string> workloadArgs, string hostArtifactsDir, CancellationToken cancellationToken)
     {
@@ -230,12 +253,16 @@ public sealed class WorkloadRunner
         [
             "run", "--rm",
             "--network", plan.NetworkName,
+        ];
+        dockerArgs.AddRange(BuildUserArgs());
+        dockerArgs.AddRange(
+        [
             "-v", $"{Path.GetFullPath(publishDir)}:{ContainerWorkloadDir}:ro",
             "-v", $"{Path.GetFullPath(hostArtifactsDir)}:{ContainerArtifactsDir}",
             "--entrypoint", "dotnet",
             plan.Spec.EffectiveImage,
             $"{ContainerWorkloadDir}/CamusDB.Workload.dll",
-        ];
+        ]);
         dockerArgs.AddRange(workloadArgs);
 
         // The workload's own non-zero exit (invalid run / usage) is data the caller branches on,
@@ -246,4 +273,18 @@ public sealed class WorkloadRunner
 
         return new WorkloadInvocation(result.ExitCode);
     }
+}
+
+/// <summary>Real user and group of the harness process, for mapping the workload container onto
+/// them. .NET exposes no managed <c>getuid</c>, and these are the whole of what is needed.</summary>
+internal static class Libc
+{
+    // DllImport rather than the source-generated LibraryImport: the latter requires
+    // AllowUnsafeBlocks across the whole project, which is a large change to buy two syscalls
+    // that marshal nothing.
+    [System.Runtime.InteropServices.DllImport("libc")]
+    internal static extern uint getuid();
+
+    [System.Runtime.InteropServices.DllImport("libc")]
+    internal static extern uint getgid();
 }
