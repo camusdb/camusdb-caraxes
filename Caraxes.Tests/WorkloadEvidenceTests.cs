@@ -43,6 +43,74 @@ public sealed class WorkloadEvidenceTests
     }
 
     [Test]
+    public void DrivesTheEndpointPoolByDefault()
+    {
+        WorkloadRunPlan plan = Plan(Minimal);
+
+        Assert.That(ValueAfter(plan.Args, "--endpoint"),
+            Is.EqualTo("https://camus1:5096,https://camus2:5096,https://camus3:5096"));
+        Assert.That(plan.Notes.Any(n => n.Contains("gateway")), Is.False,
+            "the pool is the standard posture and needs no announcement");
+    }
+
+    [Test]
+    public void DrivesOneGatewayWhenTheScenarioNamesOne()
+    {
+        WorkloadRunPlan plan = Plan("""
+            name: s
+            cluster:
+              name: c
+              nodes: 3
+            workload:
+              rows: 5000
+              gateway: camus2
+            """);
+
+        Assert.That(ValueAfter(plan.Args, "--endpoint"), Is.EqualTo("https://camus2:5096"));
+        Assert.That(plan.Notes.Any(n => n.Contains("camus2") && n.Contains("not comparable")), Is.True,
+            "a single-gateway number must not be read against a pooled one, so the run says so itself");
+    }
+
+    [Test]
+    public void RefusesAGatewayThatIsNotANodeOfThisCluster()
+    {
+        ScenarioException error = Assert.Throws<ScenarioException>(() => Plan("""
+            name: s
+            cluster:
+              name: c
+              nodes: 3
+            workload:
+              rows: 5000
+              gateway: camus7
+            """))!;
+
+        // Caught at read time: the alternative is a container that starts and fails every request
+        // against a DNS name that does not resolve, reported as the cluster being unreachable.
+        Assert.That(error.Message, Does.Contain("camus7"));
+        Assert.That(error.Message, Does.Contain("camus1, camus2, camus3"));
+    }
+
+    [Test]
+    public void SeedingAlwaysUsesThePoolEvenWithAGateway()
+    {
+        ScenarioSpec scenario = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+              nodes: 3
+            workload:
+              rows: 5000
+              gateway: camus2
+            """);
+        ClusterPlan plan = ClusterPlan.FromSpec(scenario.Cluster);
+
+        // Setup is not measured, and pushing a dataset through one node would slow every
+        // gateway-arm run without producing evidence — and make the arms differ in a second way.
+        Assert.That(WorkloadRunner.MeasuredEndpoint(plan, scenario), Is.EqualTo("https://camus2:5096"));
+        Assert.That(plan.InternalWorkloadEndpointPool, Does.Contain("camus1").And.Contain("camus3"));
+    }
+
+    [Test]
     public void NamesEveryNodeInTheMetricsEndpointPool()
     {
         // The name is the only thing that attributes a sample to a node: a scrape carries its
@@ -518,5 +586,83 @@ public sealed class HostLoadTests
             """);
 
         Assert.That(spec.Checks.RequireQuietHost, Is.True);
+    }
+
+    [Test]
+    public void GradesTheAmbientSampleAndSaysWhatItSaw()
+    {
+        Assert.That(HostLoad.GradeAmbient(new HostLoadSample(3.13, 3.0, 3.0, 16)), Is.Null);
+
+        string? failure = HostLoad.GradeAmbient(new HostLoadSample(9.2, 9.0, 9.0, 16));
+        Assert.That(failure, Is.Not.Null);
+        Assert.That(failure, Does.Contain("before the run"),
+            "the message must name which sample failed, or the next reader re-derives it from the code");
+    }
+
+    [Test]
+    public void FailsTheQuietHostCheckWhenAmbientLoadCouldNotBeMeasured()
+        => Assert.That(HostLoad.GradeAmbient(null), Is.Not.Null,
+            "a run that asked for a quiet machine and cannot be told whether it got one has not met its condition");
+
+    [Test]
+    public void TheRunSOwnLoadCannotFailIt()
+    {
+        // The regression this pins: accounts-2k-w128 (2026-09-01) began at ambient 3.13 on 16 cores
+        // and was failed at 10.15 sampled after the workload — its own three nodes plus the
+        // generator — with exact reconciliation, zero failures, and the highest throughput yet
+        // measured on that host. Grading the later reading fails a capacity run for succeeding at
+        // loading the machine, and does so more readily the higher the concurrency.
+        HostLoadSample ambient = new(3.13, 3.0, 3.0, 16);
+        HostLoadSample afterTheRun = new(10.15, 9.0, 6.0, 16);
+
+        Assert.That(HostLoad.GradeAmbient(ambient), Is.Null, "the machine was quiet when the run began");
+        Assert.That(HostLoad.IsContended(afterTheRun), Is.True,
+            "the later reading is genuinely 'busy' — which is exactly why it must not be the graded one");
+    }
+}
+
+/// <summary>
+/// A host that sleeps mid-run produces an artifact that looks entirely normal: the cluster resumes,
+/// the window completes, and the verdict reads PASS. These tests pin the one signal that can tell —
+/// a monotonic clock that stops while the wall clock does not — because the failure mode is a run
+/// that gets quoted as a measurement of an interval the machine never experienced.
+/// </summary>
+[TestFixture]
+public sealed class SuspendDetectorTests
+{
+    [Test]
+    public void AnAwakeHostIsNotFlagged()
+    {
+        SuspendDetector detector = SuspendDetector.Start();
+
+        Assert.That(detector.HostSlept, Is.False);
+        Assert.That(SuspendDetector.Describe(detector.Suspended, detector.Wall), Is.Null);
+    }
+
+    [Test]
+    public void SchedulingNoiseIsNotASuspend()
+        => Assert.That(SuspendDetector.Describe(TimeSpan.FromMilliseconds(400), TimeSpan.FromMinutes(12)), Is.Null,
+            "NTP slew and scheduling jitter are milliseconds; a suspend is seconds to hours");
+
+    [Test]
+    public void ASleptHostFailsAndSaysHowLongAndWhyItMatters()
+    {
+        // The real case: a 12-table seed appeared to stall for 6h18m — three node logs silent in the
+        // same second, resuming together — and the run would have reported PASS. The laptop had slept.
+        string? failure = SuspendDetector.Describe(TimeSpan.FromMinutes(378), TimeSpan.FromMinutes(384));
+
+        Assert.That(failure, Is.Not.Null);
+        Assert.That(failure, Does.Contain("6h18m"), "name the duration; it is what identifies the cause");
+        Assert.That(failure, Does.Contain("repeat it"),
+            "there is no salvage — say so, or someone will try to interpret the numbers");
+    }
+
+    [Test]
+    public void ABackwardsWallClockStepReadsAsNoSuspendRatherThanNegativeSleep()
+    {
+        SuspendDetector detector = SuspendDetector.Start();
+
+        Assert.That(detector.Suspended, Is.GreaterThanOrEqualTo(TimeSpan.Zero));
+        Assert.That(SuspendDetector.Describe(TimeSpan.FromSeconds(-30), TimeSpan.FromMinutes(5)), Is.Null);
     }
 }

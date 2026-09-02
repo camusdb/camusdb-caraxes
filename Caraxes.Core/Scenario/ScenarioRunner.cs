@@ -42,6 +42,14 @@ public sealed class ScenarioRunner
 
     private readonly ClusterOrchestrator orchestrator;
 
+    /// <summary>Host load sampled before the harness started anything of its own — the only reading
+    /// that describes competing work rather than this run's own. See <see cref="GradeHostLoad"/>.</summary>
+    private HostLoadSample? ambientHostLoad;
+
+    /// <summary>Watches for the host being suspended mid-run, which silently invalidates every rate
+    /// and latency the run reports. See <see cref="SuspendDetector"/>.</summary>
+    private SuspendDetector? suspendDetector;
+
     /// <summary>
     /// <paramref name="runTag"/> suffixes the run directory, so repeated runs of one scenario keep
     /// their artifacts instead of overwriting each other.
@@ -69,11 +77,17 @@ public sealed class ScenarioRunner
         Directory.CreateDirectory(runDir);
         List<string> notes = [];
 
+        // Started before anything is built or brought up, so the watch covers the whole run rather
+        // than only its measured window — a host that sleeps during the image build or the seed
+        // invalidates the run just as thoroughly as one that sleeps mid-workload.
+        suspendDetector = SuspendDetector.Start();
+
         // Ambient host load, sampled before the harness starts anything of its own. A machine already
         // busy with unrelated work distorts every number this run produces, and nothing else in the
         // harness can see it: the generator reports its own health, and a load average from inside the
         // container describes the Docker VM rather than the host it competes on.
         HostLoadSample? hostLoad = HostLoad.Read();
+        ambientHostLoad = hostLoad;
         if (hostLoad is null)
         {
             notes.Add("ambient host load was not measured on this platform; contention cannot be ruled out");
@@ -115,6 +129,17 @@ public sealed class ScenarioRunner
 
             run = await RunWorkloadWithNemesisAsync(workload, plan, artifactsDir, notes, cancellationToken)
                 .ConfigureAwait(false);
+
+            // After the load stops and before teardown: the only window in which deferred work can be
+            // seen draining, and the only collection the harness must do itself — the workload
+            // container that scraped during the run has exited by now.
+            if (scenario.DrainObservationSeconds > 0)
+                notes.AddRange(await DrainObserver.ObserveAsync(
+                    plan,
+                    Path.Combine(artifactsDir, "run"),
+                    TimeSpan.FromSeconds(scenario.DrainObservationSeconds),
+                    TimeSpan.FromSeconds(scenario.DrainObservationIntervalSeconds),
+                    cancellationToken).ConfigureAwait(false));
         }
         finally
         {
@@ -333,6 +358,7 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
+        GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
         GradeClusterFacts(outputDir, notes, ref passed);
         GradeClientHeadroom(outputDir, notes, ref passed);
@@ -347,30 +373,60 @@ public sealed class ScenarioRunner
     }
 
     /// <summary>
-    /// Fails the run when the host was busy before it started and the scenario asked for a quiet
-    /// machine. Off by default: a reliability scenario still answers its question on a loaded box,
-    /// and only a capacity claim depends on the machine being idle.
+    /// Fails the run when the host was suspended while it was in progress.
+    ///
+    /// <para>Unconditional, unlike every other check here: this is not a judgement about measurement
+    /// quality that a scenario might reasonably waive, it is the observation that the artifact does
+    /// not describe a real interval. A correctness scenario survives a suspend in its invariants but
+    /// not in its recovery timings, and neither kind of run should be quoted from afterwards.</para>
+    /// </summary>
+    private void GradeSuspend(List<string> notes, ref bool passed)
+    {
+        if (suspendDetector is null)
+            return;
+
+        if (SuspendDetector.Describe(suspendDetector.Suspended, suspendDetector.Wall) is not string failure)
+            return;
+
+        notes.Add($"  CHECK FAILED: {failure}");
+        passed = false;
+    }
+
+    /// <summary>
+    /// Fails the run when the host was busy <b>before it started</b> and the scenario asked for a
+    /// quiet machine. Off by default: a reliability scenario still answers its question on a loaded
+    /// box, and only a capacity claim depends on the machine being idle.
+    ///
+    /// <para><b>It grades the ambient sample, never a reading taken after the run.</b> A load average
+    /// measured once the workload has finished is dominated by the cluster and the generator this run
+    /// itself started, so grading it would fail a scenario precisely for succeeding at loading the
+    /// machine — and would do so more often the higher the concurrency, which is the opposite of what
+    /// a capacity guard is for. That is not hypothetical: <c>accounts-2k-w128</c> and
+    /// <c>accounts-2k-w256</c> (2026-09-01) were failed at load 10.15 and 10.83 on 16 cores after
+    /// starting from ambient 3.13 and 3.72, with exact reconciliation, zero failures and the highest
+    /// throughput ever measured on the host. The fsync A/B pair <c>k154p3</c> was depressed the same
+    /// way, its note recording load rising "3.54 → 5.37 <em>during</em> the run".</para>
+    ///
+    /// <para>The end-of-run reading is still taken and reported, because how much load a run creates
+    /// is worth seeing — but a load average cannot separate this run's own work from a competitor's,
+    /// so only the pre-run sample can carry a verdict.</para>
     /// </summary>
     private void GradeHostLoad(List<string> notes, ref bool passed)
     {
+        HostLoadSample? after = HostLoad.Read();
+        if (after is not null)
+            notes.Add(
+                $"host load after the run: {after.One:N2} over {after.ProcessorCount} core(s) " +
+                "(includes this run's own cluster and generator; not graded)");
+
         if (!scenario.Checks.RequireQuietHost)
             return;
 
-        HostLoadSample? sample = HostLoad.Read();
-        if (sample is null)
-        {
-            notes.Add("  CHECK FAILED: checks.require_quiet_host is on and host load could not be measured");
-            passed = false;
+        if (HostLoad.GradeAmbient(ambientHostLoad) is not string failure)
             return;
-        }
 
-        if (HostLoad.IsContended(sample))
-        {
-            notes.Add(
-                $"  CHECK FAILED: checks.require_quiet_host is on and host load is {sample.One:N2} over " +
-                $"{sample.ProcessorCount} core(s)");
-            passed = false;
-        }
+        notes.Add($"  CHECK FAILED: {failure}");
+        passed = false;
     }
 
     /// <summary>

@@ -82,6 +82,19 @@ public sealed class ClusterPlan
         string.Join(',', Nodes.Select(n => $"https://{n.Name}:5096"));
 
     /// <summary>
+    /// The in-cluster gRPC endpoint of one node, for a run that drives all of its load through a
+    /// single gateway instead of the pool. An unknown name throws rather than falling back to the
+    /// pool: silently measuring the pool while the scenario says one gateway would put a wrong label
+    /// on a retained result.
+    /// </summary>
+    public string InternalWorkloadEndpoint(string nodeName)
+        => Nodes.Any(n => n.Name == nodeName)
+            ? $"https://{nodeName}:5096"
+            : throw new ArgumentException(
+                $"no node named '{nodeName}' in cluster '{Spec.Name}' ({string.Join(", ", Nodes.Select(n => n.Name))})",
+                nameof(nodeName));
+
+    /// <summary>
     /// Every node's in-cluster Prometheus endpoint as <c>name=url</c> pairs, for the workload's
     /// per-node metric collection.
     ///

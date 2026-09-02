@@ -229,3 +229,71 @@ public sealed class WorkloadArtifactsTests
         Assert.That(WorkloadArtifacts.ReadSummary(Path.GetTempPath() + Guid.NewGuid()), Is.Null);
     }
 }
+
+/// <summary>
+/// The post-load drain window. It exists because "deferred settlement must drain to an idle bound
+/// after the load stops" was unmeasurable rather than unmeasured: in-run scraping is done by the
+/// workload container, so every series ends at the moment the drain question begins.
+/// </summary>
+[TestFixture]
+public sealed class DrainObservationTests
+{
+    [Test]
+    public void CollectsNothingByDefault()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            """);
+
+        Assert.That(spec.DrainObservationSeconds, Is.Zero, "a window nobody asked for must cost no wall-clock");
+    }
+
+    [Test]
+    public void ReadsTheWindowAndItsInterval()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            drain_observation_seconds: 900
+            drain_observation_interval_seconds: 30
+            """);
+
+        Assert.That(spec.DrainObservationSeconds, Is.EqualTo(900));
+        Assert.That(spec.DrainObservationIntervalSeconds, Is.EqualTo(30));
+    }
+
+    [Test]
+    public void RejectsANegativeWindowAndASubSecondInterval()
+    {
+        Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            drain_observation_seconds: -1
+            """));
+
+        Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            drain_observation_seconds: 600
+            drain_observation_interval_seconds: 0
+            """));
+    }
+
+    [Test]
+    public async Task AZeroWindowScrapesNothingAtAll()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(new ClusterSpec { Name = "c" });
+        string dir = Path.Combine(Path.GetTempPath(), $"caraxes-drain-{Guid.NewGuid():N}");
+
+        IReadOnlyList<string> notes = await DrainObserver.ObserveAsync(
+            plan, dir, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        Assert.That(notes, Is.Empty);
+        Assert.That(Directory.Exists(dir), Is.False, "nothing asked for, nothing created");
+    }
+}

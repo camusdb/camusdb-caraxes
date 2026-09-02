@@ -130,6 +130,19 @@ public sealed class WorkloadRunner
     }
 
     /// <summary>
+    /// Where the measured run sends its requests: the endpoint pool by default, or one node when the
+    /// scenario names a gateway.
+    ///
+    /// <para>Only the measured run honours it. Seeding always uses the pool, because setup is not
+    /// measured and pushing a whole dataset through a single node would slow every gateway-arm run
+    /// for no evidence — and would make the two arms differ in a second way.</para>
+    /// </summary>
+    public static string MeasuredEndpoint(ClusterPlan plan, Caraxes.Core.Scenario.ScenarioSpec scenario)
+        => string.IsNullOrWhiteSpace(scenario.Workload.Gateway)
+            ? plan.InternalWorkloadEndpointPool
+            : plan.InternalWorkloadEndpoint(scenario.Workload.Gateway);
+
+    /// <summary>
     /// Builds the measured run's command line. Separated from the invocation so the argument
     /// construction — which decides what evidence a run collects — is testable without docker.
     /// </summary>
@@ -139,7 +152,7 @@ public sealed class WorkloadRunner
         List<string> workloadArgs =
         [
             "run",
-            "--endpoint", plan.InternalWorkloadEndpointPool,
+            "--endpoint", MeasuredEndpoint(plan, scenario),
             "--database", scenario.Workload.Database,
             "--output", $"{ContainerArtifactsDir}/{containerOutputSubdir}",
             "--seed", scenario.Workload.Seed.ToString(),
@@ -172,6 +185,14 @@ public sealed class WorkloadRunner
         }
 
         List<string> notes = [];
+
+        // Said out loud because it changes what the number means: a single-gateway run is not
+        // comparable to a pooled one, and the endpoint string is otherwise buried in a command line
+        // nobody reads back.
+        if (!string.IsNullOrWhiteSpace(scenario.Workload.Gateway))
+            notes.Add(
+                $"ALL requests routed through the single gateway '{scenario.Workload.Gateway}' " +
+                "(not the endpoint pool); not comparable to a pooled run");
 
         // Per-node metric collection needs something to scrape. Asking for it on a cluster with
         // diagnostics off would produce a series of nothing but failed scrapes, which reads like a
@@ -244,14 +265,35 @@ public sealed class WorkloadRunner
             ? ["--user", $"{Libc.getuid()}:{Libc.getgid()}", "-e", "HOME=/tmp"]
             : [];
 
+    /// <summary>
+    /// The workload container's name, derived from the cluster so it says which run abandoned it.
+    ///
+    /// <para><c>--rm</c> only fires on a clean exit, so a harness killed mid-workload leaves the
+    /// container running — and because it is not part of the compose project, it survives
+    /// <c>compose down</c> holding an endpoint on the cluster network, which then cannot be removed
+    /// and blocks every later run on the fixed subnet. Anonymous, it could only be found by
+    /// inspecting network endpoints; named, it is one <c>docker rm -f</c> away and carries the
+    /// Caraxes prefix that marks it as this harness's own wreckage.</para>
+    /// </summary>
+    public static string ContainerName(ClusterPlan plan) => $"{plan.ProjectName}-workload";
+
     private async Task<WorkloadInvocation> RunContainerAsync(
         IReadOnlyList<string> workloadArgs, string hostArtifactsDir, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(hostArtifactsDir);
 
+        string containerName = ContainerName(plan);
+
+        // A fixed name collides with a container an earlier interrupted run left behind, and docker
+        // refuses the whole `run` on the collision. That container is dead work by construction —
+        // runs of one cluster are sequential — so clear it rather than failing the new run.
+        await ProcessRunner.RunAsync(
+            "docker", ["rm", "--force", containerName], cancellationToken: cancellationToken).ConfigureAwait(false);
+
         List<string> dockerArgs =
         [
             "run", "--rm",
+            "--name", containerName,
             "--network", plan.NetworkName,
         ];
         dockerArgs.AddRange(BuildUserArgs());

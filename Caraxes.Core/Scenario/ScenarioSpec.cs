@@ -78,6 +78,26 @@ public sealed class ScenarioSpec
     /// </summary>
     public int NodeLogTail { get; set; }
 
+    /// <summary>
+    /// Seconds to keep scraping every node's metrics endpoint <b>after the workload has stopped</b>,
+    /// so deferred work can be watched draining. 0 (the default) collects nothing and costs nothing.
+    ///
+    /// <para>The plan requires that deferred settlement "reach a plateau under sustained load, and
+    /// drain to an idle bound after the load stops". Without this the second half is unmeasurable
+    /// rather than merely unmeasured: in-run metrics are scraped by the workload container, so every
+    /// series ends at the exact moment the drain question begins. Set it longer than the engine's
+    /// retention horizon — completion receipts are retained for ten minutes, so a window shorter
+    /// than that cannot show them being reclaimed.</para>
+    ///
+    /// <para>Costs wall-clock after the measured window and nothing during it, so it can never
+    /// affect the numbers the run reports.</para>
+    /// </summary>
+    public int DrainObservationSeconds { get; set; }
+
+    /// <summary>Seconds between post-load scrapes. Only meaningful with
+    /// <see cref="DrainObservationSeconds"/>; a drain is a slow curve, so this is coarse by default.</summary>
+    public int DrainObservationIntervalSeconds { get; set; } = 15;
+
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
     public void Validate()
@@ -89,6 +109,14 @@ public sealed class ScenarioSpec
         if (SettleSeconds < 0)
             throw new ScenarioException($"'settle_seconds' must be >= 0, got {SettleSeconds}");
 
+        if (DrainObservationSeconds < 0)
+            throw new ScenarioException(
+                $"'drain_observation_seconds' must be >= 0, got {DrainObservationSeconds}; use 0 to skip the drain window");
+
+        if (DrainObservationSeconds > 0 && DrainObservationIntervalSeconds < 1)
+            throw new ScenarioException(
+                $"'drain_observation_interval_seconds' must be >= 1, got {DrainObservationIntervalSeconds}");
+
         if (NodeLogTail < 0)
             throw new ScenarioException(
                 $"'node_log_tail' must be >= 0, got {NodeLogTail}; use 0 to capture the whole log");
@@ -97,6 +125,15 @@ public sealed class ScenarioSpec
         Workload.Validate();
         Nemesis?.Validate();
         Checks.Validate();
+
+        // Cross-block, so it lives here rather than in WorkloadSpec: the workload names a node and
+        // only the cluster block knows how many there are. Caught at read time because the
+        // alternative is a container that starts, fails every request against a DNS name that does
+        // not resolve, and reports it as the cluster being unreachable.
+        if (!string.IsNullOrWhiteSpace(Workload.Gateway) && !Cluster.NodeNames.Contains(Workload.Gateway))
+            throw new ScenarioException(
+                $"'workload.gateway' must name a node of this cluster ({string.Join(", ", Cluster.NodeNames)}) " +
+                $"or be empty to use the whole endpoint pool, got '{Workload.Gateway}'");
     }
 
     /// <summary>The workload locking, inheriting the cluster default when the workload left it blank.</summary>

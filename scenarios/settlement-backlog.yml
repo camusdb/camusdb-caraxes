@@ -1,0 +1,68 @@
+# DEFERRED SETTLEMENT: does the backlog plateau under load, and does it drain once load stops?
+#
+# THE TWO HALVES OF THE QUESTION. The plan requires that deferred settlement "reach a plateau under
+# sustained load, and drain to an idle bound after the load stops". Neither half has been answered:
+#
+#   Plateau. Completion receipts were measured accumulating at about one per committed write
+#   transaction, per node, with NO plateau inside a 12-minute window (6,023 -> 148,023 on camus1 over
+#   700s) and a reclaim counter reading 7 for a whole run. Kahuna retains receipts for ten minutes
+#   (CompletionReceiptRetentionTtl), so the expected shape is a plateau at rate x 600s -- but every
+#   window measured so far is at or below the TTL itself, which is exactly the length that cannot
+#   show one. Hence 30 minutes here: three times the retention horizon.
+#
+#   Drain. Unmeasurable until now rather than merely unmeasured -- in-run metrics are scraped by the
+#   workload container, so every series ended at the instant the load stopped. drain_observation_
+#   seconds keeps scraping host-side for 15 minutes afterwards, past the 10-minute TTL, so a reclaim
+#   that happens has time to appear.
+#
+# WHAT TO READ, in artifacts/run/post-run-metrics-camus*-NNNNNs.txt:
+#   kahuna_durable_tx_resident_receipts   - the backlog; must fall after the load stops
+#   kahuna_durable_tx_resident_records
+#   kahuna_durable_tx_gc_receipts_released_total / _gc_records_reclaimed_total  - the reclaim actually
+#                                            doing work; these read ~7 for an entire loaded run today
+#   kahuna_durable_tx_resident_prepared_intents - already known bounded (max 34), the control
+#
+# A backlog that plateaus and drains is a gain. One that grows with throughput and never reclaims is
+# a deferred failure, and the plan says so explicitly.
+#
+# SHAPE. The capacity-baseline shape (bank, 2,000 rows, 32 workers over 16 connections, 1536 MB) so
+# the throughput is comparable to the freeze record, with only the window lengthened. This is not a
+# throughput measurement -- a 30-minute window is not the frozen 10-minute one -- but a run that
+# collapsed would be visible against it.
+name: settlement-backlog
+cluster:
+  name: settlebacklog
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 30m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+drain_observation_seconds: 900
+drain_observation_interval_seconds: 15
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

@@ -73,4 +73,29 @@ public static class HostLoad
     /// to 30.
     /// </summary>
     public static bool IsContended(HostLoadSample sample) => sample.PerCore > 0.5;
+
+    /// <summary>
+    /// The quiet-host verdict for a scenario that asked for one, given the <b>ambient</b> sample —
+    /// the reading taken before the harness started anything of its own.
+    ///
+    /// <para>Pure, and separate from the sampling, because which sample is graded is the whole
+    /// question: a reading taken after the workload finished is dominated by the cluster and
+    /// generator the run itself started, so grading that one fails a scenario for the crime of
+    /// loading the machine, and does it more readily the higher the concurrency. A load average
+    /// cannot attribute its own contributors, so only the pre-run sample can carry a verdict.</para>
+    ///
+    /// <para>An unmeasured ambient fails the check rather than passing it: a scenario that asked for
+    /// a quiet machine and cannot be told whether it got one has not met its condition.</para>
+    /// </summary>
+    /// <returns>The failure reason, or null when the check passes.</returns>
+    public static string? GradeAmbient(HostLoadSample? ambient)
+    {
+        if (ambient is null)
+            return "checks.require_quiet_host is on and ambient host load could not be measured";
+
+        return IsContended(ambient)
+            ? $"checks.require_quiet_host is on and ambient host load before the run was " +
+              $"{ambient.One:N2} over {ambient.ProcessorCount} core(s)"
+            : null;
+    }
 }

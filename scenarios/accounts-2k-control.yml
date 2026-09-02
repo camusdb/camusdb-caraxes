@@ -1,0 +1,65 @@
+# CONTROL for the "removing contention lowered the ceiling" finding — accounts at BANK'S keyspace.
+#
+# THE CONFOUND THIS EXISTS TO RESOLVE. accounts-max-throughput.yml changed two variables at once
+# against the bank ceiling sweep: it removed contention (shard-disjoint RMW, structurally
+# conflict-free) AND moved from bank's 2,000-row keyspace to 100,000 rows at 256 bytes — a 50x
+# larger working set. Bank's dataset fits in cache; that one does not, so it pays storage I/O bank
+# never touched. The observed result (bank peaked at 572 ops/s burning 35,466 retries; accounts
+# saturated near 350 with zero) therefore supports "contention was not the binding constraint" but
+# cannot say why.
+#
+# WHAT THIS CHANGES. Exactly one variable against accounts-max-throughput.yml: rows 100000 -> 2000.
+# Everything else — kind, connections 64, memory 6144 MB, both guards failing rather than warning,
+# 5m/1m/30s window, 50/50 — is byte-identical, so the pair isolates working-set size, and the same
+# cell against the bank ceiling sweep isolates contention.
+#
+# HOW TO READ IT.
+#   lands well above 572 ops/s  -> contention mattered after all; bank's retry load was the ceiling
+#   lands near 572 ops/s        -> the commit path is the ceiling and 572 is close to this host's
+#                                  real limit on this cluster shape (three partitions, one hot
+#                                  keyspace), which makes more partitions and group-commit batching
+#                                  the only remaining levers
+#   lands near accounts-100k    -> the 100k figure was never about the working set either
+#
+# NOT A BASELINE. Different workload kind and connection count from capacity-baseline.yml; its
+# numbers must never be re-frozen as one or compared against a bank regression run.
+#
+# HOW IT IS DRIVEN. Worker count is swept by copying this file per cell and substituting `workers`,
+# running each cell as its own `run --tag w<N>` with a wait for host load to fall in between. The
+# `matrix` command starts cells back to back, which is what left three of the five ceiling-sweep
+# cells reporting HOST WAS BUSY and therefore reporting lower bounds. Cells 32 and 128 pair with
+# the accounts-100k run at the same worker count; 256 pairs with bank's 567.9 ops/s peak.
+name: accounts-2k
+cluster:
+  name: accounts2k
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 64
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_quiet_host: true
+teardown: true

@@ -23,6 +23,11 @@ public sealed class ClusterSpec
 
     public int Nodes { get; set; } = 3;
 
+    /// <summary>The node names this cluster will have, <c>camus1..camusN</c> — the same names
+    /// <see cref="ClusterPlan"/> assigns and the nemesis targets by. Available before a plan is built
+    /// so a spec that names a node can be validated at read time.</summary>
+    public IEnumerable<string> NodeNames => Enumerable.Range(1, Nodes).Select(i => $"camus{i}");
+
     public int Partitions { get; set; } = 3;
 
     /// <summary>Per-partition replica-set size. 3 is the standard chaos-test posture; 0 keeps

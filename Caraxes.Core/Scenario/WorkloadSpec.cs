@@ -81,6 +81,23 @@ public sealed class WorkloadSpec
     /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
     public int RequestTimeout { get; set; }
 
+    /// <summary>
+    /// Which node the workload sends every request to. Empty (the default) uses the endpoint pool —
+    /// every node, round-robin — which is the standard posture and what every existing measurement
+    /// was taken with. A node name (<c>camus1</c>) drives the whole load through that one node.
+    ///
+    /// <para>It exists to separate the gateway's contribution to the ceiling from the storage side's.
+    /// The pool spreads requests almost perfectly (33.3% / 33.3% / 33.4% measured), yet the durable
+    /// write path still concentrates on whichever node leads the table's partition, so the two arms
+    /// answer whether the request-handling hop costs anything once the write path is already
+    /// bottlenecked elsewhere.</para>
+    ///
+    /// <para>A single gateway is a measurement configuration, not a supported deployment posture: it
+    /// makes one node a single point of failure for the whole run, so a fault scenario should keep
+    /// the pool unless the fault under test is the gateway's own death.</para>
+    /// </summary>
+    public string Gateway { get; set; } = "";
+
     /// <summary>Tolerate conflicts and open-loop pacing shortfalls as warnings rather than INVALID,
     /// and give reconciliation an indeterminate-commit band. Default true: a Phase 2 baseline is
     /// fault-free, but a scenario with faults needs this, and leaving it on never loosens a clean

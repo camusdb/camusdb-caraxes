@@ -65,4 +65,8 @@ settle_seconds: 60
 checks:
   require_client_headroom: true
   require_cluster_facts: true
+  # Added for the re-run on Kommander 1.4.5: an A/B whose arms are minutes apart must not have one
+  # of them measured against unrelated work. It grades the load average sampled before the run
+  # starts, so a run is never failed for the load its own cluster creates.
+  require_quiet_host: true
 teardown: true

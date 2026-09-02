@@ -77,6 +77,8 @@ public sealed class ClusterOrchestrator
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
+        await ReclaimSubnetAsync(cancellationToken).ConfigureAwait(false);
+
         Console.WriteLine($"==> starting {spec.Nodes} node(s)");
         await ProcessRunner.RunCheckedAsync(
             "docker",
@@ -104,6 +106,56 @@ public sealed class ClusterOrchestrator
         await ProcessRunner.RunCheckedAsync(
             "docker", args, workingDirectory: runDir, streamOutput: true, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+
+        // compose leaves the network behind when anything outside the project still holds an endpoint
+        // on it — a workload container that outlived a killed harness is the case that happens. The
+        // fixed /24 turns that leftover into a hard block on every later run, so finish the job here.
+        foreach (string note in await RemoveOwnNetworkAsync(cancellationToken).ConfigureAwait(false))
+            Console.WriteLine($"==> {note}");
+    }
+
+    /// <summary>
+    /// Clears whatever stands on this cluster's subnet before <c>compose up</c> claims it. A leaked
+    /// Caraxes network from an interrupted run is removed with anything still attached; a network
+    /// this harness did not create is refused with the recovery instructions, because it may be a
+    /// live service that merely shares the address space.
+    ///
+    /// <para>Without this the failure surfaces as docker's <c>invalid pool request: Pool overlaps
+    /// with other one on this address space</c>, which names neither the network nor the container
+    /// pinning it.</para>
+    /// </summary>
+    private async Task ReclaimSubnetAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<DockerNetwork> networks = await DockerNetworks.ListAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SubnetHolder> blockers = DockerNetworks.FindBlockers(networks, plan.NetworkName, plan.NetworkSubnetCidr);
+
+        foreach (SubnetHolder blocker in blockers)
+        {
+            if (blocker.Kind == SubnetHolderKind.Foreign)
+                throw new InvalidOperationException(
+                    DockerNetworks.ForeignBlockerMessage(blocker.Network, plan.NetworkSubnetCidr));
+
+            Console.WriteLine(
+                $"==> network '{blocker.Network.Name}' is a leftover Caraxes cluster holding {plan.NetworkSubnetCidr}; reclaiming it");
+
+            foreach (string note in await DockerNetworks.RemoveAsync(blocker.Network, cancellationToken).ConfigureAwait(false))
+                Console.WriteLine($"==> {note}");
+        }
+    }
+
+    /// <summary>
+    /// Removes this cluster's own network if <c>compose down</c> could not, force-removing the
+    /// containers still attached to it. Returns what it did, or nothing at all when the network is
+    /// already gone — the normal case, which must stay silent.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> RemoveOwnNetworkAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<DockerNetwork> networks = await DockerNetworks.ListAsync(cancellationToken).ConfigureAwait(false);
+        DockerNetwork? own = networks.FirstOrDefault(n => string.Equals(n.Name, plan.NetworkName, StringComparison.Ordinal));
+
+        return own is null
+            ? []
+            : await DockerNetworks.RemoveAsync(own, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task WaitForReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)

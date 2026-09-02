@@ -1,0 +1,83 @@
+# WAL GROUP-COMMIT LINGER on a MULTI-PARTITION workload — arm: wal_group_commit_linger_ms = 0.
+#
+# WHY THIS EXISTS. The single-keyspace linger A/B (wal-linger-{0,1,2}ms.yml) measures a workload with
+# exactly one hot partition, and Kommander's group commit coalesces ACROSS partitions: a worker
+# drains up to maxGroupBatchPartitions ready partitions and issues one WAL write, which for RocksDB
+# is one fsync for all of them. Its linger is evidence-gated — it waits only while some partition
+# OUTSIDE the current group has queued work — so with one hot partition it never waits, and the knob
+# is a no-op by design. Kommander's own test pins that behaviour
+# (Linger_DoesNotMergeCausallySequentialWrites: a causally-sequential workload pays zero wait). The
+# single-keyspace result is therefore not evidence that the linger does not work.
+#
+# WHAT THIS CHANGES. Twelve tables, so several key spaces are written concurrently and group commit
+# has something to coalesce. `kind: accounts` rather than fanout: shard-disjoint read-modify-write
+# keeps every transaction inside one table, so the arms differ in the linger alone and not in how
+# much cross-partition 2PC they pay.
+#
+# HOW MANY PARTITIONS THIS ACTUALLY REACHES -- MEASURED, not predicted. Read back from
+# cluster-facts.json of the first campaign: **3 of the 4 partitions carry tables, 7/2/3, one empty.**
+# (Table ids are hex, so the twelve spaces are 1:1:r .. 1:C:r; a decimal reading of them predicts a
+# different split with the same conclusion.) Three concurrently-written partitions is enough for the
+# mechanism under test -- the linger needs only that some partition outside the flushing group has
+# queued work -- but the imbalance is real and this is NOT a balanced-placement benchmark.
+#
+# ORIGINAL PREDICTION, kept because the method is reusable — read this before quoting the result. A table's row
+# space `{dbId}:{tableId}:r` is placed by jump consistent hash over the partition pool, so N tables
+# do NOT land on N distinct partitions. Computed for db 1, table ids 1..12 over 4 partitions:
+# **3 of 4 partitions carry tables, with 6/4/2 tables on them and one partition empty.** Four tables
+# would have reached only 3 partitions too (2/1/1, one empty); twelve buys deeper concurrent load on
+# each of the three rather than wider coverage.
+#
+# Three concurrently-written partitions is enough for the mechanism under test — the linger needs
+# only that some partition outside the flushing group has queued work — but the imbalance is real
+# and this is NOT a balanced-placement benchmark. The placement assumed here is a prediction from
+# the hash; every run records the truth in `cluster-facts.json` (`ranges[].key_space` ->
+# `partition_id`). **Read it back from the artifacts before interpreting the numbers**, and if the
+# tables landed on fewer partitions than expected, the run answers a weaker question than intended.
+#
+# WHAT TO READ. `raft_wal_operations_total / raft_wal_batches_total` per node. The single-keyspace
+# campaign holds it at 1.00-1.01 in every arm. Above 1 here means the repaired linger (Kommander
+# 201b49e) does coalesce once given the chance — which would make it a Phase 2 multiplier rather than
+# a Phase 1 lever, because splitting the keyspace would then buy parallel commit AND denser fsyncs.
+#
+# NOT COMPARABLE to the capacity baseline or to the single-keyspace linger arms: different workload
+# kind, table count and partition count. Only the two arms of this pair may be compared.
+name: wal-linger-multi-0ms
+cluster:
+  name: wallingermulti0
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:wal-linger"
+  kahuna:
+    wal_group_commit_linger_ms: 0
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 12000
+  tables: 12
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
