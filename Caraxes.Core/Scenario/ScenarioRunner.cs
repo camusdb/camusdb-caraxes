@@ -206,15 +206,27 @@ public sealed class ScenarioRunner
         Console.WriteLine($"==> waiting up to {scenario.SettleSeconds}s for partition leadership to settle");
         using HttpProbes probes = new();
 
+        // Waits for leadership to be spread, not merely resolved. Both conditions share the one
+        // budget: a cluster that resolves instantly and sits concentrated has not settled into
+        // anything a capacity run can measure, and the balancer needs the idle seconds after seeding
+        // to move it — which is time this wait was already spending.
+        List<string> nodeNames = plan.Nodes.Select(n => n.Name).ToList();
         Caraxes.Core.LeaderBalance.LeaderSnapshot snapshot = await Caraxes.Core.LeaderBalance.LeaderObservation
-            .WaitForStableAsync(plan, probes, TimeSpan.FromSeconds(scenario.SettleSeconds), cancellationToken)
+            .WaitForSpreadAsync(plan, probes, TimeSpan.FromSeconds(scenario.SettleSeconds), cancellationToken)
             .ConfigureAwait(false);
 
-        string placement = snapshot.Format(plan.Nodes.Select(n => n.Name).ToList());
+        string placement = snapshot.Format(nodeNames);
+        leadershipSpread = Caraxes.Core.LeaderBalance.LeaderObservation.IsSpread(snapshot, nodeNames);
 
-        if (snapshot.TotalPartitions > 0 && snapshot.ResolvedPartitions == snapshot.TotalPartitions)
+        if (leadershipSpread)
         {
-            notes.Add($"leadership settled before the measured window: {placement}");
+            notes.Add($"leadership settled and spread before the measured window: {placement}");
+        }
+        else if (snapshot.TotalPartitions > 0 && snapshot.ResolvedPartitions == snapshot.TotalPartitions)
+        {
+            notes.Add(
+                $"leadership resolved but did NOT spread within {scenario.SettleSeconds}s: {placement}; " +
+                "every partition has a leader, but they are not distributed across the nodes");
         }
         else
         {
@@ -227,7 +239,6 @@ public sealed class ScenarioRunner
         // throughput number: the run reads as a three-node result while one node's disk and Raft
         // group did all the durable work. Naming it here means a later reader does not have to infer
         // it from the per-node series.
-        List<string> nodeNames = plan.Nodes.Select(n => n.Name).ToList();
         if (nodeNames.Count > 1 && snapshot.ResolvedPartitions > 1)
         {
             string busiest = nodeNames.OrderByDescending(snapshot.LeadersOn).First();
@@ -251,6 +262,12 @@ public sealed class ScenarioRunner
     /// every scenario, fault-free ones included: the health series is what lets the verdict catch
     /// a node that died while its container stayed <c>Up</c>.
     /// </summary>
+    private IReadOnlyList<PlacementSample> placementSamples = [];
+
+    /// <summary>Whether leadership was spread across the nodes when the measured window opened. Set
+    /// by the settle step; graded only when the scenario asks for it.</summary>
+    private bool leadershipSpread;
+
     private async Task<WorkloadInvocation> RunWorkloadWithNemesisAsync(
         WorkloadRunner workload, ClusterPlan plan, string artifactsDir, List<string> notes, CancellationToken cancellationToken)
     {
@@ -262,8 +279,14 @@ public sealed class ScenarioRunner
         // with a fresh token, so cancelling here never leaves a fault un-healed.
         using CancellationTokenSource sideStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+        // Watched across the whole invocation, graded over the measured window alone. Warm-up is
+        // exactly when leadership is expected to move, so grading it would report churn the run
+        // deliberately paid for outside its numbers.
+        PlacementPoller placementPoller = new(plan);
+
         Task<WorkloadInvocation> workloadTask = workload.RunAsync(scenario, artifactsDir, "run", cancellationToken);
         Task monitorTask = monitor.RunAsync(sideStop.Token);
+        Task placementTask = placementPoller.RunAsync(sideStop.Token);
         Task? nemesisTask = scenario.Nemesis is null
             ? null
             : new NemesisRunner(plan, probes).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
@@ -296,11 +319,73 @@ public sealed class ScenarioRunner
             {
                 notes.Add($"node monitor reported: {e.Message}");
             }
+
+            try
+            {
+                await placementTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                notes.Add($"placement watch reported: {e.Message}");
+            }
         }
+
+        placementSamples = placementPoller.Samples;
 
         if (scenario.Nemesis is not null)
             notes.Add($"nemesis timeline: {timelinePath}");
         return result;
+    }
+
+    /// <summary>
+    /// Reports whether the topology held for the measured window, from the samples taken alongside it.
+    ///
+    /// <para>Cut to the run's own anchor rather than to the scenario's configured warm-up, because the
+    /// workload decides when measurement began and a slow seed would put a computed window in the
+    /// wrong place. Without an anchor the samples are graded whole and the note says so — a wider
+    /// window can only over-report movement, never hide it.</para>
+    ///
+    /// <para>A note, not a verdict. A topology that moved does not make a run invalid; it makes its
+    /// number an average of two clusters, which is a thing the reader has to know and the harness
+    /// cannot decide for them.</para>
+    /// </summary>
+    private void GradePlacementStability(string artifactsDir, List<string> notes)
+    {
+        if (placementSamples.Count == 0)
+            return;
+
+        MeasuredWindow? window = WorkloadArtifacts.ReadMeasuredWindow(Path.Combine(artifactsDir, "run"));
+
+        IReadOnlyList<PlacementSample> measured = window is null
+            ? placementSamples
+            : placementSamples.Where(sample => window.Contains(sample.Utc)).ToList();
+
+        PlacementStability stability = PlacementWatch.Grade(measured);
+        notes.Add(window is null
+            ? $"{stability.Note} (graded over the whole run: it recorded no measured-window anchor)"
+            : stability.Note);
+    }
+
+    /// <summary>
+    /// Fails a run that started with leadership concentrated on one node, when the scenario asked for
+    /// it to be spread.
+    ///
+    /// <para>Opt-in for the same reason the quiet-host and client-headroom checks are: a reliability
+    /// scenario still answers its question on a lopsided cluster, and some scenarios concentrate
+    /// leadership deliberately. A <b>capacity</b> run cannot — one node leading every partition means
+    /// the number it produces is that node's, whatever the request distribution looks like.</para>
+    /// </summary>
+    private void GradeLeadershipSpread(List<string> notes, ref bool passed)
+    {
+        if (!scenario.Checks.RequireSpreadLeadership || leadershipSpread)
+            return;
+
+        passed = false;
+        notes.Add(
+            "FAIL: leadership was not spread across the nodes when the measured window opened " +
+            "(checks.require_spread_leadership). One node leading every partition makes this run a " +
+            "measurement of that node, not of the cluster — raise settle_seconds to give the leader " +
+            "balancer more idle time, or re-run.");
     }
 
     private ScenarioVerdict BuildVerdict(WorkloadInvocation run, string artifactsDir, List<string> notes)
@@ -360,6 +445,8 @@ public sealed class ScenarioRunner
 
         GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
+        GradePlacementStability(artifactsDir, notes);
+        GradeLeadershipSpread(notes, ref passed);
         GradeClusterFacts(outputDir, notes, ref passed);
         GradeClientHeadroom(outputDir, notes, ref passed);
 

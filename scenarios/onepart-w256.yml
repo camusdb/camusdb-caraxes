@@ -1,0 +1,61 @@
+# ONE-PARTITION CAPACITY SWEEP — arm: 256 workers / 128 connections.
+#
+# WHY. Task 50 measured a single partition at 1,182 ops/s against 450 for three, driven by a KV
+# batch density of 18.96 entries per batch and 0.82 WAL batches per completed operation — group
+# commit finally coalescing. But that arm needed 29.994 requests in flight against a 32-worker cap,
+# so it was pinned at the CLOSED-LOOP LIMIT, not necessarily at the server's. Write p50 there was
+# 45.8 ms against 118.6 ms at three partitions; low latency is exactly the condition under which a
+# fixed worker count becomes the binding constraint rather than the database.
+#
+# 1,182 ops/s is therefore a LOWER BOUND on this configuration, and quoting it as a capacity number
+# would be the same error as reading a closed-loop figure as a ceiling anywhere else. This sweep
+# finds where throughput actually stops rising.
+#
+# WHAT TO READ. Throughput against workers, and "In-flight needed" against the worker cap in each
+# arm's bottleneck report. While in-flight tracks the cap and throughput keeps rising, the client is
+# still the limit. The knee is where throughput flattens while latency climbs — that is the server's
+# capacity, and only then may a number be quoted as one.
+#
+# CONNECTIONS SCALE WITH WORKERS (half, as at 32/16) so the client's connection pool cannot become
+# the new artificial limit and be mistaken for the server saturating.
+#
+# TOPOLOGY IS THE ONE UNDER TEST: 1 partition, 12 tables — many independent key spaces feeding a
+# single Raft group, which is what produced the density. Leadership is trivially "spread" at one
+# partition, so require_spread_leadership is deliberately OFF here: it would pass vacuously and
+# imply a check that was not really made.
+name: onepart-w256
+cluster:
+  name: onepartw256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 12000
+  tables: 12
+  mode: closed
+  workers: 256
+  connections: 128
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

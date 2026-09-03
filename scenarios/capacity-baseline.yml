@@ -56,6 +56,17 @@
 #     fingerprint sha256:a9e6657b522842c4. Doc: runs/scenarios/capacity-baseline-r6/baseline.md
 #
 # HOST: Debian Linux x86_64, i7-13620H (16 threads) / 31 GB / Samsung NVMe, rootful Docker 29.7.2
+#   2026-09-02 — 407.86 completed ops/s median, CV 0.7%, write p99 430 ms (write p50 123.4 ms,
+#     read p99 70.2 ms, 204.28 committed write txns/s). Four usable reps (k156r1..r4), all clean —
+#     no rep rejected. server 0.11.2, Kahuna.Core 1.5.6, Kommander 1.4.5, single-fsync commit ON.
+#     THIS IS THE CURRENT FREEZE: pass `compare --p99-budget-ms 430`.
+#     Against the 1.5.5 freeze below (416.44 / 421 ms) this is -2.1% throughput and +2% write p99.
+#     Read that as "no material change, possibly a small cost" rather than a proven regression: the
+#     two arms' within-session ranges do not overlap (406.2-412.9 against 416.4-417.2), but the
+#     gateway campaign's three pooled controls on this same 1.5.6 stack landed at 412.6 median —
+#     between the two freezes — so session-to-session variation is of the same order as the gap.
+#     If a later 1.5.6 measurement matters to a decision, pair it in-session rather than against
+#     either freeze.
 #   2026-08-31 — 416.44 completed ops/s median, CV 0.1%, write p99 421 ms (write p50 121.0 ms,
 #     read p99 68.1 ms). Three usable reps (lnxr1, lnxr3, lnxr4); lnxr2 was rejected by the
 #     quiet-host guard at load 8.04 — its 415.65 ops/s sat within 0.4% of the usable reps, so the

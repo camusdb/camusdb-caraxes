@@ -1,0 +1,67 @@
+# MEMORY-RAISED w128 PAIR — cell: 3 partition(s), 128 workers, 4096 MB/node.
+#
+# WHY. The bank claim 2x2 (`bank-claim-*`, task 2fa9d491) found that consolidating to one partition
+# roughly DOUBLES node memory demand at identical workload and concurrency — 949 MiB at 3 partitions
+# against 1,355 MiB at one, 32 workers both. At 128 workers the one-partition arm sat at 1,437-1,509
+# MiB against a 1536 MB limit: 94-98%. Rep 1 survived and recorded 2,100 ops/s (5.18x the paired
+# baseline). Rep 2's camus1 was OOM-KILLED mid-window with no fault injected — `createdump`, signal 6,
+# `Out of memory.` on stderr — taking 17,058 domain errors and a leadership move with it.
+#
+# So 2,100 ops/s is unreplicated and was measured on a node about to die. It must not be quoted until
+# this runs.
+#
+# WHY THE MEMORY IS SPENT, not incidental: the same mechanism that produces the throughput. One
+# partition means one deep queue — 61.7 queued items against 2.2 at three partitions — and 39-entry
+# batches against 4.74. That in-flight state is the memory. Throughput here is bought with memory,
+# which makes the ceiling a configuration question rather than a benchmark detail.
+#
+# WHAT FALSIFIES WHAT.
+#   - If p1 reproduces ~2,100 across both reps with headroom to spare, 5.18x is real and the 1536 MB
+#     limit was the only thing in the way.
+#   - If p1 lands materially below 2,100, then rep 1's figure was inflated by a node in GC distress
+#     or about to fail, and the honest headline stays at p1-w32's 3.20x.
+#   - If p1 still approaches the new cap, the topology does not have a fixed memory cost and the
+#     trade needs characterising as a curve, not a number.
+#
+# BOTH ARMS are raised to 4096 MB even though the 3-partition arm never needed it (peak 1,061 MiB).
+# Raising only the arm that OOM'd would move two variables between the arms at once and make the
+# pair uninterpretable. The 3-partition arm is expected to be unchanged; that expectation is itself
+# the control, and if it moves, the memory limit is doing something beyond preventing the crash.
+#
+# NOT a re-baseline. `capacity-baseline.yml` stays at 1536 MB and 407.86 ops/s remains the paired
+# baseline for the 10x ratio. These runs answer one question about one cell.
+name: bank-mem-p3-w128
+cluster:
+  name: bankmemp3w128
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 5m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true

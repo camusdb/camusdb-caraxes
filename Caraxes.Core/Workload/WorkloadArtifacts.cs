@@ -5,6 +5,7 @@
  * file that was distributed with this source code.
  */
 
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -153,6 +154,20 @@ public sealed class ClientResourcesSummary
 /// <summary>Loads the workload's JSON artifacts from a run directory. A missing or malformed file
 /// surfaces as null so the caller distinguishes "the workload produced no summary" (it crashed
 /// before writing one) from a summary that merely reports an invalid run.</summary>
+/// <summary>The half-open UTC instant range a run measured.</summary>
+public sealed record MeasuredWindow(DateTime StartUtc, DateTime EndUtc)
+{
+    public bool Contains(DateTime utc) => utc >= StartUtc && utc <= EndUtc;
+}
+
+/// <summary>The run's own timing anchor, as written to <c>run-meta.json</c>.</summary>
+public sealed class RunMeta
+{
+    public string MeasureStartUtc { get; set; } = "";
+
+    public double MeasureSeconds { get; set; }
+}
+
 public static class WorkloadArtifacts
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -176,6 +191,27 @@ public static class WorkloadArtifacts
     /// <summary>Null when the measured window caught too few samples to compute a delta.</summary>
     public static ClientResourcesSummary? ReadClientResources(string outputDir) =>
         ReadJson<ClientResourcesSummary>(Path.Combine(outputDir, "client-resources.json"));
+
+    /// <summary>
+    /// The window the run actually measured, or null when it did not record one.
+    ///
+    /// <para>The workload writes this anchor rather than the harness computing it from the scenario's
+    /// warm-up and duration: the workload is what decides when measurement began, and a seeding pass
+    /// that ran long would put a computed window in the wrong place. Any evidence the harness cuts to
+    /// the measured window has to use the same anchor as the artifacts it will be read beside.</para>
+    /// </summary>
+    public static MeasuredWindow? ReadMeasuredWindow(string outputDir)
+    {
+        RunMeta? meta = ReadJson<RunMeta>(Path.Combine(outputDir, "run-meta.json"));
+        if (meta is null || meta.MeasureSeconds <= 0)
+            return null;
+
+        if (!DateTime.TryParse(meta.MeasureStartUtc, null, DateTimeStyles.RoundtripKind, out DateTime start))
+            return null;
+
+        DateTime startUtc = start.ToUniversalTime();
+        return new MeasuredWindow(startUtc, startUtc.AddSeconds(meta.MeasureSeconds));
+    }
 
     private static T? ReadJson<T>(string path) where T : class
     {

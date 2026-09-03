@@ -1,0 +1,63 @@
+# HOT-RANGE FAILOVER UNDER CROSS-PARTITION LOAD. Task 60 of Cluster throughput 10x Phase 2.
+#
+# Same workload and topology as `fanout-gate`, with one node killed for 30s in the middle of the
+# measured window. The question is not whether throughput dips — it will — but whether the
+# all-or-nothing invariant survives a participant dying mid-commit, and whether the cluster resumes.
+#
+# WHAT THIS TESTS THAT THE FAULT-FREE GATE CANNOT. A 2PC commit whose participant is killed between
+# prepare and decision is exactly the window where a half-transfer becomes possible. Conservation of
+# SUM(balance) across tables is checked after the run either way, so a leaked or duplicated leg is
+# caught rather than averaged away.
+#
+# `expect_faults: true` because indeterminate transactions are legitimate here: a commit whose
+# outcome was unknown when its coordinator died is unresolved, not wrong, and the reconciliation band
+# widens to admit exactly that many. A leak outside that band is a real failure.
+#
+# ALSO A REGRESSION TEST FOR THE RESTART PATH. A node restarting while a peer was briefly unreachable
+# used to crash on startup (Vorpal 3fa94d27, fixed in c69de80f) — found by accident, never covered.
+# The kill-and-rejoin here exercises that path deliberately.
+name: fanout-failover
+cluster:
+  name: fanoutfailover
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 7
+  events:
+    # One kill, deep inside the measured window so the run has a clean steady state on both sides of
+    # it. `random` rather than a named node because with leadership spread 1/1/1 every node leads a
+    # partition that is carrying work — so whichever is chosen, this IS the hot-range failover the
+    # task asks about, and nothing has to be hard-coded to the placement a particular run drew.
+    - { at: 3m, fault: kill, target: random, duration: 30s }
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true

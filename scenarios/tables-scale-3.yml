@@ -1,0 +1,73 @@
+# TABLE-COUNT SCALING — arm: 3 table(s). Task 20 of Cluster throughput 10x Phase 2.
+#
+# THE QUESTION. Phase 1 ended on an invariant nothing moved: ~420 Raft write batches/s per partition,
+# unchanged across 16x concurrency and two workloads. That has two very different explanations, and
+# a single-table run cannot tell them apart:
+#
+#   (a) the engine cannot go faster, or
+#   (b) one leader carries everything.
+#
+# Independently routed tables separate them. A table's row space `{dbId}:{tableId}:r` is placed by
+# jump consistent hash, so N tables spread over the partition pool while the offered work stays
+# identical. If throughput is flat from 1 to 12 tables, partition parallelism is not the ceiling and
+# Phase 2's premise is wrong. If it rises, the single hot partition was the ceiling all along.
+#
+# WHAT IS HELD CONSTANT. Total rows (12,000), workers, connections, duration, cluster shape and
+# durability settings. Rows are a TOTAL across tables, not per table — 12,000 in one table here, or
+# 1,000 in each of twelve — so the working set is identical in every arm. That is not a detail: a
+# 50x working-set difference was measured costing 45-52% during Phase 1, which is larger than the
+# effect this campaign is trying to detect.
+#
+# WHAT VARIES. The table count, and nothing else.
+#
+# LEADERSHIP IS PRE-PLACED, NOT HOPED FOR. `require_spread_leadership` fails the run if leadership
+# is still concentrated when the measured window opens. A run measured on 2026-09-02 settled at
+# camus1=3 camus2=0 camus3=0, split its requests 33.4/33.3/33.4 across three gateways, was reported
+# "Distributed", and spent its whole window with one node's Raft group and one node's disk doing
+# 100% of the durable work. Without this check the arms would differ by which bootstrap election
+# they happened to draw.
+#
+# HOW MANY PARTITIONS THIS ACTUALLY REACHES IS MEASURED, NOT PREDICTED. Hash placement does not put
+# N tables on N partitions; read `cluster-facts.json` ranges[] and the concentration section of
+# `bottleneck-report.md` before interpreting any number here. One table reaches exactly one
+# partition by construction; the others reach whatever they reach.
+#
+# COMPARABLE ONLY WITHIN THIS CAMPAIGN. Different workload kind and table count from the capacity
+# baseline; do not compare across.
+name: tables-scale-3
+cluster:
+  name: tablesscale3
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true

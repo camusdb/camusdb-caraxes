@@ -1,0 +1,69 @@
+# BANK CONCURRENCY HEAD-ROOM — 1 partition, 512 workers, 8192 MB/node. THE DECIDING RUN.
+#
+# WHY. Three clean reps at 256 workers give 3,411 / 3,444 / 3,487 ops/s (median 3,444) = 8.50x the
+# paired baseline of 405.3. The 10x gate needs ~4,052, so the gap is +17.7%. Every arm so far has
+# stayed CLIENT-limited — in-flight 243-247 against a 256 cap — so throughput has never yet been
+# shown to stop rising. This run asks whether concurrency alone closes the remaining gap.
+#
+# THE TENSION THIS RUN EXISTS TO EXPOSE. Phase 0 froze the production write p99 budget at 430 ms.
+# The arms so far: w128 = 278 ms (comfortably inside), w256 = 474 ms (10% OVER). Tail latency is
+# growing faster than throughput, so w512 may well reach ~4,000 ops/s while blowing the budget
+# outright. The plan is explicit that the accepted run may not show a progressive tail-latency
+# collapse EVEN IF its average throughput passes. A w512 that buys 10x with a 1-second p99 is a
+# failed result, not a passed one, and must be reported that way.
+#
+# WHAT FALSIFIES WHAT.
+#   - >=4,052 ops/s with p99 at or under 430 ms -> the 10x gate is met on the claim workload by
+#     topology and concurrency alone, and Phase 3 is not needed to reach it.
+#   - >=4,052 ops/s with p99 well over 430 ms -> throughput target met, latency contract broken. The
+#     remaining work moves to the commit path, which is where cost per operation actually falls.
+#   - <4,052 with in-flight still pinned near 512 -> still client-limited; the ceiling is elsewhere.
+#   - <4,052 with in-flight falling below 512 -> the server is finally binding. This is the knee and
+#     the number is a capacity, not a floor.
+#
+# WHY 8192 MB. w256 peaked at 4,301 MiB of 6,144 (70%). The in-flight state that IS this topology's
+# memory cost scales with concurrency, so 6,144 would likely bind at 512 and repeat the OOM that
+# invalidated bank-claim-p1-w128-r2. 8192 x 3 = 24 GB on a 31 GB host with 27 GB available; the
+# generator needs little. If this run approaches ITS cap too, the memory-for-throughput trade has no
+# plateau, which is a shipping-configuration finding independent of the throughput number.
+#
+# QUIESCE. Run only behind the tightened gate (load < 0.8 AND Dirty+Writeback < 64 MiB).
+# bank-mem-p1-w256-r2 recorded 912 ops/s — 4x slow from its first second — because it started at
+# ambient load 1.44 while a 1M-op predecessor was still flushing. Load average cannot see dirty page
+# cache. That run is discarded, not averaged.
+#
+# NOT a re-baseline. capacity-baseline.yml stays at 1536 MB / 407.86 ops/s as the paired baseline.
+name: bank-mem-p1-w512
+cluster:
+  name: bankmemp1w512
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 8192
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 512
+  connections: 256
+  duration: 5m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

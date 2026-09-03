@@ -66,6 +66,20 @@ public sealed class ChecksSpec
     /// </summary>
     public bool RequireQuietHost { get; set; }
 
+    /// <summary>
+    /// Fail the run when leadership was still concentrated on one node as the measured window opened.
+    ///
+    /// <para>Default false: a reliability scenario answers its question on a lopsided cluster, and a
+    /// few scenarios concentrate leadership on purpose. Turn it on for a <b>capacity</b> run, where
+    /// the claim is that the number measured is the cluster's.</para>
+    ///
+    /// <para>It is not a redundant check on the request distribution, which is the trap it exists to
+    /// close: a measured run split requests 33.4/33.3/33.4 across three gateways — reported as
+    /// "Distributed" — while one node led every partition and carried 100% of the Raft and durable
+    /// write work. An even gateway share says nothing about which disk does the writing.</para>
+    /// </summary>
+    public bool RequireSpreadLeadership { get; set; }
+
     /// <summary>An independent copy, field for field. Memberwise for the reason given on
     /// <see cref="WorkloadSpec.Clone"/>: a hand-written list silently drops the next field added.</summary>
     public ChecksSpec Clone() => (ChecksSpec)MemberwiseClone();

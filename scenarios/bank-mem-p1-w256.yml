@@ -1,0 +1,65 @@
+# BANK CONCURRENCY HEAD-ROOM — 1 partition, 256 workers, 6144 MB/node.
+#
+# WHY. With memory raised to 4096 MB the one-partition arm reached 2,756 ops/s at 128 workers —
+# 6.80x the paired baseline (405.3) — and was STILL CLIENT-LIMITED: 118.260 requests in flight
+# against a 128-worker cap. A closed-loop run pinned at its cap is measuring the client, not the
+# server, so 6.80x is a floor for this configuration rather than its capacity. The 10x gate needs
+# ~4,052 ops/s, which is +47% from here. This run asks whether concurrency alone can cover it.
+#
+# WHY 6144 MB. w128 peaked at 3,234 MiB of 4,096 (79%). Doubling the workers doubles the in-flight
+# state that IS the memory cost here, so 4,096 would likely bind and repeat the OOM that invalidated
+# bank-claim-p1-w128-r2. 6144 x 3 nodes = 18 GB on a 31 GB host, which leaves the generator room.
+# Memory must stay off the critical path for this to answer a concurrency question.
+#
+# WHAT FALSIFIES WHAT.
+#   - Throughput rises and in-flight stays pinned near 256 -> still client-limited, sweep further.
+#   - Throughput rises but in-flight falls well below 256 -> the server is now binding; this is the
+#     knee, and the number is a capacity rather than a floor.
+#   - Throughput flat or down with p99 climbing -> saturated at ~2,756 and the remaining 3.2x must
+#     come from the commit path, not from topology or concurrency.
+#   - Peak memory approaches 6144 -> the memory-for-throughput trade has no plateau, which is a
+#     shipping-configuration finding in its own right.
+#
+# WATCH THE TAIL. The baseline's frozen write p99 budget is 430 ms. w128 at 4096 MB came in at
+# 277.9/283.5 ms — better than baseline at 6.8x the throughput. The plan forbids accepting a run
+# with progressive tail-latency collapse no matter what its average says, so a w256 that buys
+# throughput with a p99 blow-out does not count as progress.
+#
+# NOT a re-baseline. capacity-baseline.yml stays at 1536 MB and 407.86 ops/s remains the paired
+# baseline. The memory raise is a required enabler of the topology change, not an independent lever:
+# the 3-partition control at 4096 MB moved only +4.2% (511.6 -> 533.1), so headroom alone buys
+# essentially nothing.
+name: bank-mem-p1-w256
+cluster:
+  name: bankmemp1w256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 128
+  duration: 5m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

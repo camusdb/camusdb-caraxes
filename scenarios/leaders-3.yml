@@ -1,0 +1,69 @@
+# ACTIVE-LEADER SCALING — arm: 3 partition(s), so 3 active Raft leader(s). Task 50 of Phase 2.
+#
+# THE QUESTION. Task 20 measured +17.7% from spreading one table's keyspace across three partitions,
+# far short of the 3x proportional scaling would give. That was a table-count experiment: the
+# partition pool was fixed at 3 and the tables were spread across it. This is the complementary
+# measurement — hold the workload shape fixed and vary how many Raft groups exist at all, so the
+# curve is read against leaders rather than against tables.
+#
+# HOW THE ARM IS SET. `partitions: 3` on a 3-node cluster. With hash routing every table lands
+# somewhere in the pool, so a pool of one gives one active leader, two gives two, three gives three.
+# This is a more honest lever than choosing table counts that happen to hash onto N partitions:
+# placement would be incidental and unverifiable, and a re-run could silently land differently.
+#
+# WHAT THIS CHANGES BESIDES THE LEADER COUNT — stated because it is inherent, not controlled away.
+# Varying the partition count also varies the number of Raft groups, WAL streams and executors. That
+# is not a confound to be removed; it IS what "one, two or three active leaders" means. The reason
+# it must be said out loud is that the arms therefore differ in more than a scheduling decision, and
+# a reader comparing this curve to task 20's must not treat them as the same experiment.
+#
+# TABLES HELD AT 12, NOT VARIED. Enough tables that every partition in the pool receives work in
+# every arm — a two-partition pool fed by three tables could leave one idle and silently turn a
+# two-leader arm into a one-leader arm. Task 20 measured 12 tables costing ~12% against 3 at equal
+# spread; that cost is constant across these arms and so cannot bias the comparison.
+#
+# ROWS ARE A TOTAL (12,000) across tables, so the working set is identical in every arm. A 50x
+# working-set difference was measured costing 45-52% in Phase 1.
+#
+# TRANSACTION CLASS. `kind: accounts` is shard-disjoint read-modify-write: every transaction stays
+# inside one table, so 100% of them are LOCAL. This curve therefore measures local-transaction
+# scaling only. The cross-range and cross-table class the task also asks for is `fanout`, run as
+# task 60's atomicity gate — the two classes have different costs and mixing them into one number
+# would hide both.
+name: leaders-3
+cluster:
+  name: leaders3
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 12000
+  tables: 12
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true
