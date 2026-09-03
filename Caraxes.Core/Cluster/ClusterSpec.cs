@@ -23,6 +23,11 @@ public sealed class ClusterSpec
 
     public int Nodes { get; set; } = 3;
 
+    /// <summary>The node names this cluster will have, <c>camus1..camusN</c> — the same names
+    /// <see cref="ClusterPlan"/> assigns and the nemesis targets by. Available before a plan is built
+    /// so a spec that names a node can be validated at read time.</summary>
+    public IEnumerable<string> NodeNames => Enumerable.Range(1, Nodes).Select(i => $"camus{i}");
+
     public int Partitions { get; set; } = 3;
 
     /// <summary>Per-partition replica-set size. 3 is the standard chaos-test posture; 0 keeps
@@ -67,6 +72,17 @@ public sealed class ClusterSpec
     /// <summary>Maps to CamusDB <c>default_isolation_level</c>: read_committed | serializable.</summary>
     public string Isolation { get; set; } = "read_committed";
 
+    /// <summary>Maps to CamusDB <c>default_read_validation</c>: none | track_and_validate. Empty
+    /// (the default) omits the key so the engine default applies.
+    ///
+    /// Scope note, verified in Kahuna's TransactionCoordinator (RequiresReadSetValidation): an
+    /// optimistic transaction always validates its read set at commit regardless of this setting,
+    /// so the knob changes behaviour only for pessimistic transactions, where
+    /// <c>track_and_validate</c> adds a commit-time read-set check on top of the locks. It is
+    /// plumbed here so soak scenarios can sweep the setting explicitly instead of relying on the
+    /// shipped default.</summary>
+    public string ReadValidation { get; set; } = "";
+
     public bool KeyRangeSharding { get; set; }
 
     public bool DistributedQueryExecution { get; set; }
@@ -93,10 +109,45 @@ public sealed class ClusterSpec
     /// scenarios, not for kill/recovery durability tests. 0 (the default) keeps the named volume.</summary>
     public int DataTmpfsMb { get; set; }
 
+    /// <summary>When &gt; 0, each node container gets a hard memory limit of this many MiB
+    /// (compose <c>mem_limit</c>). This is the fix for the observed unbounded RSS growth: CamusDB
+    /// runs with Server GC, and with no cgroup limit each node sizes its heap against the whole
+    /// Docker VM — three nodes each grew past 2 GiB of mostly-empty committed heap (live managed
+    /// objects were ~190 MiB) until the VM OOM-killed one. The limit alone is not enough: the
+    /// runtime's default heap self-cap is 75% of the cgroup limit, and ~350-400 MiB of native
+    /// memory (RocksDB) sits outside the managed heap, so at 1536 MiB the two together meet the
+    /// limit and a loaded node still dies (soak run G, OOM at t+88m). The generator therefore
+    /// also sets <c>DOTNET_GCHeapHardLimitPercent</c> to 60% whenever a limit is set — see
+    /// <see cref="ComposeGenerator"/>. Measured guidance: limits below ~1 GiB starve the GC;
+    /// 1536-2048 is a good posture for the bank soaks on a 6-8 GiB Docker VM.
+    /// 0 (the default) keeps the old behavior: no limit.</summary>
+    public int MemoryLimitMb { get; set; }
+
     /// <summary>Raw passthrough into the generated config's <c>kahuna:</c> section, for knobs the
     /// spec does not model (election timing, pacing, WAL settings). Keys are written verbatim, so
     /// they must be valid CamusDB <c>kahuna.*</c> option names.</summary>
     public Dictionary<string, object> Kahuna { get; set; } = [];
+
+    /// <summary>Per-category log levels for the node containers, e.g.
+    /// <c>{ Kommander: Information }</c>. The entries are joined into CamusDB's
+    /// <c>CAMUS_LOG_FILTERS</c> environment variable (<c>Category=Level,...</c>), which its
+    /// Program.cs applies last so it outranks the per-category defaults.
+    ///
+    /// Note this deliberately does NOT use <c>Logging__LogLevel__*</c>: CamusDB calls
+    /// <c>ClearProviders()</c> and installs explicit <c>AddFilter</c> rules for Kahuna, Kommander
+    /// and Grpc, so the standard configuration path never reaches those categories. That was
+    /// verified the hard way — the variable arrived in the container and Kommander still logged
+    /// only at Warning.
+    ///
+    /// This exists because CamusDB ships <c>"Kommander": "Warning"</c>, which hides every
+    /// Kommander <c>Information</c> line — including election outcomes, leader-balancer transfers,
+    /// and (before they were raised to Warning) snapshot rescue. Two investigations were misled by
+    /// that filter: "snapshot mentions: 0" could not distinguish "never attempted" from "attempted
+    /// silently", and the run-H stall left a silent tail because election wins log at Information.
+    ///
+    /// Leave empty (the default) for normal runs — Information on Kommander is verbose. Set it for
+    /// a diagnostic run where leadership behaviour is the thing under test.</summary>
+    public Dictionary<string, string> LogLevels { get; set; } = [];
 
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
@@ -138,6 +189,10 @@ public sealed class ClusterSpec
         if (Isolation is not ("read_committed" or "serializable"))
             throw new ClusterSpecException($"'isolation' must be 'read_committed' or 'serializable', got '{Isolation}'");
 
+        if (ReadValidation is not ("" or "none" or "track_and_validate"))
+            throw new ClusterSpecException(
+                $"'read_validation' must be empty (engine default), 'none' or 'track_and_validate', got '{ReadValidation}'");
+
         if (MaxQueryParallelism < 1)
             throw new ClusterSpecException($"'max_query_parallelism' must be >= 1, got {MaxQueryParallelism}");
 
@@ -146,6 +201,14 @@ public sealed class ClusterSpec
 
         if (DataTmpfsMb < 0)
             throw new ClusterSpecException($"'data_tmpfs_mb' must be >= 0 (0 = named volume), got {DataTmpfsMb}");
+
+        // A tiny limit does not fail cleanly: the container boots, the runtime and RocksDB alone
+        // exceed it, and the node is OOM-killed mid-scenario in a way that reads as a database
+        // crash. Refuse limits below what the stack demonstrably needs to stand up.
+        if (MemoryLimitMb is not 0 and < 512)
+            throw new ClusterSpecException(
+                $"'memory_limit_mb' must be 0 (no limit) or >= 512, got {MemoryLimitMb}; " +
+                "native memory (RocksDB) alone uses ~350-400 MiB per node");
 
         foreach (int port in (int[])[BaseRestPort, BaseGrpcPort, BaseRaftPort])
             if (port is < 1 or > 65535)

@@ -10,7 +10,8 @@ namespace Caraxes.Core.Cluster;
 /// <summary>
 /// Drives a cluster's lifecycle: generate artifacts (per-node configs + compose file) into the run
 /// directory, ensure certs, build the image, bring the fleet up, and wait until every node reports
-/// ready. Artifacts are regenerated on every command from the spec — the spec is the source of
+/// ready. A certificate regeneration forces the image build even when the caller asked to skip it —
+/// see <see cref="ShouldBuildImage"/>. Artifacts are regenerated on every command from the spec — the spec is the source of
 /// truth and the run directory is disposable output, so <c>down</c> works even after the run
 /// directory was deleted.
 /// </summary>
@@ -43,6 +44,16 @@ public sealed class ClusterOrchestrator
         File.WriteAllText(ComposeFilePath, ComposeGenerator.Generate(plan, configDirInCompose: "./config"));
     }
 
+    /// <summary>
+    /// Decides whether <c>up</c> builds the image. A caller asks to skip the build to save time when
+    /// only runtime config changed, but that request loses to a certificate regeneration: the image
+    /// bakes the .pfx and its CA anchor together, so a new certificate on disk against an old image
+    /// breaks every inter-node handshake with <c>UntrustedRoot</c>. The matrix runner reaches this
+    /// case without any flag, because it skips the build on every cell after the first and a
+    /// <c>nodes</c> axis changes the SAN parameters between cells.
+    /// </summary>
+    public static bool ShouldBuildImage(bool skipBuild, bool certsRegenerated) => !skipBuild || certsRegenerated;
+
     public async Task UpAsync(bool skipBuild = false, TimeSpan? readyTimeout = null, CancellationToken cancellationToken = default)
     {
         ClusterSpec spec = plan.Spec;
@@ -50,9 +61,12 @@ public sealed class ClusterOrchestrator
         WriteArtifacts();
         Console.WriteLine($"==> artifacts written to {runDir}");
 
-        await CertProvisioner.EnsureAsync(spec, cancellationToken).ConfigureAwait(false);
+        bool certsRegenerated = await CertProvisioner.EnsureAsync(spec, cancellationToken).ConfigureAwait(false);
 
-        if (!skipBuild)
+        if (skipBuild && certsRegenerated)
+            Console.WriteLine("==> certs changed; building anyway so the image re-bakes the matching CA anchor");
+
+        if (ShouldBuildImage(skipBuild, certsRegenerated))
         {
             Console.WriteLine($"==> building image {spec.EffectiveImage} from {spec.EffectiveCamusdbRepo}");
             await ProcessRunner.RunCheckedAsync(
@@ -62,6 +76,8 @@ public sealed class ClusterOrchestrator
                 streamOutput: true,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
+
+        await ReclaimSubnetAsync(cancellationToken).ConfigureAwait(false);
 
         Console.WriteLine($"==> starting {spec.Nodes} node(s)");
         await ProcessRunner.RunCheckedAsync(
@@ -90,6 +106,56 @@ public sealed class ClusterOrchestrator
         await ProcessRunner.RunCheckedAsync(
             "docker", args, workingDirectory: runDir, streamOutput: true, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+
+        // compose leaves the network behind when anything outside the project still holds an endpoint
+        // on it — a workload container that outlived a killed harness is the case that happens. The
+        // fixed /24 turns that leftover into a hard block on every later run, so finish the job here.
+        foreach (string note in await RemoveOwnNetworkAsync(cancellationToken).ConfigureAwait(false))
+            Console.WriteLine($"==> {note}");
+    }
+
+    /// <summary>
+    /// Clears whatever stands on this cluster's subnet before <c>compose up</c> claims it. A leaked
+    /// Caraxes network from an interrupted run is removed with anything still attached; a network
+    /// this harness did not create is refused with the recovery instructions, because it may be a
+    /// live service that merely shares the address space.
+    ///
+    /// <para>Without this the failure surfaces as docker's <c>invalid pool request: Pool overlaps
+    /// with other one on this address space</c>, which names neither the network nor the container
+    /// pinning it.</para>
+    /// </summary>
+    private async Task ReclaimSubnetAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<DockerNetwork> networks = await DockerNetworks.ListAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<SubnetHolder> blockers = DockerNetworks.FindBlockers(networks, plan.NetworkName, plan.NetworkSubnetCidr);
+
+        foreach (SubnetHolder blocker in blockers)
+        {
+            if (blocker.Kind == SubnetHolderKind.Foreign)
+                throw new InvalidOperationException(
+                    DockerNetworks.ForeignBlockerMessage(blocker.Network, plan.NetworkSubnetCidr));
+
+            Console.WriteLine(
+                $"==> network '{blocker.Network.Name}' is a leftover Caraxes cluster holding {plan.NetworkSubnetCidr}; reclaiming it");
+
+            foreach (string note in await DockerNetworks.RemoveAsync(blocker.Network, cancellationToken).ConfigureAwait(false))
+                Console.WriteLine($"==> {note}");
+        }
+    }
+
+    /// <summary>
+    /// Removes this cluster's own network if <c>compose down</c> could not, force-removing the
+    /// containers still attached to it. Returns what it did, or nothing at all when the network is
+    /// already gone — the normal case, which must stay silent.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> RemoveOwnNetworkAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<DockerNetwork> networks = await DockerNetworks.ListAsync(cancellationToken).ConfigureAwait(false);
+        DockerNetwork? own = networks.FirstOrDefault(n => string.Equals(n.Name, plan.NetworkName, StringComparison.Ordinal));
+
+        return own is null
+            ? []
+            : await DockerNetworks.RemoveAsync(own, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task WaitForReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
@@ -166,6 +232,75 @@ public sealed class ClusterOrchestrator
 
         Console.WriteLine();
         Console.WriteLine($"workload endpoint pool: {plan.WorkloadEndpointPool}");
+    }
+
+    /// <summary>
+    /// Writes every node's container log into <paramref name="destinationDir"/> as
+    /// <c>node-log-{node}.txt</c>, and returns one note per node that could not be captured.
+    ///
+    /// <para>Must be called BEFORE teardown. A container's log dies with the container, so once
+    /// <see cref="DownAsync"/> has run the evidence is gone — and the log is where a whole class of
+    /// diagnostic witness lives, the kind emitted once at a leadership change rather than counted
+    /// into a metric the sampler scrapes. A gate run that reproduced a data-loss defect was left
+    /// unattributable exactly this way: the metric witnesses survived in the scraped series and the
+    /// log-only ones did not.</para>
+    ///
+    /// <para>Best effort by construction: it never throws, because losing a log must not also lose
+    /// the teardown that frees the port and subnet for the next run. Every failure comes back as a
+    /// note so the run says out loud that capture did not happen — silence here would read as
+    /// "captured", which is the failure this method exists to prevent.</para>
+    /// </summary>
+    /// <param name="tail">Last N lines per node; 0 or less captures the whole log. Bound it only
+    /// when disk forces the issue: a promotion fingerprint printed early in a ten-minute run is
+    /// exactly what a tail discards.</param>
+    public async Task<IReadOnlyList<string>> CaptureLogsAsync(
+        string destinationDir,
+        int tail = 0,
+        CancellationToken cancellationToken = default)
+    {
+        List<string> notes = [];
+
+        try
+        {
+            Directory.CreateDirectory(destinationDir);
+        }
+        catch (Exception e)
+        {
+            notes.Add($"node logs were not captured: could not create '{destinationDir}': {e.Message}");
+            return notes;
+        }
+
+        foreach (NodePlan node in plan.Nodes)
+        {
+            string destination = Path.Combine(destinationDir, $"node-log-{node.Name}.txt");
+
+            List<string> arguments = ["logs"];
+            if (tail > 0)
+            {
+                arguments.Add("--tail");
+                arguments.Add(tail.ToString());
+            }
+
+            arguments.Add(node.ContainerName);
+
+            try
+            {
+                (int exitCode, long bytes) = await ProcessRunner
+                    .RunToFileAsync("docker", arguments, destination, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (exitCode != 0)
+                    notes.Add($"node log capture for '{node.Name}' exited {exitCode}; see {Path.GetFileName(destination)}");
+                else if (bytes == 0)
+                    notes.Add($"node log capture for '{node.Name}' produced an empty log");
+            }
+            catch (Exception e)
+            {
+                notes.Add($"node log capture for '{node.Name}' failed: {e.Message}");
+            }
+        }
+
+        return notes;
     }
 
     public async Task LogsAsync(string nodeName, int tail = 200, CancellationToken cancellationToken = default)

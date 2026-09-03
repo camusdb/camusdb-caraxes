@@ -1,0 +1,62 @@
+# CROSS-PARTITION ATOMICITY GATE — fault-free. Task 60 of Cluster throughput 10x Phase 2.
+#
+# WHY THIS EXISTS AND WHAT THE OTHER RUNS DO NOT PROVE. Every run in the tasks 20 and 50 campaigns
+# reconciled exactly — 0 conflicts, 0 indeterminate, 0 failed. None of it is evidence of
+# cross-partition atomicity: `kind: accounts` is shard-disjoint read-modify-write, so every
+# transaction stays inside one table and touches one partition. A clean reconciliation there says
+# the single-partition path is correct and says nothing at all about the multi-participant one.
+#
+# `fanout` is the workload that closes that gap: both legs of every transfer land in DIFFERENT
+# tables, so every write transaction is a genuine cross-partition 2PC commit. The invariant is
+# exact conservation of SUM(balance) across all tables — a half-applied transfer shows up as a
+# non-zero delta and nothing else can produce one.
+#
+# TOPOLOGY IS THE ADOPTED ONE from task 40: 3 tables over 3 partitions, the measured optimum, with
+# leadership spread across all three nodes. That matters here beyond tidiness — a gate that ran with
+# every partition led by one node would be exercising a degenerate 2PC where every participant is
+# local, which is the easy case and not the one that breaks.
+#
+# FAULT-FREE ON PURPOSE. This establishes that the cross-partition path conserves under no
+# adversity at all. The failover legs are separate scenarios; a gate that mixes correctness and
+# chaos cannot say which one a failure came from.
+#
+# NOT A THROUGHPUT MEASUREMENT. fanout pays full 2PC on every write and is not comparable to the
+# accounts campaigns. Its number is recorded for the cross-class comparison task 50 asks for
+# (local vs cross-range/cross-table), never as a capacity result.
+name: fanout-gate
+cluster:
+  name: fanoutgate
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: false
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true

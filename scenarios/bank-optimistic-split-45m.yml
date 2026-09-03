@@ -1,0 +1,91 @@
+# The bank soak, unchanged, with range auto-split turned on. 45-minute window.
+#
+# This is the controlled comparison for the split work. The workload body matches runs K..Z exactly —
+# seed 42, 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows in ONE table,
+# optimistic / read_committed, 45m measure, the same nemesis cadence — so the only differences from
+# run Z are the three cluster-level settings that make splitting possible:
+#
+#   key_range_sharding: true   the table's rows and its owner index become ranges instead of hashes
+#   partitions: 4              a child range needs a partition to move to (2 is the minimum)
+#   kahuna.range_split_*       the count and load branches, both off by default
+#
+# Read it against run Z: same invariant, same fault schedule, same contention, one changed variable.
+# A conservation failure here that run Z did not produce is evidence about splitting, not about the
+# bank workload. A throughput drop is expected to some degree — key-range routing clips locks per
+# range, which helps, while each split adds a Raft group, which costs.
+#
+# Expected split shape: 2,000 rows in one table. A range is a candidate at ~1,500 sampled keys and a
+# child may not go below 250, so the row space divides once into two ~1,000-key children and stops.
+# The owner index (INT64-keyed, therefore eligible) follows the same path. That is 2 splits and 2
+# added partitions — small on purpose, so memory_limit_mb can stay at the 1536 the run-Z comparison
+# needs.
+#
+# THE BAR (as for the bank runs, plus one line):
+#   0. SEED GATE: 2,000 rows seed first-try with zero "re-driving the committed mutation" lines.
+#   1. Exact conservation in BOTH read views: aggregate SUM(balance) AND a full row-scan sum,
+#      quiesced, on every node, equal to the seeded baseline.
+#   2. Zero rows outside their ambiguity bands in the ROW-SCAN view (per-row ledger check).
+#   3. Zero keys end the run with materialized version below their committed head.
+#   4. Zero multi-minute refusal streaks; any wedge onset must heal quickly and loudly.
+#   5. All nodes healthy every sample; throughput noted against the 233-268 ops/s band.
+#   6. kahuna.range.splits > 0 in SHOW ENGINE STATS — otherwise the run says nothing about splitting
+#      and is only another bank window.
+#
+# Engine build under test: CamusDB.Core references Kahuna.Core 1.4.1, which resolves from the repo's
+# local-packages feed (the image build copies nuget.config and local-packages into the context). A
+# node built without that feed cannot resolve the package, so the auto-split options never reach it.
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+name: bank-optimistic-split-45m
+cluster:
+  name: bank-opt-split-45m
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  kahuna:
+    range_split_threshold: 1500
+    range_split_min_range_size: 250
+    range_split_load_threshold: 200
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    range_split_settle_window_ms: 10000
+    range_split_indivisible_cooldown_ms: 300000
+    enable_load_reports: true
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

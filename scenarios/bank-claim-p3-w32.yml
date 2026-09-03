@@ -1,0 +1,74 @@
+# BANK CLAIM RE-BASELINE — cell: 3 partition(s), 32 workers.
+#
+# WHY THIS EXISTS. Every capacity number in Phase 2 was measured on `kind: accounts`: 12,000 rows,
+# shard-disjoint, zero conflicts and zero retries in every run. The plan's 10x gate is not defined on
+# that workload. It requires the "exact workload, topology, durability settings, data shape, client
+# version, and hardware that reproduce the reported 170-210 operations/s" — and that is `kind: bank`:
+# 2,000 rows, transfers between two random accounts, heavy contention. The archived baselines ran
+# 208-216 ops/s with 9,397 conflict retry attempts across 7,417 transactions. So no Phase 2 number
+# may be quoted against the gate until the finding is shown to transfer, or shown not to.
+#
+# WHY IT MIGHT NOT TRANSFER. Phase 2's 2.6x came from consolidating twelve tables onto one Raft
+# group, which raised KV batch density from 2.50 to 18.96 entries per batch. `bank` is a SINGLE
+# table, so hash routing already places its whole keyspace on one partition — the 3-partition
+# baseline is already effectively single-partition for its data, with two idle Raft groups. There
+# are no twelve tables to consolidate. If bank is contention-bound rather than topology-bound, the
+# 1-partition arms will show little or no gain, and that is a real answer, not a failed experiment.
+#
+# WHAT FALSIFIES WHAT. This is a 2x2: partitions {1,3} x workers {32,128}, so topology and
+# concurrency are separated and their interaction is visible.
+#   - If p1 beats p3 at both worker counts, Phase 2's finding transfers and topology is a real lever
+#     on the claim workload.
+#   - If p1 == p3 at both, the two idle Raft groups cost nothing and bank's ceiling is elsewhere —
+#     almost certainly contention, which the conflict and retry counters will show directly.
+#   - If w128 fails to beat w32 in either topology, bank is contention-saturated and added
+#     concurrency only converts into conflict retries. Watch `conflicts` and `RetryAttempts`, not
+#     just ops/s: at 2,000 rows a 4x worker increase raises the collision rate quadratically.
+#
+# HELD CONSTANT against the archived baseline: kind, rows (2,000), read/write split, locking,
+# isolation, replication factor, node count, memory limit. VARIED: partitions and workers only.
+#
+# DELIBERATELY DIFFERENT from the archived baseline, and both differences are stated rather than
+# hidden: no nemesis (this is a capacity measurement, not a reliability run — the archived baselines
+# carried pause/slow faults and one of them failed reconciliation), and a 5-minute measured window
+# rather than 45 minutes so the 2x2 fits in one campaign. A 45-minute confirmation run at the
+# winning cell is REQUIRED before any number here is quoted as a claim — Phase 1 saw a cluster stop
+# serving at ~33 minutes, which a 5-minute window cannot see.
+#
+# `expect_faults: true` is kept from the archived baseline. It waives the conflict validity warning,
+# which bank triggers by design; removing it would mark every run invalid and break comparability.
+name: bank-claim-p3-w32
+cluster:
+  name: bankclaimp3w32
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true

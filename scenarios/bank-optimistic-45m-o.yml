@@ -1,0 +1,70 @@
+# Run O: confirmation of the recovery-hold fix (repacked Kahuna 1.3.3).
+#
+# Run M fixed the throughput regression (226.6 ops/s vs run L's 82.9, no unresolved-proposal wedge)
+# but reconciled SUM(balance) at delta -2 with 54 indeterminate transactions. That deficit is
+# ambiguous: the reconciliation scan is read-committed and can observe a late commit half-applied,
+# and teardown destroyed the node logs before the fence lines could be counted or the deficit
+# re-checked after quiescence. This run keeps the cluster up (teardown: false) so the deficit can
+# be tested for durability with a quiesced re-read, and node logs can be collected.
+#
+# Run L (Kahuna 1.3.2) fell to 82.9 ops/s from run K's 250.8 (Kahuna 1.3.1), with a step change near
+# measure-second 1300 and episodic 30-second troughs. The 1.3.1 -> 1.3.2 engine delta is exactly the
+# post-prepare staged-base fence commit; its hot-path additions were the StagedBase probe on every
+# written key inside the post-prepare barrier and the entry load that probe forces in the actor.
+# Kahuna 1.3.3 moves the fence to the prepare's own apply position (an in-memory committed-head
+# compare inside the intent store, refusing only the prepare acknowledgement) and removes the probe
+# from the 2PC commit path; the one-phase bundle re-runs the pre-propose staged-base validation
+# immediately before its propose instead.
+#
+# The scenario body matches runs K/L (seed 42, 3 nodes, RF 3, 32 workers over 16 connections, 2,000
+# contended rows, optimistic / read_committed, same nemesis cadence) except:
+#   - duration 45m: the run-L collapse begins near minute 20, so 45 minutes discriminates. Buckets
+#     3-4 near 230-260 ops/s mean the regression is fixed; near 40-90 ops/s mean it is not.
+#   - Kahuna raised to Information, so staged-base fence refusals and one-phase decisions are
+#     observable from artifacts (run L logged zero fence lines at Warning).
+#
+# Pass questions, in priority order:
+#   1. Does throughput hold near run-K levels past minute 25?
+#   2. Does SUM(balance) conserve exactly? The fence rework must not reopen the run-K lost update.
+#   3. How often does kahuna.transactions.staged_base_prepare_rejections fire (log lines)?
+name: bank-optimistic-45m-o
+cluster:
+  name: bank-opt-45mo
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

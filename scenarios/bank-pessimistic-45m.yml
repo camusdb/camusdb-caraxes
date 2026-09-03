@@ -1,0 +1,77 @@
+# Bank-transfer soak with PESSIMISTIC locking — the locking counterpart of runs K..Z.
+#
+# Purpose: every 45-minute bank soak so far ran optimistic / read_committed. This run drives the
+# same contended transfer workload through the lock-based write path instead. The conserved
+# SUM(balance) invariant is engine-independent, so a deficit here means an atomicity break in the
+# pessimistic path, not a retry-loop artifact.
+#
+# Two knobs change from run Z. Everything else is identical, so the two runs compare directly:
+#   1. locking: pessimistic — writes take locks instead of a staged-base compare-and-set.
+#   2. isolation: serializable — this is the pairing smoke-pessimistic already uses. Under
+#      read_committed a pessimistic reader is not protected against a concurrent writer, so a
+#      lost update would be an expected isolation-level anomaly and not a bug. Serializable makes
+#      any balance drift a real correctness failure.
+#
+# Related knob, deliberately left at the engine default: cluster.read_validation. It accepts
+# 'none' or 'track_and_validate'. It has effect for pessimistic transactions only, where
+# track_and_validate adds a commit-time read-set check on top of the locks. Sweep it in a second
+# run, after this baseline run gives a verdict.
+#
+# What to expect that the optimistic runs do not show:
+#   - Lower throughput than the 233-268 ops/s optimistic reference band. Lock waits replace
+#     retries. Compare the bands; do not treat a lower number as a failure by itself.
+#   - Lock-wait latency during a pause fault. A paused node can hold locks for the 15s window.
+#     require_progress_under_fault stays true, so a total stall still fails the run.
+#   - Fewer conflict retries, because the lock path serializes the contended rows.
+#
+# The verdict bar is the same checklist the optimistic runs use:
+#   0. SEED GATE: 2,000 rows seed first-try with zero "re-driving the committed mutation" lines.
+#   1. Exact conservation in BOTH read views: aggregate SUM(balance) and a full row-scan sum,
+#      quiesced, on every node, equal to the seeded baseline.
+#   2. Zero rows outside their ambiguity bands in the row-scan view.
+#   3. Zero keys end the run with materialized version below their committed head.
+#   4. Zero multi-minute refusal streaks. Any wedge onset must heal quickly and loudly.
+#   5. All nodes healthy at every sample. Note the throughput against the optimistic band.
+#
+# teardown: false, so the verdict can be checked after quiescence. Collect the node logs first.
+name: bank-pessimistic-45m
+cluster:
+  name: bank-pess-45m
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: pessimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

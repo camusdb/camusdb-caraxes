@@ -13,7 +13,20 @@ cluster:
   locking: optimistic
   isolation: read_committed
   diagnostics: true
-  camusdb_repo: "/Volumes/Data HD/Repositories/camusdb"
+  # Bounds each node's Server GC: the generator pairs the cgroup limit with an explicit 60%
+  # heap budget (DOTNET_GCHeapHardLimitPercent). Without a limit, three nodes race to the
+  # Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
+  # runs/probes/memory-gc-2026-08-22/.
+  memory_limit_mb: 1536
+  # The workload's working set is 2,000 rows x 256 B, so a large RocksDB block cache buys
+  # nothing here while its native memory competes with the managed heap inside the container
+  # (soak runs G and I died with ~40% of the container pinned in caches sized by the old
+  # engine floors). Pin the budgets small to free native headroom. Explicit keys win over the
+  # engine's memory-proportional sizing, so this deliberately does not exercise those defaults.
+  kahuna:
+    rocksdb_shared_memory_budget_mb: 64
+    rocksdb_shared_memtable_budget_mb: 16
+  camusdb_repo: "~/camusdb"
 workload:
   kind: bank
   database: caraxes

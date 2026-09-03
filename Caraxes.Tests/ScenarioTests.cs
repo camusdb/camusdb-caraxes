@@ -67,6 +67,30 @@ public sealed class ScenarioSpecTests
     }
 
     [Test]
+    public void ReconcileTimeout_ParsesAndDefaultsToZeroMeaningWorkloadDefault()
+    {
+        ScenarioSpec parsed = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              reconcile_timeout: 900
+            """);
+
+        Assert.That(parsed.Workload.ReconcileTimeout, Is.EqualTo(900));
+
+        // Unset means "leave the workload's own default"; WorkloadRunner omits the flag entirely
+        // rather than passing 0, which the workload would clamp to a 1-second budget.
+        ScenarioSpec unset = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            """);
+
+        Assert.That(unset.Workload.ReconcileTimeout, Is.EqualTo(0));
+    }
+
+    [Test]
     public void UnknownRootKey_IsRejected()
     {
         ScenarioException ex = Assert.Throws<ScenarioException>(
@@ -102,6 +126,52 @@ public sealed class ScenarioSpecTests
     {
         Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
             "name: s\ncluster:\n  name: c\nworkload:\n  database: system"));
+    }
+
+    [Test]
+    public void TablesDefaultsToOneAndParses()
+    {
+        Assert.That(ScenarioSpecReader.Read(Minimal).Workload.Tables, Is.EqualTo(1),
+            "the historical single-table dataset stays the default");
+
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              kind: fanout
+              rows: 32000
+              tables: 8
+            """);
+
+        Assert.That(spec.Workload.Kind, Is.EqualTo("fanout"));
+        Assert.That(spec.Workload.Tables, Is.EqualTo(8));
+    }
+
+    [Test]
+    public void UnknownWorkloadKind_IsRejected()
+    {
+        ScenarioException ex = Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
+            "name: s\ncluster:\n  name: c\nworkload:\n  kind: fanuot"))!;
+        Assert.That(ex.Message, Does.Contain("fanuot"));
+    }
+
+    [Test]
+    public void FanoutNeedsAtLeastTwoTables()
+    {
+        ScenarioException ex = Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
+            "name: s\ncluster:\n  name: c\nworkload:\n  kind: fanout\n  rows: 100"))!;
+        Assert.That(ex.Message, Does.Contain("tables"));
+    }
+
+    [Test]
+    public void MoreTablesThanRows_IsRejected()
+    {
+        // Every table over the row count would be created and never written, so the run would exercise
+        // fewer key spaces than the scenario says it does.
+        ScenarioException ex = Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(
+            "name: s\ncluster:\n  name: c\nworkload:\n  rows: 4\n  tables: 8"))!;
+        Assert.That(ex.Message, Does.Contain("must not exceed"));
     }
 }
 
@@ -157,5 +227,73 @@ public sealed class WorkloadArtifactsTests
     public void MissingFile_IsNull()
     {
         Assert.That(WorkloadArtifacts.ReadSummary(Path.GetTempPath() + Guid.NewGuid()), Is.Null);
+    }
+}
+
+/// <summary>
+/// The post-load drain window. It exists because "deferred settlement must drain to an idle bound
+/// after the load stops" was unmeasurable rather than unmeasured: in-run scraping is done by the
+/// workload container, so every series ends at the moment the drain question begins.
+/// </summary>
+[TestFixture]
+public sealed class DrainObservationTests
+{
+    [Test]
+    public void CollectsNothingByDefault()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            """);
+
+        Assert.That(spec.DrainObservationSeconds, Is.Zero, "a window nobody asked for must cost no wall-clock");
+    }
+
+    [Test]
+    public void ReadsTheWindowAndItsInterval()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            drain_observation_seconds: 900
+            drain_observation_interval_seconds: 30
+            """);
+
+        Assert.That(spec.DrainObservationSeconds, Is.EqualTo(900));
+        Assert.That(spec.DrainObservationIntervalSeconds, Is.EqualTo(30));
+    }
+
+    [Test]
+    public void RejectsANegativeWindowAndASubSecondInterval()
+    {
+        Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            drain_observation_seconds: -1
+            """));
+
+        Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            drain_observation_seconds: 600
+            drain_observation_interval_seconds: 0
+            """));
+    }
+
+    [Test]
+    public async Task AZeroWindowScrapesNothingAtAll()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(new ClusterSpec { Name = "c" });
+        string dir = Path.Combine(Path.GetTempPath(), $"caraxes-drain-{Guid.NewGuid():N}");
+
+        IReadOnlyList<string> notes = await DrainObserver.ObserveAsync(
+            plan, dir, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        Assert.That(notes, Is.Empty);
+        Assert.That(Directory.Exists(dir), Is.False, "nothing asked for, nothing created");
     }
 }

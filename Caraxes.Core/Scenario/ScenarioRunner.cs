@@ -42,18 +42,67 @@ public sealed class ScenarioRunner
 
     private readonly ClusterOrchestrator orchestrator;
 
-    public ScenarioRunner(ScenarioSpec scenario, string? runRoot = null)
+    /// <summary>Host load sampled before the harness started anything of its own — the only reading
+    /// that describes competing work rather than this run's own. See <see cref="GradeHostLoad"/>.</summary>
+    private HostLoadSample? ambientHostLoad;
+
+    /// <summary>Watches for the host being suspended mid-run, which silently invalidates every rate
+    /// and latency the run reports. See <see cref="SuspendDetector"/>.</summary>
+    private SuspendDetector? suspendDetector;
+
+    /// <summary>
+    /// <paramref name="runTag"/> suffixes the run directory, so repeated runs of one scenario keep
+    /// their artifacts instead of overwriting each other.
+    ///
+    /// <para>A baseline is established by repetition — the plan asks for at least three matched runs
+    /// and a reported median, range and variation — and without a tag the second run deletes the
+    /// first run's evidence before producing its own. The cluster directory is deliberately not
+    /// tagged: runs are sequential and each tears its fleet down, so they share one cluster identity.</para>
+    /// </summary>
+    public ScenarioRunner(ScenarioSpec scenario, string? runRoot = null, string? runTag = null)
     {
         this.scenario = scenario;
         string root = runRoot ?? Path.Combine(Environment.CurrentDirectory, "runs");
-        runDir = Path.Combine(root, "scenarios", scenario.Name);
+        string directoryName = string.IsNullOrWhiteSpace(runTag) ? scenario.Name : $"{scenario.Name}-{Sanitize(runTag)}";
+        runDir = Path.Combine(root, "scenarios", directoryName);
         orchestrator = new ClusterOrchestrator(scenario.Cluster, Path.Combine(root, "clusters"));
     }
+
+    /// <summary>Keeps a tag usable as a directory name; anything else becomes a hyphen.</summary>
+    public static string Sanitize(string tag)
+        => string.Concat(tag.Trim().Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '-'));
 
     public async Task<ScenarioVerdict> RunAsync(bool skipBuild = false, CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(runDir);
         List<string> notes = [];
+
+        // Started before anything is built or brought up, so the watch covers the whole run rather
+        // than only its measured window — a host that sleeps during the image build or the seed
+        // invalidates the run just as thoroughly as one that sleeps mid-workload.
+        suspendDetector = SuspendDetector.Start();
+
+        // Ambient host load, sampled before the harness starts anything of its own. A machine already
+        // busy with unrelated work distorts every number this run produces, and nothing else in the
+        // harness can see it: the generator reports its own health, and a load average from inside the
+        // container describes the Docker VM rather than the host it competes on.
+        HostLoadSample? hostLoad = HostLoad.Read();
+        ambientHostLoad = hostLoad;
+        if (hostLoad is null)
+        {
+            notes.Add("ambient host load was not measured on this platform; contention cannot be ruled out");
+        }
+        else if (HostLoad.IsContended(hostLoad))
+        {
+            notes.Add(
+                $"HOST WAS BUSY BEFORE THE RUN: load {hostLoad.One:N2} over {hostLoad.ProcessorCount} core(s) " +
+                $"({hostLoad.PerCore:P0} per core). Unrelated work competed with this measurement; treat its " +
+                "throughput as a lower bound and re-run on a quiet machine before quoting a number.");
+        }
+        else
+        {
+            notes.Add($"ambient host load before the run: {hostLoad.One:N2} over {hostLoad.ProcessorCount} core(s)");
+        }
 
         ClusterPlan plan = orchestrator.Plan;
         WorkloadRunner workload = new(plan, Path.Combine(runDir, "workload-bin"));
@@ -76,11 +125,43 @@ public sealed class ScenarioRunner
                 return Finalize(new ScenarioVerdict(false, init.ExitCode, false, false, runDir, notes), init, run);
             }
 
+            await SettleAsync(plan, notes, cancellationToken).ConfigureAwait(false);
+
             run = await RunWorkloadWithNemesisAsync(workload, plan, artifactsDir, notes, cancellationToken)
                 .ConfigureAwait(false);
+
+            // After the load stops and before teardown: the only window in which deferred work can be
+            // seen draining, and the only collection the harness must do itself — the workload
+            // container that scraped during the run has exited by now.
+            if (scenario.DrainObservationSeconds > 0)
+                notes.AddRange(await DrainObserver.ObserveAsync(
+                    plan,
+                    Path.Combine(artifactsDir, "run"),
+                    TimeSpan.FromSeconds(scenario.DrainObservationSeconds),
+                    TimeSpan.FromSeconds(scenario.DrainObservationIntervalSeconds),
+                    cancellationToken).ConfigureAwait(false));
         }
         finally
         {
+            // Before teardown, always: the log dies with the container, and the run that most needs
+            // it is the one that just failed. Captured even when teardown is off, so a run directory
+            // is self-contained evidence rather than a pointer to a fleet someone will later remove.
+            if (scenario.CaptureNodeLogs)
+            {
+                Console.WriteLine("==> capturing node logs");
+                IReadOnlyList<string> captureNotes = await orchestrator
+                    .CaptureLogsAsync(Path.Combine(artifactsDir, "run"), scenario.NodeLogTail, cancellationToken)
+                    .ConfigureAwait(false);
+
+                notes.AddRange(captureNotes);
+            }
+            else
+            {
+                notes.Add(
+                    "node logs were not captured (capture_node_logs: false); log-only diagnostics for " +
+                    "this run are gone once the cluster is torn down");
+            }
+
             if (scenario.Teardown)
             {
                 Console.WriteLine("==> tearing down cluster");
@@ -103,27 +184,112 @@ public sealed class ScenarioRunner
     }
 
     /// <summary>
-    /// Runs the measured workload and, if the scenario has a nemesis, drives its fault schedule
-    /// concurrently. The nemesis is timed from the workload's launch; when the workload container
-    /// exits, the nemesis is signalled to stop and heals everything still in effect before this
-    /// returns — so the cluster is quiescent (if not torn down) by the time the verdict is read.
+    /// Waits for partition leadership to settle before the measured window opens, and records where it
+    /// settled.
+    ///
+    /// <para>This sits after seeding on purpose. A node reports ready long before leadership is
+    /// resolved, and seeding creates the very tables whose ranges then have to be placed — so the
+    /// settlement that matters is the one that follows the data, not the one that follows startup.</para>
+    ///
+    /// <para>Best effort by design: an unsettled cluster still runs, and the note says leadership had
+    /// not resolved. A scenario that refused to start would report nothing at all, which is worse
+    /// evidence than a run with a caveat attached.</para>
     /// </summary>
+    private async Task SettleAsync(ClusterPlan plan, List<string> notes, CancellationToken cancellationToken)
+    {
+        if (scenario.SettleSeconds <= 0)
+        {
+            notes.Add("leader settling skipped (settle_seconds: 0); the measured window may include an election");
+            return;
+        }
+
+        Console.WriteLine($"==> waiting up to {scenario.SettleSeconds}s for partition leadership to settle");
+        using HttpProbes probes = new();
+
+        // Waits for leadership to be spread, not merely resolved. Both conditions share the one
+        // budget: a cluster that resolves instantly and sits concentrated has not settled into
+        // anything a capacity run can measure, and the balancer needs the idle seconds after seeding
+        // to move it — which is time this wait was already spending.
+        List<string> nodeNames = plan.Nodes.Select(n => n.Name).ToList();
+        Caraxes.Core.LeaderBalance.LeaderSnapshot snapshot = await Caraxes.Core.LeaderBalance.LeaderObservation
+            .WaitForSpreadAsync(plan, probes, TimeSpan.FromSeconds(scenario.SettleSeconds), cancellationToken)
+            .ConfigureAwait(false);
+
+        string placement = snapshot.Format(nodeNames);
+        leadershipSpread = Caraxes.Core.LeaderBalance.LeaderObservation.IsSpread(snapshot, nodeNames);
+
+        if (leadershipSpread)
+        {
+            notes.Add($"leadership settled and spread before the measured window: {placement}");
+        }
+        else if (snapshot.TotalPartitions > 0 && snapshot.ResolvedPartitions == snapshot.TotalPartitions)
+        {
+            notes.Add(
+                $"leadership resolved but did NOT spread within {scenario.SettleSeconds}s: {placement}; " +
+                "every partition has a leader, but they are not distributed across the nodes");
+        }
+        else
+        {
+            notes.Add(
+                $"leadership had NOT settled after {scenario.SettleSeconds}s: {placement}; " +
+                "the measured window may include an election");
+        }
+
+        // Leadership concentrated on one node is the hot-partition condition, and it is invisible in a
+        // throughput number: the run reads as a three-node result while one node's disk and Raft
+        // group did all the durable work. Naming it here means a later reader does not have to infer
+        // it from the per-node series.
+        if (nodeNames.Count > 1 && snapshot.ResolvedPartitions > 1)
+        {
+            string busiest = nodeNames.OrderByDescending(snapshot.LeadersOn).First();
+            if (snapshot.LeadersOn(busiest) == snapshot.ResolvedPartitions)
+                notes.Add(
+                    $"every resolved partition is led by '{busiest}'; this run loads one leader, so its " +
+                    "throughput is that node's capacity rather than the cluster's");
+            else if (snapshot.Imbalance(nodeNames) > 1)
+                notes.Add($"leadership is uneven across nodes ({placement}); expect one node to carry more durable work");
+        }
+
+        Console.WriteLine($"    {placement}");
+    }
+
+    /// <summary>
+    /// Runs the measured workload with the node monitor sampling health and memory alongside it,
+    /// and, if the scenario has a nemesis, drives its fault schedule concurrently. The nemesis is
+    /// timed from the workload's launch; when the workload container exits, the nemesis is
+    /// signalled to stop and heals everything still in effect before this returns — so the cluster
+    /// is quiescent (if not torn down) by the time the verdict is read. The monitor runs for
+    /// every scenario, fault-free ones included: the health series is what lets the verdict catch
+    /// a node that died while its container stayed <c>Up</c>.
+    /// </summary>
+    private IReadOnlyList<PlacementSample> placementSamples = [];
+
+    /// <summary>Whether leadership was spread across the nodes when the measured window opened. Set
+    /// by the settle step; graded only when the scenario asks for it.</summary>
+    private bool leadershipSpread;
+
     private async Task<WorkloadInvocation> RunWorkloadWithNemesisAsync(
         WorkloadRunner workload, ClusterPlan plan, string artifactsDir, List<string> notes, CancellationToken cancellationToken)
     {
-        if (scenario.Nemesis is null)
-            return await workload.RunAsync(scenario, artifactsDir, "run", cancellationToken).ConfigureAwait(false);
-
         using HttpProbes probes = new();
-        NemesisRunner nemesis = new(plan, probes);
+        NodeMonitor monitor = new(plan, probes, runDir);
         string timelinePath = Path.Combine(runDir, "timeline.jsonl");
 
-        // The nemesis stops when the workload finishes; heal-on-stop runs inside NemesisRunner with a
-        // fresh token, so cancelling here never leaves a fault un-healed.
-        using CancellationTokenSource nemesisStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Both side tasks stop when the workload finishes; heal-on-stop runs inside NemesisRunner
+        // with a fresh token, so cancelling here never leaves a fault un-healed.
+        using CancellationTokenSource sideStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // Watched across the whole invocation, graded over the measured window alone. Warm-up is
+        // exactly when leadership is expected to move, so grading it would report churn the run
+        // deliberately paid for outside its numbers.
+        PlacementPoller placementPoller = new(plan);
 
         Task<WorkloadInvocation> workloadTask = workload.RunAsync(scenario, artifactsDir, "run", cancellationToken);
-        Task nemesisTask = nemesis.RunAsync(scenario.Nemesis, timelinePath, nemesisStop.Token);
+        Task monitorTask = monitor.RunAsync(sideStop.Token);
+        Task placementTask = placementPoller.RunAsync(sideStop.Token);
+        Task? nemesisTask = scenario.Nemesis is null
+            ? null
+            : new NemesisRunner(plan, probes).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
 
         WorkloadInvocation result;
         try
@@ -132,10 +298,11 @@ public sealed class ScenarioRunner
         }
         finally
         {
-            nemesisStop.Cancel();
+            sideStop.Cancel();
             try
             {
-                await nemesisTask.ConfigureAwait(false);
+                if (nemesisTask is not null)
+                    await nemesisTask.ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -143,10 +310,82 @@ public sealed class ScenarioRunner
                 // never the thing that decides the verdict.
                 notes.Add($"nemesis reported: {e.Message}");
             }
+
+            try
+            {
+                await monitorTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                notes.Add($"node monitor reported: {e.Message}");
+            }
+
+            try
+            {
+                await placementTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                notes.Add($"placement watch reported: {e.Message}");
+            }
         }
 
-        notes.Add($"nemesis timeline: {timelinePath}");
+        placementSamples = placementPoller.Samples;
+
+        if (scenario.Nemesis is not null)
+            notes.Add($"nemesis timeline: {timelinePath}");
         return result;
+    }
+
+    /// <summary>
+    /// Reports whether the topology held for the measured window, from the samples taken alongside it.
+    ///
+    /// <para>Cut to the run's own anchor rather than to the scenario's configured warm-up, because the
+    /// workload decides when measurement began and a slow seed would put a computed window in the
+    /// wrong place. Without an anchor the samples are graded whole and the note says so — a wider
+    /// window can only over-report movement, never hide it.</para>
+    ///
+    /// <para>A note, not a verdict. A topology that moved does not make a run invalid; it makes its
+    /// number an average of two clusters, which is a thing the reader has to know and the harness
+    /// cannot decide for them.</para>
+    /// </summary>
+    private void GradePlacementStability(string artifactsDir, List<string> notes)
+    {
+        if (placementSamples.Count == 0)
+            return;
+
+        MeasuredWindow? window = WorkloadArtifacts.ReadMeasuredWindow(Path.Combine(artifactsDir, "run"));
+
+        IReadOnlyList<PlacementSample> measured = window is null
+            ? placementSamples
+            : placementSamples.Where(sample => window.Contains(sample.Utc)).ToList();
+
+        PlacementStability stability = PlacementWatch.Grade(measured);
+        notes.Add(window is null
+            ? $"{stability.Note} (graded over the whole run: it recorded no measured-window anchor)"
+            : stability.Note);
+    }
+
+    /// <summary>
+    /// Fails a run that started with leadership concentrated on one node, when the scenario asked for
+    /// it to be spread.
+    ///
+    /// <para>Opt-in for the same reason the quiet-host and client-headroom checks are: a reliability
+    /// scenario still answers its question on a lopsided cluster, and some scenarios concentrate
+    /// leadership deliberately. A <b>capacity</b> run cannot — one node leading every partition means
+    /// the number it produces is that node's, whatever the request distribution looks like.</para>
+    /// </summary>
+    private void GradeLeadershipSpread(List<string> notes, ref bool passed)
+    {
+        if (!scenario.Checks.RequireSpreadLeadership || leadershipSpread)
+            return;
+
+        passed = false;
+        notes.Add(
+            "FAIL: leadership was not spread across the nodes when the measured window opened " +
+            "(checks.require_spread_leadership). One node leading every partition makes this run a " +
+            "measurement of that node, not of the cluster — raise settle_seconds to give the leader " +
+            "balancer more idle time, or re-run.");
     }
 
     private ScenarioVerdict BuildVerdict(WorkloadInvocation run, string artifactsDir, List<string> notes)
@@ -204,10 +443,203 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
+        GradeSuspend(notes, ref passed);
+        GradeHostLoad(notes, ref passed);
+        GradePlacementStability(artifactsDir, notes);
+        GradeLeadershipSpread(notes, ref passed);
+        GradeClusterFacts(outputDir, notes, ref passed);
+        GradeClientHeadroom(outputDir, notes, ref passed);
+
+        if (scenario.Checks.RequireNodeHealth)
+            GradeNodeHealth(notes, ref passed);
+
         return new ScenarioVerdict(passed, run.ExitCode, summary.Valid, reconciliationPassed, runDir, notes)
         {
             Analysis = analysis,
         };
+    }
+
+    /// <summary>
+    /// Fails the run when the host was suspended while it was in progress.
+    ///
+    /// <para>Unconditional, unlike every other check here: this is not a judgement about measurement
+    /// quality that a scenario might reasonably waive, it is the observation that the artifact does
+    /// not describe a real interval. A correctness scenario survives a suspend in its invariants but
+    /// not in its recovery timings, and neither kind of run should be quoted from afterwards.</para>
+    /// </summary>
+    private void GradeSuspend(List<string> notes, ref bool passed)
+    {
+        if (suspendDetector is null)
+            return;
+
+        if (SuspendDetector.Describe(suspendDetector.Suspended, suspendDetector.Wall) is not string failure)
+            return;
+
+        notes.Add($"  CHECK FAILED: {failure}");
+        passed = false;
+    }
+
+    /// <summary>
+    /// Fails the run when the host was busy <b>before it started</b> and the scenario asked for a
+    /// quiet machine. Off by default: a reliability scenario still answers its question on a loaded
+    /// box, and only a capacity claim depends on the machine being idle.
+    ///
+    /// <para><b>It grades the ambient sample, never a reading taken after the run.</b> A load average
+    /// measured once the workload has finished is dominated by the cluster and the generator this run
+    /// itself started, so grading it would fail a scenario precisely for succeeding at loading the
+    /// machine — and would do so more often the higher the concurrency, which is the opposite of what
+    /// a capacity guard is for. That is not hypothetical: <c>accounts-2k-w128</c> and
+    /// <c>accounts-2k-w256</c> (2026-09-01) were failed at load 10.15 and 10.83 on 16 cores after
+    /// starting from ambient 3.13 and 3.72, with exact reconciliation, zero failures and the highest
+    /// throughput ever measured on the host. The fsync A/B pair <c>k154p3</c> was depressed the same
+    /// way, its note recording load rising "3.54 → 5.37 <em>during</em> the run".</para>
+    ///
+    /// <para>The end-of-run reading is still taken and reported, because how much load a run creates
+    /// is worth seeing — but a load average cannot separate this run's own work from a competitor's,
+    /// so only the pre-run sample can carry a verdict.</para>
+    /// </summary>
+    private void GradeHostLoad(List<string> notes, ref bool passed)
+    {
+        HostLoadSample? after = HostLoad.Read();
+        if (after is not null)
+            notes.Add(
+                $"host load after the run: {after.One:N2} over {after.ProcessorCount} core(s) " +
+                "(includes this run's own cluster and generator; not graded)");
+
+        if (!scenario.Checks.RequireQuietHost)
+            return;
+
+        if (HostLoad.GradeAmbient(ambientHostLoad) is not string failure)
+            return;
+
+        notes.Add($"  CHECK FAILED: {failure}");
+        passed = false;
+    }
+
+    /// <summary>
+    /// Records what the cluster said it was: the build and durability fingerprint, and any node that
+    /// could not be asked or answered that it was not ready.
+    ///
+    /// <para>The fingerprint is the note that matters most in a retained artifact. A throughput number
+    /// with no record of the build that produced it can never be compared against another run, and the
+    /// most common way two "identical" runs differ is a dependency version nobody changed on
+    /// purpose.</para>
+    /// </summary>
+    private void GradeClusterFacts(string outputDir, List<string> notes, ref bool passed)
+    {
+        ClusterFactsSummary? facts = WorkloadArtifacts.ReadClusterFacts(outputDir);
+
+        if (facts is null)
+        {
+            string message = scenario.Workload.ClusterFacts
+                ? "no cluster-facts.json produced; this run cannot say which build or durability settings it measured"
+                : "cluster facts not captured (workload.cluster_facts: false)";
+            notes.Add(message);
+
+            if (scenario.Checks.RequireClusterFacts)
+            {
+                notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and no cluster facts were captured");
+                passed = false;
+            }
+            return;
+        }
+
+        notes.Add($"cluster fingerprint: {facts.DurabilityFingerprint} " +
+                  $"({string.Join(", ", Versions(facts))})");
+
+        // Node readiness at capture time is graded only for a fault-free run. Under a nemesis a node
+        // is legitimately down or still restarting when the facts are taken, and failing the run for
+        // that grades the fault injection rather than the cluster. A chaos run that lost no data would
+        // otherwise be reported as a failure — which is exactly what happened on fault seed 17.
+        bool faultFree = scenario.Nemesis is null;
+        List<string> unhealthy = facts.Nodes.Where(n => n.Ready != true).Select(n => n.Node).ToList();
+        if (unhealthy.Count > 0)
+        {
+            notes.Add($"node(s) not reporting ready when facts were captured: {string.Join(", ", unhealthy)}" +
+                      (faultFree ? "" : " (expected under an injected fault; not graded)"));
+            if (scenario.Checks.RequireClusterFacts && faultFree)
+            {
+                notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and a node did not report ready");
+                passed = false;
+            }
+        }
+
+        foreach (ClusterFactsNode node in facts.Nodes)
+        {
+            foreach (string error in node.Errors)
+                notes.Add($"  node '{node.Node}' could not answer {error}");
+        }
+        foreach (string error in facts.Errors)
+            notes.Add($"  cluster fact capture: {error}");
+
+        // Same reasoning: under a fault, a node that cannot answer a probe is the fault working. What
+        // the check must still guarantee in both cases is that the run knows WHICH BUILD it measured,
+        // which the fingerprint carries as long as any node answered.
+        bool incomplete = facts.Nodes.Any(n => n.Errors.Count > 0) || facts.Errors.Count > 0;
+        if (incomplete && scenario.Checks.RequireClusterFacts && faultFree)
+        {
+            notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and part of the capture did not answer");
+            passed = false;
+        }
+
+        if (scenario.Checks.RequireClusterFacts && facts.Nodes.All(n => n.Components.Count == 0))
+        {
+            notes.Add("  CHECK FAILED: checks.require_cluster_facts is on and no node reported its build");
+            passed = false;
+        }
+    }
+
+    /// <summary>
+    /// One line for the load generator's own headroom, and a failure when a capacity scenario asked
+    /// for it. A generator that ran out of CPU or sat at its in-flight cap produces a flat curve that
+    /// reads exactly like a saturated cluster.
+    /// </summary>
+    private void GradeClientHeadroom(string outputDir, List<string> notes, ref bool passed)
+    {
+        ClientResourcesSummary? client = WorkloadArtifacts.ReadClientResources(outputDir);
+
+        if (client is null)
+        {
+            notes.Add("no client-resources.json produced; the load generator's own headroom is unknown");
+            if (scenario.Checks.RequireClientHeadroom)
+            {
+                notes.Add("  CHECK FAILED: checks.require_client_headroom is on and the generator was not measured");
+                passed = false;
+            }
+            return;
+        }
+
+        notes.Add($"client headroom: {(client.HeadroomAvailable ? "OK" : "SUSPECT")} " +
+                  $"(CPU {client.CpuUtilization:P0} of {client.ProcessorCount} core(s), " +
+                  $"{client.AllocatedMbPerSecond:N0} MB/s allocated, peak pool queue {client.PeakThreadPoolQueue})");
+
+        foreach (string warning in client.Warnings)
+            notes.Add($"  generator warning: {warning}");
+
+        if (!client.HeadroomAvailable && scenario.Checks.RequireClientHeadroom)
+        {
+            notes.Add("  CHECK FAILED: checks.require_client_headroom is on and the generator may have been the limiter");
+            passed = false;
+        }
+    }
+
+    /// <summary>The engine versions worth naming in a one-line note: the storage and consensus
+    /// libraries, whose change explains a throughput difference that no scenario file records.</summary>
+    private static IEnumerable<string> Versions(ClusterFactsSummary facts)
+    {
+        ClusterFactsNode? node = facts.Nodes.FirstOrDefault();
+        if (node is null)
+            return ["no node answered"];
+
+        List<string> parts = [];
+        if (node.Server is not null)
+            parts.Add($"server {node.Server}");
+        foreach (ClusterFactsComponent component in node.Components)
+        {
+            if (component.Name is "Kahuna.Core" or "Kommander" or "Nixie")
+                parts.Add($"{component.Name} {component.Version}");
+        }
+        return parts.Count > 0 ? parts : ["no versions reported"];
     }
 
     private Verdict.FaultAnalysis? RunFaultCorrelation(string outputDir, List<string> notes, ref bool passed)
@@ -256,6 +688,50 @@ public sealed class ScenarioRunner
         }
 
         return analysis;
+    }
+
+    /// <summary>
+    /// Grades the node-health probe series against the fault timeline. An outage no fault explains
+    /// fails the run: this is the guard against the dead-but-<c>Up</c> case, where a node process
+    /// aborts, its container keeps reporting <c>Up</c>, and every other check still reads green.
+    /// A missing series (an old run directory, or the monitor itself failed) is reported as a
+    /// note, never silently treated as healthy.
+    /// </summary>
+    private void GradeNodeHealth(List<string> notes, ref bool passed)
+    {
+        string healthPath = Path.Combine(runDir, "node-health.csv");
+        if (!File.Exists(healthPath))
+        {
+            notes.Add("node health: no node-health.csv produced; node liveness is UNVERIFIED for this run");
+            return;
+        }
+
+        IReadOnlyList<FaultWindow> windows = FaultTimeline.Parse(Path.Combine(runDir, "timeline.jsonl"));
+        IReadOnlyList<NodeOutage> outages =
+            NodeHealthAnalysis.Analyze(healthPath, windows, scenario.Checks.MaxRecoverySeconds);
+
+        if (outages.Count == 0)
+        {
+            notes.Add("node health: every node answered /ping at every sample");
+            return;
+        }
+
+        foreach (NodeOutage outage in outages)
+        {
+            double seconds = (outage.EndUtc - outage.StartUtc).TotalSeconds;
+            if (outage.Excused)
+            {
+                notes.Add(
+                    $"node health: {outage.Node} unreachable {outage.StartUtc:HH:mm:ss}–{outage.EndUtc:HH:mm:ss}Z " +
+                    $"({outage.Samples} sample(s)) — explained by an active fault or too short to grade");
+                continue;
+            }
+
+            notes.Add(
+                $"  CHECK FAILED: node {outage.Node} stopped answering /ping from {outage.StartUtc:HH:mm:ss}Z " +
+                $"for {seconds:N0}+ s ({outage.Samples} samples) with no fault active — the node died on its own");
+            passed = false;
+        }
     }
 
     private void WriteAnalysisReport(FaultAnalysis analysis)

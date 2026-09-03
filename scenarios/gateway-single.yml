@@ -1,0 +1,67 @@
+# ONE GATEWAY — what routing every request through a single node costs, against the pooled baseline.
+#
+# THE QUESTION. The endpoint pool spreads requests almost perfectly (33.3% / 33.3% / 33.4% measured
+# across five baseline runs), yet the durable write path concentrates entirely on whichever node
+# leads the table's partition — one node logs 500,000-600,000 KV entries while the other two log
+# 0-2,000. So request distribution and write distribution are separate facts, and the open question
+# is what the request-handling hop is actually worth once the write path is bottlenecked elsewhere.
+#
+# THE SHAPE IS THE CAPACITY BASELINE, UNCHANGED. Same cluster, same 1536 MB, same bank workload over
+# 2,000 rows, same 32 workers over 16 connections, same 10m/2m/30s window. The only difference from
+# capacity-baseline.yml is `gateway:`, so the pooled arm needs no new runs — the frozen baseline on
+# this host IS the control arm, and the freeze record in capacity-baseline.yml is the number to
+# compare against.
+#
+# HOW IT IS DRIVEN. Copy this file per cell substituting `gateway`, and run one cell per node:
+#
+#   for n in camus1 camus2 camus3; do
+#     sed "s/^  gateway: camus1$/  gateway: $n/" scenarios/gateway-single.yml > /tmp/gw-$n.yml
+#     dotnet run --project Caraxes -- run --scenario /tmp/gw-$n.yml --tag $n
+#   done
+#
+# WHY ALL THREE NODES AND NOT ONE. There is no client-side leader-aware routing to test directly, but
+# this workload's whole keyspace lives on one partition, so "leader-local routing" and "the gateway
+# happens to be the node that leads that partition" are the same configuration. Running every node
+# and reading each run's settled leadership map back out of its artifacts gives the leader-local
+# diagnostic and the two remote-gateway cells from the same campaign, without pinning leadership
+# (which would change what is being measured).
+#
+# NOT A DEPLOYMENT POSTURE. A single gateway makes one node a single point of failure for the whole
+# run. This is a measurement configuration; keep the pool for anything with a nemesis, unless the
+# fault under test is the gateway's own death.
+name: gateway-single
+cluster:
+  name: gatewaysingle
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  gateway: camus1
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

@@ -1,0 +1,80 @@
+# Run V: verification soak for the armed-until-confirmed commit repair (kahuna a703d068 fix).
+#
+# Run U (Kahuna 1.3.8) was the series' first PASS: conservation exact and durable, all nodes
+# healthy, the settle-time witness re-driving thousands of skipped materializations. The residual
+# was liveness only: two keys wedged read-only ~40 min each (174k/169k refusals) because the
+# witness's ONE re-drive was itself lost in the same pause window that caused the skip, and
+# nothing re-armed it — the coherence reconcile then correctly reported it cannot heal from
+# local state. Filed as kahuna a703d068; one row also ended visibly one commit behind on every
+# node, offset inside the indeterminate ambiguity band.
+#
+# Kahuna 1.3.9 makes the repair armed-until-confirmed: the committed mutation is PARKED before
+# the first drive (the settle removed it from the intent store, so this parked copy is the only
+# one the node holds); the drive retries on a short backoff ladder; and the fence's
+# refusal-streak hook re-drives the parked mutation for as long as the key keeps refusing.
+# Superseded parked repairs are dropped when a later settle proves local materialization.
+#
+# Engine build under test:
+#   Kommander      1.3.3  (nuget.org — unchanged since run S)
+#   Kahuna         1.3.9  (local pack, kahuna working tree on top of f3f3559: the parked-repair
+#                          change in KeyValueReplicator/KeyValuesManagerBuilder, uncommitted at
+#                          pack time 2026-08-25 16:14)
+#   CamusDB.Core   references Kahuna.Core 1.3.9
+#
+# Only Kahuna changes vs run U, so any shift is attributable to the parked-repair change.
+#
+# The scenario body matches runs K..U exactly except for the scenario and cluster names (seed 42,
+# 3 nodes, RF 3, 32 workers over 16 connections, 2,000 contended rows, optimistic /
+# read_committed, 45m measure, same nemesis cadence, Kahuna/Kommander at Information).
+#
+# teardown: false, so the verdict can be checked after quiescence and node logs collected.
+#
+# Pass questions — the a703d068 close-out bar:
+#   1. SUM(balance) conserves exactly, at scan time AND on a quiesced re-read.
+#   2. Zero keys end the run with materialized version below their committed head (per-row check
+#      against the transfer ledger, not just the aggregate — run U's +1/-1 band offset showed the
+#      aggregate alone cannot see a stale key).
+#   3. Zero multi-minute refusal streaks: any wedge onset must heal via the re-driven parked
+#      repair (a short burst ending in repair signals is acceptable; a storm to run end is not).
+#   4. All nodes healthy every sample; throughput back at the un-wedged 233-268 ops/s band.
+name: bank-optimistic-45m-v
+cluster:
+  name: bank-opt-45mv
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

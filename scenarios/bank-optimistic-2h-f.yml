@@ -1,0 +1,54 @@
+# Run F: the verification soak for Kahuna 1.2.6 / Kommander 1.2.11.
+#
+# Identical to bank-optimistic-2h-e in every workload and nemesis parameter (32 workers over 16
+# connections, seed 42, [pause, slow] every 300-480s with a 15s hold, 2000 rows). The build is the
+# only variable, so run E and run F compare directly.
+#
+# Two questions this run answers:
+#  1. Does "anchored at 1" disappear? On 1.2.10 run E logged 5 refusals, each rescued by a full
+#     snapshot transfer that a correct build should never need. On 1.2.11 the expectation is zero
+#     refusals and zero snapshot transfers.
+#  2. Does SUM(balance) reconciliation finally complete? It has not run at the end of a two-hour
+#     soak across runs B, C, D and E - the wedge blocked the first three, a container OOM blocked
+#     run E. The cluster memory_limit_mb below is what should stop the OOM this time.
+name: bank-optimistic-2h-f
+cluster:
+  name: bank-opt-2hf
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
+  # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
+  # runs/probes/memory-gc-2026-08-22/.
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false

@@ -1,0 +1,57 @@
+# Run H: verification soak for the explicit GC heap budget (CamusDB efa86ffa).
+#
+# Same as run G in every workload/nemesis parameter and the SAME memory_limit_mb: 1536. The only
+# change is the harness: ComposeGenerator now pairs mem_limit with DOTNET_GCHeapHardLimitPercent=3C
+# (hex for 60), so the heap budget is ~922 MiB instead of the default 75% self-cap of 1152 MiB.
+#
+# Why run G died: 1152 MiB heap + ~400 MiB native ~= 1550 MiB against a 1536 MiB limit. That is a
+# structural overcommit, so a node sustaining load long enough to commit toward its budget dies
+# with no defect involved. Run G's climb fits: ~80% of cap at t+30m, ~90% at t+60m, OOM at t+88m.
+#
+# Expected here: RSS plateaus near ~1.3 GiB per node, three nodes survive two hours, and
+# SUM(balance) reconciliation completes (it has run in only 1 of 6 attempts).
+#
+# NOT expected to be fixed by this: the GC-pressure trend (write p99 drifted 534 -> 705 ms across
+# run G's first hour while throughput fell 26%). A smaller heap budget may even trade some
+# throughput for the bound. Comparing p99 against run G's trend line is a goal of this run.
+name: bank-optimistic-2h-h
+cluster:
+  name: bank-opt-2hh
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
+  # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
+  # runs/probes/memory-gc-2026-08-22/.
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false

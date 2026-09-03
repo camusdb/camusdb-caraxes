@@ -1,0 +1,57 @@
+# LEADER-TRANSFER PROBE — why does the leader balancer plan moves that never land?
+#
+# `placement-probe-p1` measured one node leading every partition for a whole run with
+# `leader_balancer: true`. The balancer was not idle: it reported `count_imbalance = 2` and
+# `raft_balancer_moves_total{outcome=planned} 6` against `{outcome=timed_out} 5`, with no
+# `succeeded` series emitted at all. So it detected the imbalance, planned the right moves, and
+# every one of them failed.
+#
+# A move times out when the balancer's load-report view does not show the target owning the
+# partition before `SuggestionTimeout`. That has two very different causes, and the metrics cannot
+# tell them apart: either the transfer was never attempted (the suggestion was dropped), or it was
+# attempted and the view lagged. The end-of-run placement says camus1 still led all three
+# partitions, which points at the first — but "points at" is not "measured".
+#
+# Kommander's `RaftRpcRouter.ReceiveTransferLeadershipSuggestion` drops a suggestion on four
+# distinct conditions and logs a different Debug line for each. This run turns those on. Its output
+# is the log, not a number: DO NOT quote its throughput.
+name: leader-transfer-probe
+cluster:
+  name: leadertransfer
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+  # Every drop path in Kommander's suggestion handler logs at Debug and every one of them is a
+  # different cause — not leader, not Active, target not a voter, target Suspect. The default filter
+  # ships Kommander at Warning, so the balancer failing 5 of 6 moves is completely silent.
+  log_levels:
+    Kommander: Debug
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 4000
+  tables: 4
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+teardown: true

@@ -39,25 +39,39 @@ public static class ComposeGenerator
 
         foreach (NodePlan node in plan.Nodes)
         {
-            services[node.Name] = new Dictionary<string, object>
+            Dictionary<string, object> environment = new()
+            {
+                ["CAMUS_RAFT_NODENAME"] = node.Name,
+                ["CAMUS_RAFT_NODEID"] = node.Index,
+                ["CAMUS_RAFT_HOST"] = node.Ip,
+                ["CAMUS_RAFT_PORT"] = node.RaftPort,
+                ["CAMUS_HTTP_PORT"] = 5095,
+                ["CAMUS_INITIAL_CLUSTER"] = node.InitialCluster,
+                ["CAMUS_INITIAL_CLUSTER_PARTITIONS"] = spec.Partitions,
+                // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
+                // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
+                ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
+
+                // A native crash (SIGSEGV in RocksDB/gRPC/runtime) exits 139 with nothing in the
+                // container log — soak runs have hit exactly that, unattributably. These make the
+                // runtime write a minidump (stacks, no heap — small) plus a JSON crash report with
+                // per-thread native frames into /data, which is a persistent volume, so the
+                // evidence survives the container's death and even its restart. Dump type is
+                // decimal here (unlike the GC variables, this one is parsed as a plain integer):
+                // 1 = mini.
+                ["DOTNET_DbgEnableMiniDump"] = 1,
+                ["DOTNET_DbgMiniDumpType"] = 1,
+                ["DOTNET_DbgMiniDumpName"] = "/data/crash-%p.dmp",
+                ["DOTNET_EnableCrashReport"] = 1,
+            };
+
+            Dictionary<string, object> service = new()
             {
                 ["image"] = spec.EffectiveImage,
                 ["container_name"] = node.ContainerName,
                 ["restart"] = "no",
                 ["cap_add"] = new List<string> { "NET_ADMIN" },
-                ["environment"] = new Dictionary<string, object>
-                {
-                    ["CAMUS_RAFT_NODENAME"] = node.Name,
-                    ["CAMUS_RAFT_NODEID"] = node.Index,
-                    ["CAMUS_RAFT_HOST"] = node.Ip,
-                    ["CAMUS_RAFT_PORT"] = node.RaftPort,
-                    ["CAMUS_HTTP_PORT"] = 5095,
-                    ["CAMUS_INITIAL_CLUSTER"] = node.InitialCluster,
-                    ["CAMUS_INITIAL_CLUSTER_PARTITIONS"] = spec.Partitions,
-                    // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
-                    // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
-                    ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
-                },
+                ["environment"] = environment,
                 ["ports"] = new List<string>
                 {
                     $"{node.HostRestPort}:5095",
@@ -72,6 +86,34 @@ public static class ComposeGenerator
                     ["caraxes"] = new Dictionary<string, object> { ["ipv4_address"] = node.Ip },
                 },
             };
+
+            // A cgroup memory limit is what makes the node's Server GC self-cap: without one, each
+            // node sizes its heap against the whole Docker VM and three nodes race each other to
+            // the VM ceiling. The runtime's default self-cap (75% of the limit) still overcommits,
+            // because ~350-400 MiB of native memory (RocksDB) lives outside the managed heap: at a
+            // 1536 MiB limit, a 1152 MiB heap budget plus native memory meets the limit and a
+            // loaded node is OOM-killed anyway (soak run G, t+88m). So the heap gets an explicit
+            // 60% budget instead, which leaves ~600 MiB of a 1536 MiB limit for native memory.
+            // .NET reads GC env vars as hexadecimal: 3C = 60. The 0x prefix is deliberately
+            // omitted — YAML resolves a plain 0x3C to the integer 60, compose would pass "60",
+            // and the runtime would re-read that as hex (96%). "3C" stays a string end to end.
+            if (spec.MemoryLimitMb > 0)
+            {
+                service["mem_limit"] = $"{spec.MemoryLimitMb}m";
+                environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
+            }
+
+            // CamusDB calls ClearProviders() and then installs explicit AddFilter rules for
+            // Kahuna, Kommander and Grpc, so the standard Logging__LogLevel__* configuration path
+            // does NOT reach those categories — verified: the env var arrives in the container and
+            // Kommander still logs only at Warning. CAMUS_LOG_FILTERS is CamusDB's own escape
+            // hatch, applied last in Program.cs so it outranks the named variables, and it accepts
+            // any category rather than only the three that have dedicated variables.
+            if (spec.LogLevels.Count > 0)
+                environment["CAMUS_LOG_FILTERS"] =
+                    string.Join(',', spec.LogLevels.Select(kv => $"{kv.Key}={kv.Value}"));
+
+            services[node.Name] = service;
 
             // Only a named-volume data mount needs a top-level volume entry; a tmpfs mount does not.
             if (spec.DataTmpfsMb <= 0)

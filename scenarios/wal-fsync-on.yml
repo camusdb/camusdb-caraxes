@@ -1,0 +1,74 @@
+# Single-fsync commit A/B — arm: wal_single_fsync_commit = true.
+#
+# THE EXPERIMENT. Kommander's single-fsync fast path releases the client ticket at the
+# propose-quorum-durable point instead of waiting for the leader's own second fsync. The per-entry
+# Committed record is still written afterwards; only the acknowledgement moves earlier. So this does
+# not remove an fsync — it takes one off the commit critical path.
+#
+# WHY IT IS A CANDIDATE. The cluster runs this OFF today, while Kommander's own RaftConfiguration
+# defaults it ON and CamusDB's standalone baseline sets it true. The three-node cluster is the only
+# configuration running without it.
+#
+# THE PREDICTION, which differs from the linger's. If the second fsync is on the critical path, then
+# commit p50 falls, throughput rises with it, and WAL operations per second stay roughly FLAT — the
+# same work, acknowledged sooner. If WAL ops/s falls instead, this is not doing what its
+# documentation says and the result needs explaining before it is believed.
+#
+# THIS MEASURES; IT DOES NOT AUTHORIZE. A good number here does NOT make single-fsync a default.
+# The plan gates that behind a correctness proof on the packaged stack: an acknowledged proposal
+# surviving leader kill -9 before the lazy marker flush, follower restart reconstructing the same
+# committed frontier, a leadership change with markers pending neither losing nor double-applying,
+# a minority partition unable to acknowledge, restart preserving every acknowledged row and index
+# mutation, and deferred materialization still draining after a crash. Until that passes, this arm
+# is evidence about value, not a recommendation.
+#
+# wal_sync_writes stays true in BOTH arms, stated explicitly so the artifact records it. Turning
+# synchronous WAL off is a diagnostic control and never a candidate.
+#
+# SHAPE. Identical to scenarios/capacity-baseline.yml except the flag: 32 workers (the measured
+# operating point), 10-minute window, bank workload.
+#
+# COMPARING THE ARMS:
+#   CamusDB.Workload compare \
+#     --baseline runs/scenarios/wal-fsync-off-<rep>/artifacts/run \
+#     --candidate runs/scenarios/wal-fsync-on-<rep>/artifacts/run \
+#     --allow engine.RaftWalSingleFsyncCommit --p99-budget-ms 545
+name: wal-fsync-on
+cluster:
+  name: walfsyncon
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:wal-fsync"
+  kahuna:
+    wal_sync_writes: true
+    wal_single_fsync_commit: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

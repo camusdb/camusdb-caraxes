@@ -1,0 +1,103 @@
+# Optimistic transactions against a keyspace that divides underneath them. 45-minute soak.
+#
+# What is new here, relative to the bank runs: the ranges move while the workload writes. A split
+# copies half a range to a new partition, quiesces writes to that half, takes a catch-up copy, and
+# flips routing in one replicated step. A write in flight across that flip is refused — CADB0504
+# (retry: nothing was written) or CADB0502 (conflict: the whole transaction aborted) — and the driver
+# replays it from BEGIN. The claim under test is that a commit the client was told had landed is still
+# there afterwards, and that a refused write never half-applied.
+#
+# Optimistic locking is the sharper edge of that claim. An optimistic transaction validates its read
+# set at commit; a split moves the rows it read to another partition mid-transaction, so the
+# validation path has to reach the new owner and reach the right version there. That is the
+# interaction this scenario exists to exercise, and it is why locking is pinned here rather than
+# inherited.
+#
+# Dataset: 4 tables x 2,500 rows, transfers always crossing two tables. Consequences worth stating:
+#   - Every write transaction spans two key spaces, so every commit is a cross-partition commit.
+#   - SUM(balance) is conserved over the WHOLE dataset, not per table: a leg lands in one table and
+#     its opposite leg in another, so reconciliation sums all four and compares to the seeded total.
+#   - A 2,500-key space is a split candidate at ~2,000 sampled keys and divides once into two ~1,250
+#     children, which are then below the threshold. With the owner index following the same path that
+#     is up to 8 splits and 8 added partitions, on top of the 4 the cluster starts with.
+#
+# memory_limit_mb is 2048 rather than the 1536 the bank soaks use, because every split adds a Raft
+# group and each group costs memory per node. Below ~1 GiB the GC starves; the node's heap is also
+# capped at 60% of this limit by the compose generator, with RocksDB's ~350-400 MiB of native memory
+# outside it.
+#
+# THE BAR:
+#   0. SEED GATE: 6,000 rows seed first-try with zero "re-driving the committed mutation" lines.
+#   1. Exact SUM(balance) conservation across all four tables, quiesced, on every node.
+#   2. The seeded row count intact in every table.
+#   3. kahuna.range.splits > 0 in SHOW ENGINE STATS. A run with zero splits proves nothing about
+#      splitting and must not be reported as a passing split soak.
+#   4. Zero multi-minute refusal streaks; a split-driven refusal must clear on the driver's retry.
+#   5. All nodes healthy every sample; throughput noted, with no reference band yet — this is the
+#      first run of this shape, so its numbers become the baseline for the next one.
+#
+# Engine build under test: CamusDB.Core references Kahuna.Core 1.4.1, which resolves from the repo's
+# local-packages feed (the image build copies nuget.config and local-packages into the context). A
+# node built without that feed cannot resolve the package, so the auto-split options never reach it.
+#
+# teardown: false, so the verdict can be checked after quiescence and the engine stats collected.
+name: split-optimistic-45m
+cluster:
+  name: split-opt-45m
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 2048
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  kahuna:
+    range_split_threshold: 2000
+    range_split_min_range_size: 250
+    range_split_load_threshold: 200
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    range_split_settle_window_ms: 10000
+    range_split_indivisible_cooldown_ms: 300000
+    enable_load_reports: true
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 10000
+  tables: 4
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  locking: optimistic
+  isolation: read_committed
+  expect_faults: true
+  # Reconciliation now reads one aggregate per table, and it runs while the cluster may still be
+  # settling after the last fault. The budget is per read, so four tables can consume four times the
+  # wall clock of a single-table run before the same verdict is reached.
+  reconcile_timeout: 900
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false
+  require_progress_under_fault: true
+teardown: false

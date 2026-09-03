@@ -1,0 +1,61 @@
+# Run G: the verification soak for Kahuna 1.2.7 / Kommander 1.2.12.
+#
+# An exact repeat of bank-optimistic-2h-f - same 32 workers over 16 connections, seed 42,
+# [pause, slow] every 300-480s with a 15s hold, 2000 rows, and the SAME memory_limit_mb: 1536.
+# The build is the only variable, so run F and run G compare directly. The cap is deliberately
+# unchanged: raising it pushes the Docker VM's host footprint up and risks macOS reclaiming the
+# workload driver, which is what ended run C.
+#
+# What this run checks:
+#  1. Zero "BatchRequests: NullReferenceException" (run F had 142; present since 1.2.3). The fix
+#     also means the leader balancer works over gRPC for the first time, so leadership
+#     distribution may legitimately look different from every prior run.
+#  2. Zero non-converging snapshot install loops (run F had 76 installs to one follower over 13
+#     minutes with the tracked anchor frozen at 1474148).
+#  3. Zero "anchored at 1" (fixed in 1.2.11, confirm it stays fixed).
+#  4. SUM(balance) reconciliation completes again (first achieved in run F).
+#
+# NOT answered here: why run F's throughput collapsed from 215.7 ops/s to 4.9 ops/s at t+34m.
+# That needs a separate run varying the memory cap DOWNWARD (a lower cap should collapse earlier
+# if GC pressure at the cap is the cause), which is safe for the host in a way raising it is not.
+name: bank-optimistic-2h-g
+cluster:
+  name: bank-opt-2hg
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  # Bounds each node's Server GC (self-caps at 75% of the cgroup limit). Without this, three
+  # nodes race to the Docker VM ceiling and one gets OOM-killed mid-soak (runs C and E); see
+  # runs/probes/memory-gc-2026-08-22/.
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false

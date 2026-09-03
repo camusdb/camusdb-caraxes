@@ -1,0 +1,119 @@
+# Capacity baseline — the M0 reproduction target for the cluster throughput plan.
+#
+# PURPOSE. This is not a chaos scenario. It is the fault-free, fully instrumented run whose number a
+# later optimization is measured against, so everything here exists to make one throughput figure
+# reproducible and comparable:
+#
+#   - node_metrics      per-node time series for the whole run, so "one leader carried the writes"
+#                       and "a backlog was still growing" are readable findings rather than guesses
+#   - cluster_facts     what each node was actually running: loaded Kahuna/Kommander versions, its
+#                       resolved configuration, and where the workload's ranges sat
+#   - settle_seconds    leadership resolves before the measured window opens, so the run is not
+#                       charged for an election it did not cause
+#   - require_*         a run whose generator may have been the limiter, or that cannot say which
+#                       build produced it, fails instead of contributing a number nobody can use
+#
+# SHAPE. Deliberately identical to the bank-optimistic-45m series (runs K..Z), which is the workload
+# that produced the reported ~208 ops/s: 3 nodes, RF 3, 32 workers over 16 connections, 2,000
+# contended rows, optimistic / read_committed, 50/50 read/write. Only the measured window is shorter
+# and the nemesis is absent. Do not "improve" the shape — a faster figure on a different workload
+# answers a different question, and the plan's target is a paired ratio against this one.
+#
+# HOW TO USE IT. Run it at least three times before changing any knob. --tag keeps each repetition's
+# artifacts instead of overwriting the one before it:
+#
+#   for i in 1 2 3; do
+#     dotnet run --project Caraxes -- run --scenario scenarios/capacity-baseline.yml --tag r$i
+#   done
+#
+#   CamusDB.Workload baseline --runs runs/scenarios/capacity-baseline-r1/artifacts/run,\
+#                                    runs/scenarios/capacity-baseline-r2/artifacts/run,\
+#                                    runs/scenarios/capacity-baseline-r3/artifacts/run
+#
+# That reports the median and the spread, and names the write p99 to freeze as the latency budget.
+# Pass it to every later comparison:
+#
+#   CamusDB.Workload compare --baseline runs/scenarios/capacity-baseline-r2/artifacts/run \
+#                            --candidate <later run> --p99-budget-ms <frozen p99>
+#
+# expect_faults stays true because the bank shape contends on purpose: its transfers collide, and a
+# conflict is the design working, not a defect. It waives conflicts and open-loop pacing only; the
+# conservation invariant and the per-row ledger check are never waived.
+# FREEZE RECORD (update on every re-freeze; keep the history so old comparisons stay legible).
+#
+# A FREEZE IS PER HOST. Throughput and p99 are properties of the machine that measured them, so the
+# records below are partitioned by host and must never be mixed: comparing a candidate run against
+# another host's --p99-budget-ms judges it against a number no configuration on its machine
+# produces. Compare a run only against a baseline frozen on the same host. The correctness gates
+# (fsync-gate-*) are the opposite and are machine-portable; see CamusDB feature e3ca357a.
+#
+# HOST: Mac mini M4 (macOS, Docker Desktop) — the canonical environment
+#   2026-08-31 — 347.39 completed ops/s median, CV 3.4%, write p99 545 ms. Three reps (k155r1..r3),
+#     server 0.11.2, Kahuna.Core 1.5.5-fence1, Kommander 1.4.5, single-fsync commit ON by default,
+#     fingerprint sha256:93f870b50e37fd6b. Doc: runs/scenarios/capacity-baseline-k155r3/baseline.md
+#   2026-08-29 — 307.48 completed ops/s median, CV 4.8%, write p99 602 ms. Five reps (r2..r6),
+#     server 0.11.1, Kahuna.Core 1.4.14, Kommander 1.4.2, single-fsync OFF in cluster mode,
+#     fingerprint sha256:a9e6657b522842c4. Doc: runs/scenarios/capacity-baseline-r6/baseline.md
+#
+# HOST: Debian Linux x86_64, i7-13620H (16 threads) / 31 GB / Samsung NVMe, rootful Docker 29.7.2
+#   2026-09-02 — 407.86 completed ops/s median, CV 0.7%, write p99 430 ms (write p50 123.4 ms,
+#     read p99 70.2 ms, 204.28 committed write txns/s). Four usable reps (k156r1..r4), all clean —
+#     no rep rejected. server 0.11.2, Kahuna.Core 1.5.6, Kommander 1.4.5, single-fsync commit ON.
+#     THIS IS THE CURRENT FREEZE: pass `compare --p99-budget-ms 430`.
+#     Against the 1.5.5 freeze below (416.44 / 421 ms) this is -2.1% throughput and +2% write p99.
+#     Read that as "no material change, possibly a small cost" rather than a proven regression: the
+#     two arms' within-session ranges do not overlap (406.2-412.9 against 416.4-417.2), but the
+#     gateway campaign's three pooled controls on this same 1.5.6 stack landed at 412.6 median —
+#     between the two freezes — so session-to-session variation is of the same order as the gap.
+#     If a later 1.5.6 measurement matters to a decision, pair it in-session rather than against
+#     either freeze.
+#   2026-08-31 — 416.44 completed ops/s median, CV 0.1%, write p99 421 ms (write p50 121.0 ms,
+#     read p99 68.1 ms). Three usable reps (lnxr1, lnxr3, lnxr4); lnxr2 was rejected by the
+#     quiet-host guard at load 8.04 — its 415.65 ops/s sat within 0.4% of the usable reps, so the
+#     rejection cost nothing but the rule wants three clean ones. server 0.11.2,
+#     Kahuna.Core 1.5.5+eeda122, Kommander 1.4.5, single-fsync commit ON by default.
+#     This host runs ~20% faster than the Mac mini at the same 32-worker operating point with a
+#     23% lower write p99. Do NOT read that as a regression on the Mac mini or an improvement in
+#     the stack: it is two different machines, and only the same-host deltas mean anything.
+#     Companion evidence: runs/matrix/concurrency-sweep-ceiling/ — an unconstrained-memory sweep on
+#     this host (32..512 workers, 6144 MB/node) peaking at ~572 ops/s, where node memory never
+#     exceeded 1169 MiB and so never reached even the 1536 MB shipping cap. Memory is not a
+#     constraint on this host at any concurrency; the ceiling is the commit path, not a resource.
+name: capacity-baseline
+cluster:
+  name: capacity-baseline
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  # The baseline anchors every later ratio, and a fault-free run has no other contamination guard:
+  # an unquiet host once cost a six-run A/B (CV 15%/22% against a 4% baseline). Hold the baseline
+  # to the same bar as the A/B arms that will be judged against it.
+  require_quiet_host: true
+teardown: true

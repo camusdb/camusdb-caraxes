@@ -22,12 +22,14 @@ public static class ScenarioSpecReader
 {
     private static readonly HashSet<string> AllowedRootKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "name", "cluster", "workload", "nemesis", "checks", "teardown",
+        "name", "cluster", "workload", "nemesis", "checks", "teardown", "settle_seconds",
+        "capture_node_logs", "node_log_tail", "drain_observation_seconds", "drain_observation_interval_seconds",
     };
 
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "max_recovery_seconds", "require_recovery", "require_progress_under_fault",
+        "max_recovery_seconds", "require_recovery", "require_progress_under_fault", "require_node_health",
+        "require_client_headroom", "require_cluster_facts", "require_quiet_host", "require_spread_leadership",
     };
 
     private static readonly HashSet<string> AllowedNemesisKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -37,10 +39,10 @@ public static class ScenarioSpecReader
 
     private static readonly HashSet<string> AllowedWorkloadKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "kind", "database", "seed", "rows", "payload_bytes", "batch", "mode", "target_ops", "workers",
+        "kind", "database", "seed", "rows", "tables", "payload_bytes", "batch", "mode", "target_ops", "workers",
         "read_percent", "write_percent", "writes_per_transaction", "duration", "warmup", "drain",
         "connections", "max_in_flight", "locking", "isolation", "no_auto_prepare", "request_timeout",
-        "expect_faults",
+        "expect_faults", "reconcile_timeout", "node_metrics", "metrics_interval", "cluster_facts", "gateway",
     };
 
     public static ScenarioSpec ReadFile(string path)

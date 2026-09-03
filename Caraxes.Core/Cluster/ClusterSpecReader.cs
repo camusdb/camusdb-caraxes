@@ -34,6 +34,7 @@ public static class ClusterSpecReader
         "base_raft_port",
         "locking",
         "isolation",
+        "read_validation",
         "key_range_sharding",
         "distributed_query_execution",
         "max_query_parallelism",
@@ -42,7 +43,9 @@ public static class ClusterSpecReader
         "image",
         "spare_certs",
         "data_tmpfs_mb",
+        "memory_limit_mb",
         "kahuna",
+        "log_levels",
     };
 
     public static ClusterSpec ReadFile(string path)

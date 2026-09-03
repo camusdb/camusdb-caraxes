@@ -1,0 +1,54 @@
+# Run K: re-test of the ~33.5-minute stall and the memory footprint on Kahuna 1.3.1 / Kommander 1.3.1.
+#
+# Byte-for-byte run J apart from the build, so runs I, J and K form one controlled series:
+#   run I  Kommander 1.2.13 - no stall; died of memory (camus2 OOM at t+105m).
+#   run J  Kommander 1.3.0  - stall returned at t+33.5m on the seeded `pause camus2`
+#                             (nemesis +2133.5s); zero throughput for the next 86 minutes; no OOM.
+#   run K  Kommander 1.3.1  - this run.
+#
+# Two open questions, in priority order:
+#  1. Does the cluster survive the seeded `pause camus2` at nemesis +2133.5s (measure-second 2011)?
+#     That fault ended runs F, H and J. Run I rode through it.
+#  2. If it survives past t+105m, the cache-floor fix (efa86ffa) finally gets a real measurement.
+#     Expect a ~1.3 GiB per-node plateau. Read the plateau ONLY against sustained throughput -
+#     runs F, H and J all showed flat RSS purely because they had stopped serving.
+name: bank-optimistic-2h-k
+cluster:
+  name: bank-opt-2hk
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  log_levels:
+    Kommander: Information
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2h
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+nemesis:
+  seed: 42
+  random:
+    faults: [pause, slow]
+    min_interval: 300s
+    max_interval: 480s
+    duration: 15s
+checks:
+  max_recovery_seconds: 60
+  require_recovery: false   # a fault landing in the final seconds cannot be observed recovering; max_recovery_seconds still grades every observed fault
+  require_progress_under_fault: true
+teardown: false

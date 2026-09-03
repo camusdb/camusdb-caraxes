@@ -1,0 +1,42 @@
+# Proves node log capture happens on a FAILING run, not just a passing one. The check is rigged to
+# fail (recovery from a SIGKILL cannot complete in 1s), so the scenario returns FAIL while the
+# cluster is healthy — isolating "does capture run on the failure path" from any real defect.
+name: log-capture-fail-smoke
+cluster:
+  name: logcapfail
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:fsync-gate"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 200
+  mode: closed
+  workers: 8
+  connections: 4
+  duration: 60s
+  warmup: 5s
+  drain: 5s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+settle_seconds: 30
+nemesis:
+  seed: 7
+  random:
+    faults: [kill]
+    min_interval: 10s
+    max_interval: 15s
+    duration: 5s
+checks:
+  require_recovery: true
+  max_recovery_seconds: 1
+teardown: true

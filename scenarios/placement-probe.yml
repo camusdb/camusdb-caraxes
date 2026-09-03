@@ -1,0 +1,56 @@
+# PLACEMENT PROBE — a short run whose only purpose is to prove the placement evidence works.
+#
+# WHY THIS EXISTS. Phase 2 asks every run to report four measured shares: the busiest gateway, the
+# busiest key/value partition, the busiest Raft leader, and the busiest disk. Three of those come
+# from metric deltas over the measured window, but leadership does not: it is a local belief, read
+# from every node's `/v1/cluster/placement` and merged into `cluster-facts.json`. That merge, and the
+# JSON shape it parses, cannot be checked by a unit test against a hand-written fixture — only a live
+# cluster proves the endpoint answers what the parser expects.
+#
+# NOT A MEASUREMENT. Two minutes with a one-minute warm-up measures nothing about capacity, and its
+# throughput number must not be quoted or compared to anything. What it produces is
+# `bottleneck-report.md` with a populated leader column, and a `cluster-facts.json` whose
+# `partitions[]` names a leader for every partition.
+#
+# FOUR TABLES over three partitions, because a single table would put every partition but one at
+# zero and a leader map with one entry proves less than a leader map with three.
+name: placement-probe
+cluster:
+  name: placementprobe
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 4000
+  tables: 4
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 2m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  # The first run of this scenario settled at camus1=3 camus2=0 camus3=0 and measured one node's
+  # capacity behind an even three-way gateway split. Settle now waits for spread as well as
+  # resolution; this fails the run if it never arrives, so the degenerate topology cannot pass
+  # silently a second time.
+  require_spread_leadership: true
+teardown: true

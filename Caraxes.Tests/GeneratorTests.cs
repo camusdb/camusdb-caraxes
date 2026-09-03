@@ -40,6 +40,40 @@ public sealed class NodeConfigGeneratorTests
     }
 
     [Test]
+    public void ReadValidationOmittedByDefault()
+    {
+        // Empty read_validation must leave the key out entirely, so the engine default applies
+        // and configs generated before the option existed stay byte-identical.
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: cfg"));
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Not.Contain("default_read_validation"));
+    }
+
+    [Test]
+    public void ReadValidationEmittedWithTransactionDefaults()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: cfg",
+            "read_validation: track_and_validate")));
+
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Contain("default_read_validation: track_and_validate"));
+        // Grouped with the other transaction defaults, not appended at the end of the file.
+        Assert.That(
+            yml.IndexOf("default_read_validation", StringComparison.Ordinal),
+            Is.LessThan(yml.IndexOf("key_range_sharding", StringComparison.Ordinal)));
+    }
+
+    [Test]
+    public void ReadValidationRejectsUnknownValue()
+    {
+        Assert.Throws<ClusterSpecException>(
+            () => ClusterSpecReader.Read("name: cfg\nread_validation: sometimes"));
+    }
+
+    [Test]
     public void ZoneIsPerNode()
     {
         ClusterPlan plan = ClusterPlan.FromSpec(
@@ -63,6 +97,35 @@ public sealed class NodeConfigGeneratorTests
         Assert.That(yml, Does.Contain("replication_factor: 5"), "explicit kahuna key overrides the modeled field");
         Assert.That(yml, Does.Not.Contain("replication_factor: 3"));
         Assert.That(yml, Does.Contain("heartbeat_interval_ms: 250"));
+    }
+
+    [Test]
+    public void AutoSplitSettingsReachTheNodeConfig()
+    {
+        // A split scenario is inert unless all of these land in the file together: key-range routing
+        // (a hash-routed space has no range to split), a load-report source, and the thresholds
+        // themselves. The node logs a warning and starts anyway for each missing one, so a typo here
+        // costs a whole soak before it is noticed.
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: splitting",
+            "key_range_sharding: true",
+            "partitions: 4",
+            "kahuna:",
+            "  range_split_threshold: 1500",
+            "  range_split_min_range_size: 250",
+            "  range_split_load_threshold: 200",
+            "  range_split_load_imbalance_max: 0.8",
+            "  enable_load_reports: true")));
+
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Contain("key_range_sharding: true"));
+        Assert.That(yml, Does.Contain("enable_leader_balancer: true"), "nothing else moves a child leader off the hot node");
+        Assert.That(yml, Does.Contain("range_split_threshold: 1500"));
+        Assert.That(yml, Does.Contain("range_split_min_range_size: 250"));
+        Assert.That(yml, Does.Contain("range_split_load_threshold: 200"));
+        Assert.That(yml, Does.Contain("range_split_load_imbalance_max: 0.8"));
+        Assert.That(yml, Does.Contain("enable_load_reports: true"));
     }
 }
 
@@ -155,5 +218,48 @@ public sealed class CertProvisionerTests
         ClusterSpec small = ClusterSpecReader.Read("name: certs\nnodes: 3");
         ClusterSpec grown = ClusterSpecReader.Read("name: certs\nnodes: 4");
         Assert.That(CertProvisioner.SanFingerprint(small), Is.Not.EqualTo(CertProvisioner.SanFingerprint(grown)));
+    }
+
+    [Test]
+    public void CertRegeneration_OverridesSkipBuild()
+    {
+        // The image bakes the .pfx and its CA anchor together. A skipped build after a
+        // regeneration would pair a new certificate with the previous anchor, and every
+        // inter-node handshake would then fail with UntrustedRoot.
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: true, certsRegenerated: true), Is.True);
+    }
+
+    [Test]
+    public void SkipBuild_HoldsWhenCertsAreUnchanged()
+    {
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: true, certsRegenerated: false), Is.False);
+    }
+
+    [Test]
+    public void BuildAlwaysRunsWhenNotSkipped()
+    {
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: false, certsRegenerated: false), Is.True);
+        Assert.That(ClusterOrchestrator.ShouldBuildImage(skipBuild: false, certsRegenerated: true), Is.True);
+    }
+
+    [Test]
+    public async Task EnsureAsync_ReportsNoRegeneration_WhenMarkerMatches()
+    {
+        string certsDir = Path.Combine(Path.GetTempPath(), "caraxes-cert-" + Guid.NewGuid().ToString("N"), "docker", "certs");
+        Directory.CreateDirectory(certsDir);
+        try
+        {
+            string repo = Path.GetFullPath(Path.Combine(certsDir, "..", ".."));
+            ClusterSpec spec = ClusterSpecReader.Read($"name: certs\nnodes: 3\ncamusdb_repo: \"{repo}\"");
+
+            // No generate.sh exists here, so a false return also proves the script never ran.
+            File.WriteAllText(Path.Combine(certsDir, ".caraxes-sans"), CertProvisioner.SanFingerprint(spec) + "\n");
+
+            Assert.That(await CertProvisioner.EnsureAsync(spec), Is.False);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetFullPath(Path.Combine(certsDir, "..", "..")), recursive: true);
+        }
     }
 }

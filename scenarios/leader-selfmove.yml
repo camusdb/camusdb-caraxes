@@ -1,0 +1,31 @@
+# Cluster spec for reproducing the leader balancer's self-addressed transfer failure.
+#
+# Two probe runs disagreed. In one, camus1 won every partition at bootstrap and the balancer
+# reported planned=6 / timed_out=5 with no `succeeded` series at all, leaving 3/0/0 leadership for a
+# whole run. In the other, bootstrap landed 2/2/0, the one move the balancer needed was from camus2
+# to camus3 — a REMOTE suggestion — and it succeeded on the first attempt.
+#
+# The difference between those two paths is `RaftRpcRouter.SendTransferLeadershipSuggestion`: a
+# suggestion addressed to the node running the balancer short-circuits to an in-process
+# `ReceiveTransferLeadershipSuggestion` instead of crossing the responder transport. Every failing
+# move in the first run took that short-circuit; the successful move in the second did not.
+#
+# THREE partitions, so a single node winning all of them at bootstrap is common enough to reproduce
+# by restarting; nine would make it vanishingly rare. Kommander at Debug because all four drop
+# conditions in the suggestion handler log there and nowhere else. Balancer intervals shortened so a
+# few passes fit in a short observation instead of a workload run — the trigger is the leadership
+# COUNT imbalance, so no load is needed to provoke it.
+name: leaderselfmove
+nodes: 3
+partitions: 3
+replication_factor: 3
+leader_balancer: true
+placement_rebalancer: true
+diagnostics: true
+log_levels:
+  Kommander: Debug
+kahuna:
+  leader_balancer_interval_ms: 10000
+  leader_balancer_report_interval_ms: 2000
+  leader_balancer_report_ttl_ms: 8000
+  min_leader_stability_ms: 2000

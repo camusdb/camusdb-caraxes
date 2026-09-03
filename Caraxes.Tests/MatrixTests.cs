@@ -5,7 +5,9 @@
  * file that was distributed with this source code.
  */
 
+using System.Reflection;
 using NUnit.Framework;
+using Caraxes.Core.Cluster;
 using Caraxes.Core.Matrix;
 using Caraxes.Core.Scenario;
 
@@ -90,6 +92,70 @@ public sealed class MatrixExpanderTests
         // Mutating one cell's cluster must not bleed into another.
         cells[0].Scenario.Cluster.Nodes = 99;
         Assert.That(cells[1].Scenario.Cluster.Nodes, Is.EqualTo(3));
+    }
+
+    [Test]
+    public void CellClusterCarriesEveryClusterSpecField()
+    {
+        // The cell cluster is a hand-written field-by-field copy, so a ClusterSpec field that is not
+        // copied silently reverts to its default in every cell: memory_limit_mb was dropped this way,
+        // and sweep cells ran with no memory cap while the baseline they inform ran at 1536 MB. This
+        // walks the full property list with a non-default value per field, so the next added field
+        // fails loudly here until both the copy and this map are extended.
+        Dictionary<string, object> nonDefaults = new()
+        {
+            [nameof(ClusterSpec.Name)] = "clone-src",
+            [nameof(ClusterSpec.Nodes)] = 5,
+            [nameof(ClusterSpec.Partitions)] = 7,
+            [nameof(ClusterSpec.ReplicationFactor)] = 2,
+            [nameof(ClusterSpec.PlacementRebalancer)] = false,
+            [nameof(ClusterSpec.LeaderBalancer)] = false,
+            [nameof(ClusterSpec.Zones)] = new List<string> { "z1", "z2", "z3", "z4", "z5" },
+            [nameof(ClusterSpec.Subnet)] = "10.222.0",
+            [nameof(ClusterSpec.FirstIp)] = 4,
+            [nameof(ClusterSpec.BaseRestPort)] = 25095,
+            [nameof(ClusterSpec.BaseGrpcPort)] = 26095,
+            [nameof(ClusterSpec.BaseRaftPort)] = 8070,
+            [nameof(ClusterSpec.Locking)] = "pessimistic",
+            [nameof(ClusterSpec.Isolation)] = "serializable",
+            [nameof(ClusterSpec.ReadValidation)] = "track_and_validate",
+            [nameof(ClusterSpec.KeyRangeSharding)] = true,
+            [nameof(ClusterSpec.DistributedQueryExecution)] = true,
+            [nameof(ClusterSpec.MaxQueryParallelism)] = 4,
+            [nameof(ClusterSpec.Diagnostics)] = false,
+            [nameof(ClusterSpec.CamusdbRepo)] = "/tmp/camusdb-src",
+            [nameof(ClusterSpec.Image)] = "caraxes/test:pinned",
+            [nameof(ClusterSpec.SpareCerts)] = 2,
+            [nameof(ClusterSpec.DataTmpfsMb)] = 256,
+            [nameof(ClusterSpec.MemoryLimitMb)] = 1536,
+            [nameof(ClusterSpec.Kahuna)] = new Dictionary<string, object> { ["wal_sync_writes"] = "true" },
+            [nameof(ClusterSpec.LogLevels)] = new Dictionary<string, string> { ["Camus"] = "Debug" },
+        };
+
+        PropertyInfo[] properties = typeof(ClusterSpec)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.CanWrite)
+            .ToArray();
+
+        ClusterSpec source = new();
+        foreach (PropertyInfo prop in properties)
+        {
+            Assert.That(nonDefaults, Does.ContainKey(prop.Name),
+                $"ClusterSpec.{prop.Name} has no value in this test's map — add one here and copy the " +
+                "field in MatrixExpander's cell-cluster clone, or every cell silently uses its default");
+            prop.SetValue(source, nonDefaults[prop.Name]);
+        }
+
+        var cells = MatrixExpander.Expand(new MatrixSpec { Name = "clone-check", Cluster = source });
+        Assert.That(cells, Has.Count.EqualTo(1), "no axes → exactly the base cell");
+        ClusterSpec cloned = cells[0].Scenario.Cluster;
+
+        foreach (PropertyInfo prop in properties)
+        {
+            Assert.That(prop.GetValue(cloned), Is.EqualTo(prop.GetValue(source)),
+                $"ClusterSpec.{prop.Name} did not survive matrix expansion — the cell would run with " +
+                "the default instead of the value the matrix asked for");
+        }
     }
 
     [Test]
