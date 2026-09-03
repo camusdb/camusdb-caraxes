@@ -151,3 +151,7 @@ model.
 Phased build-out (see the project plan): cluster orchestration (done) → workload integration (done)
 → nemesis fault injection + membership changes (done) → invariant workloads, verdict engine, and a
 scenario matrix (done) → disk faults and Elle-style history checking.
+
+## Blog
+
+- [A Dragon to Attack Our Own Database](https://camusdb.github.io/blog/a-dragon-to-attack-our-own-database/) — the story behind Caraxes.
