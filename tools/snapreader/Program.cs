@@ -10,10 +10,12 @@ using RocksDbSharp;
 //   wal  <walDbPath> <keySubstrCsv>       - kv-type raft entries touching keys
 //   records <snapshotDir> [txnPhysCsv]    - transaction record snapshots (filter by txn physical ms)
 //   walrec <walDbPath> [txnPhysCsv]       - txnrecord-type raft entries
+//   waltypes <walDbPath>                  - committed-entry census by partition and log type
 switch (args[0])
 {
     case "rows": Rows.Run(args[1], args[2]); return;
     case "wal": Wal.RunKv(args[1], args[2]); return;
+    case "waltypes": Wal.RunTypes(args[1]); return;
     case "walrec": Wal.RunRecords(args[1], args.Length > 2 ? args[2] : ""); return;
     case "records": Records.Run(args[1], args.Length > 2 ? args[2] : ""); return;
 }

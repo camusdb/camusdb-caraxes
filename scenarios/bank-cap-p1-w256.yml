@@ -1,0 +1,71 @@
+# BANK CAPACITY SWEEP — the Phase 2 -> Phase 3 handoff measurement.
+#
+# Phase 2 (feature 76d88df1) closed by naming this run set outright: "re-baseline `bank` on current
+# hardware and the shipped stack, then sweep it at 1 partition and at raised concurrency. Until that
+# runs, no Phase 2 number should be quoted as progress toward 10x." Every Phase 2 capacity number is
+# on `accounts` (shard-disjoint, zero conflicts); the gate is defined on `bank` (2,000 rows, contended
+# transfers), and the two are different contention regimes.
+#
+# THE GATE. Median >= 10.0x the paired baseline AND >= 2,100 completed ops/s. The paired baseline is
+# `bank` at 32 workers / 3 partitions, so the binding number is the ratio, and 2,100 is slack.
+#
+# WHY THE BASELINE ARM IS IN THIS SWEEP. Earlier bank arms were single runs compared across days, and
+# that produced a retracted finding: two arms running byte-identical binaries differed by 1.36x, and
+# run order predicted throughput at Pearson -0.963 (features 46b7fe8c, 91531e50). The fix is not to
+# explain the drift. The gate is a RATIO, so measuring the denominator interleaved with the numerator
+# on the same host, same day, same build makes whatever the machine is doing cancel out of the claim.
+# `bank-cap-base-p3-w32` is that denominator, re-measured here rather than quoted from 2026-09-02.
+#
+# RUN DISCIPLINE. The plan requires "at least five alternating baseline/candidate repetitions; report
+# median, range, and variation". No bank arm has ever had more than n=1. This sweep runs 3 reps of
+# each of 5 arms, rotated so arms alternate and the rotation reverses each round, which balances run
+# order across arms rather than confounding it with them.
+#
+# THESE ARE CAPACITY RUNS, NOT SOAKS: 10m measured + 2m warmup + 60s settle, matching
+# capacity-baseline.yml. The 45-minute bank-soak-* scenarios answer a different question.
+#
+# HELD CONSTANT ACROSS ALL FIVE ARMS: build (~/camusdb HEAD), rows, duration, memory_limit_mb,
+# workers:connections at 2:1, isolation, locking, and every check except one. The single deliberate
+# asymmetry is `require_spread_leadership`, which is on the 3-partition arm only — with one partition
+# there is one Raft leader and spread is impossible by construction, so demanding it would fail the
+# candidate arms for being the topology they are testing.
+#
+# THIS ARM: the top of the sweep. The 45m soak at this shape reached 2,296.5 ops/s, the highest
+# bank number recorded, and Phase 2's accounts sweep was still rising at 256 workers — so if the
+# curve has not turned over here, the sweep has found a floor and not a ceiling.
+name: bank-cap-p1-w256
+cluster:
+  name: bankcapp1w256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 128
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_node_health: true
+teardown: true

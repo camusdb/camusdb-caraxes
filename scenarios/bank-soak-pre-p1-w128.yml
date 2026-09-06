@@ -1,0 +1,66 @@
+# PRE-FIX CONTROL — the A/B partner for bank-soak-fix-p1-w128.yml. Builds from a worktree at
+# camusdb e4e97531, the commit IMMEDIATELY BEFORE 55ffdaf6 "Bound gRPC batch stream task tracking
+# memory".
+#
+# WHY THIS EXISTS. The first post-fix soak was compared against `bank-soak-p1-w128-s1` from
+# 2026-09-03, and that comparison is NOT single-variable. Between the two runs three things changed:
+#   - the BatchStreamTracker fix (55ffdaf6)
+#   - two other camusdb commits (3d9c9c58 "Optimized schema on disk", 75d85f3e "Isolate transaction
+#     metrics to owning flow")
+#   - **Kahuna.Core 1.5.6 -> 1.5.7**, a dependency bump
+# Feature `04da7f26` records a Kahuna minor bump costing 3x throughput once before, so a dependency
+# change is not a detail that can be waved through. The memory result is safe to attribute — live
+# growth fell 0.258 -> 0.039 KiB/op and nothing else in that set targets retained state machines —
+# but the throughput drop (2,183 -> 1,829 ops/s) and 2,486 new CANCELED errors are unattributable
+# as measured.
+#
+# WHAT MAKES THIS CLEAN. e4e97531 already carries Kahuna.Core 1.5.7 and both other camusdb commits,
+# and 55ffdaf6 touches no csproj. So against `bank-soak-fix-p1-w128-s1` the ONLY difference is the
+# tracker itself. Verified before launch: BatchStreamTracker.cs is absent in the worktree and
+# CamusSqlService.cs still has `List<Task> ops` at line 545.
+#
+# WHAT FALSIFIES WHAT.
+#   - This run also decays to ~1,500 ops/s with CANCELED errors -> they belong to the Kahuna bump or
+#     the other commits, not the fix, and the fix is a clean win on memory at no throughput cost.
+#   - This run holds ~1,880 ops/s with zero failures like the 1.5.6 baseline did -> the tracker fix
+#     itself costs throughput and introduces cancellations, and it needs rework before adoption.
+#   - Both decay but this one grows to 99% of cap while the fixed one stops at 77% -> memory is
+#     fixed, throughput decay has a second cause, and `41b2d6bf`'s memory-driven mechanism is at
+#     best partial.
+#
+# Everything else is byte-for-byte the fix scenario: 1 partition, 128 workers, 4096 MB/node,
+# 45-minute window, no nemesis, no heap dumps.
+name: bank-soak-pre-p1-w128
+cluster:
+  name: banksoakprep1w128
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  camusdb_repo: "~/camusdb-prefix-wt"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

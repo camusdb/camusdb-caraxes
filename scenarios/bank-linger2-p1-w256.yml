@@ -1,0 +1,75 @@
+# WAL GROUP-COMMIT LINGER at the shape that matters — bank, 1 partition, 256 workers.
+#
+# WHY THIS EXISTS. Phase 2's headline was "the leader's WAL never group-commits: exactly 1.00
+# operations per batch at every concurrency from 32 to 256 workers". That is not a Kommander
+# limitation. `kahuna.wal_group_commit_linger_ms` defaults to 0 (disabled) and
+# EmbeddedKahunaOptionsBuilder.ClusterBaseline never sets it, so 1.00 ops/batch is the configured
+# behaviour of a knob nobody turned on. A dependency handoff claiming the WAL does not coalesce,
+# written from runs where coalescing was switched off, would be a bad filing.
+#
+# WHAT THE PRIOR EVIDENCE ACTUALLY SAYS. The +29.8% figure quoted for this lever is
+# `wal-linger-multi-1ms` (514.1 ops/s) against `wal-linger-multi-0ms` (396.2) — a MULTI-TABLE
+# topology. On single-table bank at 3 partitions the same campaign found linger neutral at best
+# (k155 arms: 418 / 398 / 415 for 0 / 1 / 2 ms) and severely harmful at worst (older arms:
+# 292 / 162 / 165). So this is not a knob expected to pay; it is a hypothesis with a known failure
+# mode, and 2 ms halving throughput is a real possible outcome.
+#
+# WHY TEST IT ANYWAY. Every prior linger run was at 32 workers. The mechanism is amortising one
+# fsync across concurrent ready commits — at low concurrency there is nothing to gather, which is
+# exactly what "neutral to harmful at w32" looks like. 1 partition at 256 workers has never been
+# tested with linger, and it is the regime where the mechanism predicts the largest effect: the
+# durable-commit profile of `bank-soak-k160-p1-w128-s1` puts prepare + decision at 81.6% of the
+# critical path with a 170 ms p99 KV write queue age, i.e. a deep queue of commits waiting on the
+# durable write. A deep queue is precisely what a linger window has to work with.
+#
+# WHAT FALSIFIES WHAT.
+#   - 1 ms or 2 ms beats 0 ms by more than the arms' own spread -> the WAL was never the ceiling,
+#     it was unconfigured, and the Phase 3 handoff must be rewritten before it is filed.
+#   - All three arms land inside each other's spread -> linger is not the lever at this shape, the
+#     1.00 ops/batch figure stands as a genuine finding, and the handoff proceeds as drafted.
+#   - Linger is worse -> the fsync is not the queue's constraint; look at prepare, which is 51.2%
+#     of the path on its own.
+#
+# DISCIPLINE. Three arms x 3 replicates, rotation reversed each round, every run gated on a host
+# load below 0.10 per core. The 0 ms arm is measured HERE rather than reused from the bank-cap
+# sweep: an A/B whose control was taken hours earlier is the mistake that produced the retracted
+# finding 46b7fe8c. Held constant with the bank-cap sweep otherwise, so the 0 ms arm doubles as a
+# reproducibility check on `bank-cap-p1-w256`.
+name: bank-linger2-p1-w256
+cluster:
+  name: banklinger2p1w256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  camusdb_repo: "~/camusdb"
+  kahuna:
+    wal_group_commit_linger_ms: 2
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 128
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_node_health: true
+teardown: true

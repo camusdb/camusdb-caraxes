@@ -5,7 +5,7 @@ using RocksDbSharp;
 //   1=partition 2=id 3=term 4=type(1=Committed) 5=logType 6=payload 8=timePhysical.
 static class Wal
 {
-    static IEnumerable<(int Pid, long Id, long Term, int Type, string LogType, byte[] Payload, long TimeMs)> Entries(string dbPath)
+    internal static IEnumerable<(int Pid, long Id, long Term, int Type, string LogType, byte[] Payload, long TimeMs)> Entries(string dbPath)
     {
         var cfNames = RocksDb.ListColumnFamilies(new DbOptions(), dbPath);
         var cfd = new ColumnFamilies();
@@ -76,6 +76,43 @@ static class Wal
                 var bundled = c.Where(x => x.Num == 26 && x.Wire == 2).Select(x => Encoding.UTF8.GetString(x.Bytes!)).ToList();
                 Console.WriteLine($"p{e.Pid} log={e.Id} term={e.Term} rt={e.Type} t={Proto.Ts(e.TimeMs)} {kindName} txn={Proto.V(c, 2)}:{phys}:{Proto.V(c, 4)} epoch={Proto.S(c, 5)} anchor={Proto.Str(c, 14)} abortClass={Proto.V(c, 25)} parts=[{string.Join("|", parts)}] bundled=[{string.Join("|", bundled)}]");
             }
+        }
+    }
+
+    // Committed-entry census by partition and log type, with the kv key space each partition holds.
+    // Answers "what is actually stored on a partition the placement report shows carrying work but
+    // owning no table" without inferring it from executor counters.
+    public static void RunTypes(string dbPath)
+    {
+        var count = new Dictionary<(int, string), long>();
+        var bytes = new Dictionary<(int, string), long>();
+        var spaces = new Dictionary<int, Dictionary<string, long>>();
+        foreach (var e in Entries(dbPath))
+        {
+            var k = (e.Pid, e.LogType ?? "?");
+            count[k] = count.GetValueOrDefault(k) + 1;
+            bytes[k] = bytes.GetValueOrDefault(k) + e.Payload.Length;
+            if (e.LogType == "kv")
+            {
+                string key = Proto.Str(Proto.Parse(e.Payload), 2) ?? "";
+                // collapse to the key space: everything up to the last '/' , else the whole key
+                int cut = key.LastIndexOf('/');
+                string space = cut > 0 ? key[..cut] : key;
+                if (!spaces.TryGetValue(e.Pid, out var m)) spaces[e.Pid] = m = new();
+                m[space] = m.GetValueOrDefault(space) + 1;
+            }
+        }
+        Console.WriteLine("| partition | log type | entries | payload MiB |");
+        Console.WriteLine("|---|---|---|---|");
+        foreach (var kv in count.OrderBy(x => x.Key.Item1).ThenByDescending(x => x.Value))
+            Console.WriteLine($"| {kv.Key.Item1} | {kv.Key.Item2} | {kv.Value:N0} | {bytes[kv.Key] / 1048576.0:F1} |");
+        Console.WriteLine();
+        Console.WriteLine("kv key spaces per partition (top 6):");
+        foreach (var p in spaces.OrderBy(x => x.Key))
+        {
+            Console.WriteLine($"  partition {p.Key}:");
+            foreach (var s in p.Value.OrderByDescending(x => x.Value).Take(6))
+                Console.WriteLine($"    {s.Value,10:N0}  {s.Key}");
         }
     }
 }

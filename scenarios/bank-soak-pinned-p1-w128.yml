@@ -1,0 +1,68 @@
+# PINNED-CACHE SOAK — 1 partition, 128 workers, 4096 MB/node, RocksDB budgets pinned at 64/16 MB.
+#
+# WHY. The unpinned 45-minute soak (`bank-soak-p1-w128-s1`) decayed 33% and its memory climbed to 99%
+# of a 4096 MB cap, which was read as unbounded growth. That reading is CONFOUNDED and this run tests
+# it. My soak scenarios omit the `kahuna.rocksdb_*` passthrough that the 2h soak scenarios carry, so
+# they fall back to `ApplyMemoryProportionalDefaults` — which sizes caches as a PERCENTAGE OF THE
+# CONTAINER LIMIT. Raising the limit to 4096 MB therefore also raised the cache budget to roughly
+# 770 MB (block cache ~410, memtables ~102, actor caches ~256), against ~290 MB at the 1536 MB
+# baseline. A large part of the "growth" may simply be caches filling toward a bigger budget, which
+# is by design and bounded.
+#
+# Feature `efa86ffa` established this exact posture: 64 MB block cache + 16 MB memtables is what run
+# K (2026-08-24) used to survive a two-hour soak at 1536 MB with a BOUNDED memory band and genuine
+# reclaim under load. The working set here is 2,000 rows x 256 B, so cache capacity buys nothing
+# while its native memory competes with the managed heap.
+#
+# THE ONE VARIABLE. Identical to bank-soak-p1-w128.yml in every other field — same topology, workers,
+# 4096 MB limit, 45-minute window, no nemesis. Only the two cache budgets are pinned.
+#
+# WHAT FALSIFIES WHAT.
+#   - Footprint drops sharply and the decay knee moves out or disappears -> the "unbounded growth"
+#     reading was wrong; the real finding is that raising memory_limit_mb inflates cache sizing, and
+#     the sustained 5.77x ratio was understated by my own scenario omission.
+#   - Footprint still climbs to cap and throughput still decays ~33% -> the finding stands. At
+#     2,183 ops/s this configuration allocates ~240 MB/s against run K's ~27 MB/s (~110 KB/op), so
+#     9x the GC pressure at a bound `efa86ffa` only ever verified at 250 ops/s.
+#   - Footprint drops but throughput decays anyway -> decay is not memory-driven at all, and the
+#     mechanism is something this campaign has not yet identified.
+#
+# READ intervals.csv, not summary.json: the unpinned run averaged 2,183 ops/s while running 2,817 in
+# its first ten minutes and 1,880 in its last five.
+name: bank-soak-pinned-p1-w128
+cluster:
+  name: banksoakpinp1w128
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    rocksdb_shared_memory_budget_mb: 64
+    rocksdb_shared_memtable_budget_mb: 16
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

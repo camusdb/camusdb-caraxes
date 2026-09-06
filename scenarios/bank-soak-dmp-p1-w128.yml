@@ -1,0 +1,70 @@
+# UNTRUNCATED HEAP CAPTURE — 1 partition, 128 workers, 8192 MB/node, caches pinned, 90 min.
+#
+# WHY A RETAKE. The t+60 gcdump from `bank-soak-gc-p1-w128-s1` hit a HARD 10,000,000-object cap
+# (t+30 returned 8,254,957; t+60 returned exactly 10,000,000). `dotnet-gcdump` exposes no flag to
+# raise it, and both dumps finished in 7-9 s so the 30 s timeout was not the cause. Checked against
+# the runtime's own uncapped counter via `tools/memdecomp`, the truncated dump understated live by
+# ~28%: it reported >=1,592 MB where the counter shows **2,213 MiB**. That truncation is what made
+# live growth look like +201 MiB across t+30 -> t+60 when it is actually **+516 MiB**, and it is why
+# an earlier reading wrongly concluded ~85% of continuing growth was non-live.
+#
+# WHAT IS ALREADY ANSWERED, so this run does not need to re-answer it: how MUCH is live. memdecomp
+# reads `dotnet_gc_last_collection_heap_size_bytes` from the existing scrapes with no cap, and across
+# three soaks live is the largest single growth component (0.258-0.377 KiB/op against native
+# 0.151-0.351 and cache+kernel ~0). This run is only for WHICH TYPES hold it at t+60.
+#
+# TWO INSTRUMENTS PER POINT, IN THIS ORDER.
+#   1. `dotnet-dump collect --type Full` — a full core dump, no object cap. `dumpheap -stat` then
+#      gives exact per-type counts and sizes. Taken FIRST because it does not perturb the heap.
+#   2. `dotnet-gcdump -t 120` — still truncating, but kept so the new points are directly comparable
+#      with t00/t30 of the previous run, and its forced blocking GC is what separates live data from
+#      collectable garbage. Taken SECOND, precisely because that forced GC would otherwise change
+#      what the core dump captured.
+#
+# The ordering is the whole reason both are taken rather than either alone.
+#
+# COST. A full core of a 6-7 GB process is a 6-7 GB file; two of them is ~14 GB (824 GB free). The
+# core dumps are large enough that they should be deleted once `dumpheap -stat` output is recorded.
+#
+# THIS RUN'S CURVE IS PERTURBED and must not be quoted as capacity: four heap captures, two of them
+# forcing a blocking GC. `bank-soak-head-p1-w128-s1` remains the clean curve.
+name: bank-soak-dmp-p1-w128
+cluster:
+  name: banksoakdmpp1w128
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 8192
+  kahuna:
+    # Pinned at exactly what proportional sizing computes for a 4096 MB container, so that raising
+    # the container limit to 8192 does NOT also double the cache budget. See the header.
+    rocksdb_shared_memory_budget_mb: 409
+    rocksdb_shared_memtable_budget_mb: 102
+    max_bytes_per_actor: 4194304
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 90m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

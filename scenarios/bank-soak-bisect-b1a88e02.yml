@@ -1,0 +1,67 @@
+# BISECT — which camusdb commit lost 34% of throughput and introduced 4,019 failures?
+#
+# THE LADDER SO FAR, all same scenario/host, Kahuna held at 1.5.6 except where noted:
+#   c69de80f + 1.5.6 -> 2,183 ops/s,     0 failures,     0 indeterminate,  live 0.258 KiB/op
+#   e4e97531 + 1.5.6 -> 1,440 ops/s, 4,019 failures,   913 indeterminate,  live 0.361
+#   e4e97531 + 1.5.7 -> 1,351 ops/s, 4,759 failures, 1,115 indeterminate,  live 0.326
+#   55ffdaf6 + 1.5.7 -> 1,829 ops/s, 2,486 failures,   355 indeterminate,  live 0.039
+#
+# The Kahuna bump costs only 6.2% (1,440 -> 1,351) and is within n=1 noise, so the -34% and the
+# appearance of failures belong to camusdb commits between c69de80f and e4e97531, NOT the dependency.
+# An earlier reading blamed Kahuna for the whole 38%; holding the commit fixed refuted it.
+#
+# WHY ONE RUN DECIDES IT. The range is not linear:
+#     *   e4e97531  (merge)
+#     |\
+#     | * 75d85f3e  Isolate transaction metrics to owning flow
+#     * b1a88e02  (merge)
+#     * 3d9c9c58  Optimized schema on disk
+# `b1a88e02` already contains BOTH `3d9c9c58` and the `c69de80f` baseline, and does NOT contain
+# `75d85f3e` — verified with `git merge-base --is-ancestor`. So this single arm separates the two
+# candidates cleanly:
+#   - lands near 1,440 with thousands of failures -> `3d9c9c58` "Optimized schema on disk" owns it
+#   - lands near 2,183 with zero failures         -> `75d85f3e` "Isolate transaction metrics" owns it
+#   - lands between                                -> both contribute, and each needs its own arm
+#
+# Kahuna is pinned to 1.5.6 here (b1a88e02 ships 1.5.7) so the dependency is held constant against
+# the c69de80f baseline. That is the only edit to the worktree.
+#
+# WATCH THE FAILURES AS WELL AS THE RATE. The baseline had exactly zero failed and zero
+# indeterminate; every later arm has thousands. Whichever commit introduces them matters more than
+# the throughput number, because indeterminate writes are a correctness-adjacent signal, not just a
+# slowdown. Note also that `3d9c9c58` touches schema-on-disk, and feature `ee5a065c` records a node
+# that served a whole run without its table — worth holding those two facts next to each other.
+name: bank-soak-bisect-b1a88e02
+cluster:
+  name: banksoakbisect1
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  camusdb_repo: "~/camusdb-b1a88e02-wt"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

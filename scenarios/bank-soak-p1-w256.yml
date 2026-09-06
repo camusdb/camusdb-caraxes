@@ -1,0 +1,66 @@
+# 45-MINUTE SOAK CONFIRMATION — 1 partition, 256 workers, 6144 MB/node.
+#
+# WHY THIS IS MANDATORY. Every capacity number in the bank campaign is a FIVE-MINUTE window. Vorpal
+# feature `eaa81e59` records a cluster that stopped serving PERMANENTLY at ~33.5 minutes of bank
+# soak, with every health signal green and all nodes idle. A 5-minute window cannot see that, and if
+# it recurs at this configuration the entire result is void — not degraded, void. The plan also
+# forbids accepting a run that shows a progressive tail-latency collapse even when its average
+# throughput passes, and 45 minutes is the shortest window that can show one.
+#
+# WHAT IS BEING CONFIRMED. This cell measured (5-minute windows, memory off the critical path):
+#   w128 -> 2,756 ops/s = 6.80x the paired baseline (405.3), write p99 278 ms, INSIDE the frozen
+#           430 ms budget. The defensible headline.
+#   w256 -> 3,444 ops/s = 8.50x, write p99 474 ms, 10% OVER budget. The measured peak; 512 workers
+#           is past the knee (throughput down, p99 1,134 ms).
+# Both cells are being soaked because if only one survives 45 minutes, that decides which number the
+# plan may quote — and the throughput ranking alone must not decide it.
+#
+# WHAT FALSIFIES WHAT.
+#   - Throughput holds flat for 45 min and p99 stays near its 5-minute value -> the number is real
+#     and the 5-minute campaign was not measuring a transient.
+#   - Throughput or p99 degrades progressively -> the 5-minute figure is an artifact of a short
+#     window. Report the degradation curve, not the average.
+#   - Serving stops entirely -> `eaa81e59` reproduced at this topology. That outranks every
+#     throughput result in this campaign and becomes the top priority.
+#   - Memory climbs past its 5-minute plateau (~4.2 GB/node) -> the footprint is time-dependent, not
+#     concurrency-dependent, which changes the shipping requirement from a number to a leak.
+#
+# READ THE INTERVALS, NOT THE SUMMARY. A run that serves 3,400 ops/s for 30 minutes and 200 for the
+# last 15 averages to something that looks fine. `intervals.csv` is the artifact that matters here.
+#
+# Run behind the tightened quiesce (load < 0.8 AND Dirty+Writeback < 64 MiB): a 45-minute run writes
+# far more than the 1M-op runs that already contaminated a successor through page-cache writeback.
+name: bank-soak-p1-w256
+cluster:
+  name: banksoakp1w256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 128
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
