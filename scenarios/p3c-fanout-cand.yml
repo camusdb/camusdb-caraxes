@@ -1,0 +1,94 @@
+# PHASE 3 CLOSE-OUT — fanout (3 tables over 3 partitions, cross-partition 2PC on every write) cell, arm cand (Kahuna.Core 1.6.3, carries 8cee5659, one-phase gate off).
+#
+# CamusDB feature cfe716da (Cluster throughput 10x - Phase 3 close-out), tasks 2 and 5. One of three
+# arms run INTERLEAVED (base, cand, onep, three times over) on one cell. A single arm is not a result:
+# this host's wall-clock drift predicted throughput at Pearson -0.963 across six byte-identical 45m
+# arms, so only matched replicates taken close together can carry a delta.
+#
+# THE THREE ARMS.
+#   base  Kahuna.Core 1.6.0 (source revision 421be434) - the package CamusDB shipped before the bump.
+#   cand  Kahuna.Core 1.6.3, which carries 8cee5659 ("Add typed durable forwards and tx attribution")
+#         plus the heartbeat-window fix 48b556e3, with the one-phase apply-time gate OFF. base -> cand
+#         is task 2's measured-cost gate for b01a198d.
+#   onep  The same 1.6.3 package with kahuna.one_phase_apply_time_validation ON. cand -> onep is task
+#         5's qualification of the flag; it is the only lever in evidence for the uncontended
+#         two-round commit cost, which 8cee5659 does not touch.
+#
+# WHAT IS HELD CONSTANT. Every arm runs the SAME CamusDB source (server 0.11.7 at b6a28c7c plus the
+# uncommitted config-surface change that exposes the flag) and the SAME Kommander (1.5.3, pinned
+# explicitly in the base worktree - Kahuna 1.6.0 would otherwise drag Kommander 1.5.2 in and the
+# comparison would move two dependencies at once). The base arm builds from ~/camusdb-k160-wt, a
+# worktree of the same commit whose only edits are that pin and the Kahuna.Core version.
+#
+# CONFOUND, STATED. 1.6.0 -> 1.6.3 is nine Kahuna commits, not only 8cee5659: 6a72e3d7, e4472f10,
+# cc8e6a89, bc7f8ec1, b10618cc (client leader-aware routing), 5ea88d42, 8cee5659, cf089ec8 and
+# 48b556e3. A delta on this cell attributes to the range, not to the typed-forward commit alone.
+#
+# HEARTBEAT WINDOW, HELD CONSTANT BY HAND. Kahuna 1.6.3 derives kahuna.recent_heartbeat_ms from the
+# cadence (a quarter of it, 25 ms at the 100 ms default); 1.6.0 shipped a fixed 100 ms, equal to the
+# cadence, which suppressed every timer-driven heartbeat and which Kommander 1.5.3 refuses outright.
+# Every arm therefore states 25 ms, so the base arm runs the same heartbeat behaviour as the candidate
+# instead of the silently suppressed one.
+#
+# EXPECTATION FOR THIS CELL, STATED BEFORE THE RUN.
+#   base -> cand: this is the cell where 8cee5659 should pay. Every write is a genuine multi-partition
+#   commit, so a remote-anchor commit costs 1 bundle + 1 decision + 2 delta forwards and 0 record
+#   lookups where it used to cost 5 delta forwards + 1 lookup. Expect the prepare and decision stages
+#   to fall. If they do not, say so with the numbers.
+#   cand -> onep: expect NOTHING. The one-phase gate admits only a single-participant transaction whose
+#   anchor is on that partition; a fanout transfer spans tables on different partitions and stays on
+#   2PC by design. This arm is the negative control for the flag - a throughput move here would mean
+#   the gate is admitting something it should not, and kahuna.durable_tx.one_phase_gate{outcome} says
+#   which.
+#
+# NOT A CAPACITY RESULT. fanout pays full 2PC on every write and is not comparable to the accounts or
+# bank cells.
+#
+# CONFLICTS ARE WAIVED HERE, UNLIKE fanout-gate.yml. That scenario is a correctness gate and treats a
+# single conflict as a failed run, which is right for a gate and wrong for a throughput cell: at 32
+# workers two transfers eventually pick the same account, and the first baseline replicate failed on
+# exactly one conflict while conserving every unit of balance (18,001,056,514 in and out, 0 half-applied
+# transfers, 0 lost writes, row attribution clean). The invariant this cell is graded on is conservation,
+# which reconciliation still checks with faults expected; "zero conflicts ever" is not a property a
+# loaded cross-partition workload has.
+name: p3c-fanout-cand
+cluster:
+  name: p3cfanoutcand
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  kahuna:
+    # Held constant across every arm; see the header.
+    recent_heartbeat_ms: 25
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:p3ccand"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true

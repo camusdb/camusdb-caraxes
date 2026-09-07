@@ -1,0 +1,89 @@
+# PHASE 3 CLOSE-OUT — accounts (shard-disjoint read-modify-write at bank's 2,000-row keyspace) cell, arm onep (Kahuna.Core 1.6.3, carries 8cee5659, one-phase gate ON).
+#
+# CamusDB feature cfe716da (Cluster throughput 10x - Phase 3 close-out), tasks 2 and 5. One of three
+# arms run INTERLEAVED (base, cand, onep, three times over) on one cell. A single arm is not a result:
+# this host's wall-clock drift predicted throughput at Pearson -0.963 across six byte-identical 45m
+# arms, so only matched replicates taken close together can carry a delta.
+#
+# THE THREE ARMS.
+#   base  Kahuna.Core 1.6.0 (source revision 421be434) - the package CamusDB shipped before the bump.
+#   cand  Kahuna.Core 1.6.3, which carries 8cee5659 ("Add typed durable forwards and tx attribution")
+#         plus the heartbeat-window fix 48b556e3, with the one-phase apply-time gate OFF. base -> cand
+#         is task 2's measured-cost gate for b01a198d.
+#   onep  The same 1.6.3 package with kahuna.one_phase_apply_time_validation ON. cand -> onep is task
+#         5's qualification of the flag; it is the only lever in evidence for the uncontended
+#         two-round commit cost, which 8cee5659 does not touch.
+#
+# WHAT IS HELD CONSTANT. Every arm runs the SAME CamusDB source (server 0.11.7 at b6a28c7c plus the
+# uncommitted config-surface change that exposes the flag) and the SAME Kommander (1.5.3, pinned
+# explicitly in the base worktree - Kahuna 1.6.0 would otherwise drag Kommander 1.5.2 in and the
+# comparison would move two dependencies at once). The base arm builds from ~/camusdb-k160-wt, a
+# worktree of the same commit whose only edits are that pin and the Kahuna.Core version.
+#
+# CONFOUND, STATED. 1.6.0 -> 1.6.3 is nine Kahuna commits, not only 8cee5659: 6a72e3d7, e4472f10,
+# cc8e6a89, bc7f8ec1, b10618cc (client leader-aware routing), 5ea88d42, 8cee5659, cf089ec8 and
+# 48b556e3. A delta on this cell attributes to the range, not to the typed-forward commit alone.
+#
+# HEARTBEAT WINDOW, HELD CONSTANT BY HAND. Kahuna 1.6.3 derives kahuna.recent_heartbeat_ms from the
+# cadence (a quarter of it, 25 ms at the 100 ms default); 1.6.0 shipped a fixed 100 ms, equal to the
+# cadence, which suppressed every timer-driven heartbeat and which Kommander 1.5.3 refuses outright.
+# Every arm therefore states 25 ms, so the base arm runs the same heartbeat behaviour as the candidate
+# instead of the silently suppressed one.
+#
+# EXPECTATION FOR THIS CELL, STATED BEFORE THE RUN.
+#   Topology: 3 partitions, 3 nodes, structurally conflict-free RMW - each transaction reads and
+#   writes one account inside one table, so it has ONE participant partition and a read set inside its
+#   write set. Sessions are spread across nodes while leadership is spread too, so a share of commits
+#   have their anchor on a partition another node leads.
+#   base -> cand: expect a small or null move. Contention is structurally absent, so the stale-base
+#   refusal path 8cee5659 shortens is barely exercised; what remains is the remote-anchor forward
+#   saving on the share of transactions whose anchor is not local.
+#   cand -> onep: expect the LARGEST eligibility rate of the three cells - every transaction qualifies
+#   for the gate on topology. If throughput does not move where eligibility is high, the two-round
+#   commit cost was not the binding constraint on this cell, and the run says so with
+#   one_phase_commits against one_phase_gate{outcome}.
+name: p3c-accounts-onep
+cluster:
+  name: p3caccountsonep
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    # Held constant across every arm; see the header.
+    recent_heartbeat_ms: 25
+    # Both keys travel together: the fence horizon bounds the committed-head ledger the gate judges
+    # against at apply time, and Kahuna requires it identical on every node while the gate is on. The
+    # value stated here IS Kahuna's default, written down so the arm's manifest names the horizon its
+    # numbers were produced under rather than inheriting one silently.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:p3ccand"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 64
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

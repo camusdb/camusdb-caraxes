@@ -1,0 +1,86 @@
+# PHASE 3 CLOSE-OUT — bank (1 partition, 128 workers - the profiled cell of the Phase 3 assessment) cell, arm base (Kahuna.Core 1.6.0, source revision 421be434).
+#
+# CamusDB feature cfe716da (Cluster throughput 10x - Phase 3 close-out), tasks 2 and 5. One of three
+# arms run INTERLEAVED (base, cand, onep, three times over) on one cell. A single arm is not a result:
+# this host's wall-clock drift predicted throughput at Pearson -0.963 across six byte-identical 45m
+# arms, so only matched replicates taken close together can carry a delta.
+#
+# THE THREE ARMS.
+#   base  Kahuna.Core 1.6.0 (source revision 421be434) - the package CamusDB shipped before the bump.
+#   cand  Kahuna.Core 1.6.3, which carries 8cee5659 ("Add typed durable forwards and tx attribution")
+#         plus the heartbeat-window fix 48b556e3, with the one-phase apply-time gate OFF. base -> cand
+#         is task 2's measured-cost gate for b01a198d.
+#   onep  The same 1.6.3 package with kahuna.one_phase_apply_time_validation ON. cand -> onep is task
+#         5's qualification of the flag; it is the only lever in evidence for the uncontended
+#         two-round commit cost, which 8cee5659 does not touch.
+#
+# WHAT IS HELD CONSTANT. Every arm runs the SAME CamusDB source (server 0.11.7 at b6a28c7c plus the
+# uncommitted config-surface change that exposes the flag) and the SAME Kommander (1.5.3, pinned
+# explicitly in the base worktree - Kahuna 1.6.0 would otherwise drag Kommander 1.5.2 in and the
+# comparison would move two dependencies at once). The base arm builds from ~/camusdb-k160-wt, a
+# worktree of the same commit whose only edits are that pin and the Kahuna.Core version.
+#
+# CONFOUND, STATED. 1.6.0 -> 1.6.3 is nine Kahuna commits, not only 8cee5659: 6a72e3d7, e4472f10,
+# cc8e6a89, bc7f8ec1, b10618cc (client leader-aware routing), 5ea88d42, 8cee5659, cf089ec8 and
+# 48b556e3. A delta on this cell attributes to the range, not to the typed-forward commit alone.
+#
+# HEARTBEAT WINDOW, HELD CONSTANT BY HAND. Kahuna 1.6.3 derives kahuna.recent_heartbeat_ms from the
+# cadence (a quarter of it, 25 ms at the 100 ms default); 1.6.0 shipped a fixed 100 ms, equal to the
+# cadence, which suppressed every timer-driven heartbeat and which Kommander 1.5.3 refuses outright.
+# Every arm therefore states 25 ms, so the base arm runs the same heartbeat behaviour as the candidate
+# instead of the silently suppressed one.
+#
+# EXPECTATION FOR THIS CELL, STATED BEFORE THE RUN.
+#   This is the cell the b01a198d assessment was profiled on, and on it the coordinator leads the only
+#   partition, so every anchor is local and the remote-anchor gains of 8cee5659 do not apply.
+#   base -> cand: expect a NULL result unless the contended path carries it. The lever here is the
+#   stale-base refusal: a doomed transaction now aborts as Conflict at once instead of burning up to 8
+#   rounds and 72 ms of backoff. prepare_retry_loops{outcome=stale_base} says how often that fired; if
+#   the count is small the null result is the answer, and it gets written down rather than re-run.
+#   cand -> onep: a bank transfer touches two accounts inside ONE partition, so it is eligible on
+#   topology and this is the cell where the flag's one-round commit should show. Set against it: a
+#   doomed transaction now pays a Raft append BEFORE it aborts, so read the abort-at-apply counters
+#   (one_phase_gated_commit_rejections, _stale_base_rejections, _stale_read_rejections) beside the
+#   throughput. On a contended 2,000-row keyspace at 128 workers that rate is the risk the design
+#   named, and throughput alone must never be quoted from this arm.
+#
+# 45 MINUTES, NOT 5. This cell is kept at the profiled shape (bank-soak-k160-p1-w128) so its numbers
+# sit beside the existing 1.6.0 soak rather than beside nothing.
+name: p3c-bank-base
+cluster:
+  name: p3cbankbase
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    # Held constant across every arm; see the header.
+    recent_heartbeat_ms: 25
+  camusdb_repo: "~/camusdb-k160-wt"
+  image: "caraxes/camusdb:p3cbase"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
