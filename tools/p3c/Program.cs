@@ -7,6 +7,8 @@ using P3c;
 //   extract <runDir>                     - one run as JSON: stack, throughput, stage costs, counters
 //   compare <cell> [arm ...]             - per-replicate arm deltas for a cell (default base cand onep)
 //   queue   <runDir> [runDir ...]        - per-kind KV write queue delay, and the task-4 decision rule
+//   soak    <runDir> [runDir ...]        - 45-minute soak windows: average, first five, last five, decay
+//   rebase  <base1> <cand1> <cand2> <base2> - the matched ABBA ratio for the sustained bank re-baseline
 //
 // Why per-replicate and not medians: this host moves the cost of a durable Raft write by up to 4.5x
 // between runs, which is larger than any effect being measured. Arms of one replicate run back to
@@ -15,7 +17,9 @@ using P3c;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: p3c extract <runDir> | compare <cell> [arm ...] | queue <runDir> ...");
+    Console.Error.WriteLine(
+        "usage: p3c extract <runDir> | compare <cell> [arm ...] | queue <runDir> ... "
+        + "| soak <runDir> ... | rebase <base1> <cand1> <cand2> <base2>");
     return 1;
 }
 
@@ -32,6 +36,14 @@ switch (args[0])
     case "queue":
         foreach (string dir in args[1..])
             Queue.Run(dir);
+        return 0;
+
+    case "soak":
+        Soak.Run(args[1..]);
+        return 0;
+
+    case "rebase":
+        Soak.Rebase(args[1..]);
         return 0;
 
     default:

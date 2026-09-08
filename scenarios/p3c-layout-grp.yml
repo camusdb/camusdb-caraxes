@@ -34,6 +34,11 @@ cluster:
   kahuna:
     # Held constant across every arm; see the header.
     recent_heartbeat_ms: 25
+    # Gate OFF, stated rather than inherited. CamusDB's baselines now default
+    # one_phase_apply_time_validation to true, so an arm that means "two-phase commit" has to say so:
+    # without this line the build would silently pick up the one-phase path and the comparison would
+    # measure nothing.
+    one_phase_apply_time_validation: false
   camusdb_repo: "~/camusdb"
   image: "caraxes/camusdb:p3cgrp"
 workload:

@@ -1,0 +1,103 @@
+# 45-MINUTE PAIRED BASELINE, RE-MEASURED ON THE 1.6.6 STACK — 3 partitions, 32 workers, 1536 MB/node.
+#
+# WHY THIS RUN EXISTS. The plan's sustained figure — 5.77x (window average) / 5.04x (end of window),
+# from task `41b2d6bf` — was measured on a stack that no longer exists. Two things changed under it
+# since:
+#
+#   - CamusDB `48059acb`: the grouped key layout (storage revision v2). A table row and its index
+#     entries now hash to the same partition. Read p50 fell 39%.
+#   - Kahuna.Core 1.6.0 -> 1.6.6, and CamusDB `529f8611`: one-phase apply-time validation is now ON
+#     BY DEFAULT. On a three-partition `accounts` cell it is worth +23-24%; on single-partition
+#     `bank` it measured +10.7% and +3.5%.
+#
+# Every milestone from M4 up is currently judged against a number taken before both. This pair
+# replaces it.
+#
+# THE DENOMINATOR IS NOT ALLOWED TO MOVE. This arm keeps the frozen baseline configuration exactly:
+# 3 partitions, 32 workers, 1536 MB/node, 2,000 rows, 50/50, 45 minutes. Memory is deliberately NOT
+# raised — the baseline peaked at 1,386 MiB of 1,536 over 45 minutes and the pairing with the frozen
+# 407.86 ops/s figure depends on it being untouched. The only intended difference from
+# `bank-soak-base-p3-w32` is the stack underneath.
+#
+# ARMS AND ORDER. Two arms, `bank-rebase-base-p3-w32` (this file) and `bank-rebase-cand-p1-w128`,
+# run ABBA: base, cand, cand, base. This is not decoration. The `bank-soak-k160-p1-w128` header
+# records that across six 45-minute p1/w128 arms, WALL-CLOCK START TIME PREDICTED THROUGHPUT AT
+# PEARSON -0.963 — a stronger predictor than any code variable in that experiment, and two
+# byte-identical binaries differed by 1.36x. A single base-then-cand pair would hand the candidate
+# whatever the host was doing that hour. ABBA cancels a monotonic trend exactly; a reversal that
+# does NOT cancel is itself the finding, and the ratio is then not reportable.
+#
+# ONE-PHASE GATE: ON, stated rather than inherited. It is now CamusDB's default, and the point of
+# this pair is to measure the shipping configuration — but the campaign's rule is that a run manifest
+# names the value its numbers were produced under rather than inheriting one silently.
+#
+# NOTE ON THIS ARM SPECIFICALLY: 3 partitions means a bank transfer's two accounts frequently land on
+# different partitions, so this arm is largely INELIGIBLE for the one-phase path however the flag is
+# set. That is expected and is not a defect — it is why the flag is measured on the candidate.
+#
+# READ intervals.csv, NOT summary.json. The previous soak's whole finding was that the candidates
+# decayed (-33% w128, -47% w256) while this baseline held flat (-2.6%). A run that serves 3,347 ops/s
+# for ten minutes and 1,776 for the last five produces a summary average that hides that entirely.
+# Report the 45-minute average AND the last-5-minute window for both arms.
+#
+# DECISION RULE, STATED BEFORE THE RUN.
+#   - Matched ratio = cand 45-min average / base 45-min average, and separately last-5 / last-5.
+#     Both are reported. Neither is chosen after seeing them.
+#   - The pair is INADMISSIBLE if the two orderings disagree in direction, or if the arms'
+#     `kahuna.kv.write.raft_duration` means straddle a 1.5x durability regime (the campaign's
+#     standing rule — this host has moved that number 4.5x between runs).
+#   - The candidate is DISQUALIFIED regardless of ratio if it repeats the w256 failure mode:
+#     nonzero failed/indeterminate writes, or a bank-invariant violation, or reconciliation that
+#     does not close.
+#
+# WHAT I EXPECT, RECORDED SO IT CAN BE WRONG. Probably a modest gain, not a large one, and possibly
+# a worse decay curve. `bank` at one partition was past its knee at every concurrency in the
+# `bank-cap` sweep, its ceiling is contention (`foreign_intent`) rather than commit rounds, and it
+# measured only +10.7%/+3.5% from the gate against +23-24% on `accounts`. Task `41b2d6bf` also
+# argued that making the commit path faster without addressing memory behaviour makes a SOAK worse,
+# because it reaches the memory knee sooner — 5.8x the throughput bought 3.3x faster onset of decay.
+# A candidate that is faster in its first five minutes and decays harder would confirm that, and
+# would be a real result rather than a disappointing one.
+name: bank-rebase-base-p3-w32
+cluster:
+  name: bankrebasebasep3w32
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Both arms share ONE image built once from ~/camusdb, so the only difference between them
+  # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
+  # on the build being reproducible, which is a weaker guarantee than not rebuilding.
+  image: "caraxes/camusdb:bankrebase"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+  require_spread_leadership: true
+teardown: true
