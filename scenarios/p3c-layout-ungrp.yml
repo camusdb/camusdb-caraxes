@@ -1,0 +1,60 @@
+# KEY-LAYOUT A/B — what the grouped KV layout itself costs or buys, with the one-phase gate OFF.
+#
+# CamusDB 48059acb moved table keys to the grouped {dbId}:{tableId}|r and {dbId}:{tableId}|i:{indexId}
+# forms so a table's rows and its indexes hash to one placement group. That was measured as fixing the
+# one-phase gate's eligibility (0.01% -> 100%, CamusDB feature 0e9b1512), but its effect on throughput
+# was never measured: the before and after flag-off runs were hours apart and never interleaved, and
+# read ~1.5% apart, which is suggestive of a small cost and admissible as nothing.
+#
+# THE ONE VARIABLE. Both arms are CamusDB with Kahuna.Core 1.6.4 and the one-phase config surface; they
+# differ only in 48059acb itself — the key layout, and the v1 -> v2 storage revision that travels with
+# it and cannot be separated from it. The ungrouped arm builds from ~/camusdb-ungrp-wt, a worktree
+# pinned at 2782d92b, the commit immediately before the layout change.
+#
+# THE GATE IS OFF IN BOTH ARMS. Eligibility is not the question here; the layout's own cost is. With the
+# gate on, the grouped arm would also change how many transactions take the one-phase path, which is a
+# second variable and is measured separately (CamusDB cfe716da task 5).
+#
+# WHAT WOULD BE BAD NEWS. A grouped arm materially below the ungrouped one: co-locating a table's rows
+# with its N indexes concentrates onto one partition what previously spread over up to N+1, so a real
+# regression here is the load-distribution cost of the fix showing up, and would need weighing against
+# the eligibility it buys.
+name: p3c-layout-ungrp
+cluster:
+  name: p3clayoutungrp
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    # Held constant across every arm; see the header.
+    recent_heartbeat_ms: 25
+  camusdb_repo: "~/camusdb-ungrp-wt"
+  image: "caraxes/camusdb:p3cungrp"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 64
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
