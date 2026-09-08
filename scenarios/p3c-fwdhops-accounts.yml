@@ -1,0 +1,57 @@
+# REGISTRATION-HOP ATTRIBUTION — CamusDB cfe716da task 3, the evidence that starts or retires item 3
+# of b01a198d ("batch coordinator routing and registration across independent transactions").
+#
+# WHAT IS BEING COUNTED. An interactive transaction's session lives on the node that started it. Every
+# operation executed on another node costs two calls back to that node -- BeginOperation (idempotent
+# registration) and CompleteOperation (fold the effect, return the record anchor) -- and a commit whose
+# session is remote costs a third, GetTransactionWorkingSet. Until Kahuna 1.6.5 nothing counted them, so
+# item 3 could be neither started nor retired; kahuna.durable_tx.session_registration_forwards{op,route,
+# result} now does, with route=local as the denominator that turns a hop count into a share.
+#
+# THE DECISION RULE, AGREED BEFORE THE RUN. Start item 3 only if forwarded hops per committed transaction
+# is at least 2 AND the latency they explain (hops x measured inter-node round trip) exceeds 10% of p50
+# commit latency. Otherwise item 3 is retired with these numbers beside it. Throughput here is incidental;
+# the counters are the result.
+#
+# THE ONE-PHASE GATE IS OFF. Registration hops are a property of where a transaction's session lives, not
+# of which commit path it takes, and leaving the gate off keeps this cell comparable to the campaign's
+# flag-off arms.
+name: p3c-fwdhops-accounts
+cluster:
+  name: p3cfwdhopsaccounts
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    # Held constant across every arm; see the header.
+    recent_heartbeat_ms: 25
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:p3cfwd"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 64
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
