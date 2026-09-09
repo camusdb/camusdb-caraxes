@@ -44,6 +44,7 @@ public static class ClusterSpecReader
         "spare_certs",
         "data_tmpfs_mb",
         "memory_limit_mb",
+        "gc_heap_hard_limit_mb",
         "kahuna",
         "log_levels",
     };

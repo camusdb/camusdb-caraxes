@@ -123,6 +123,19 @@ public sealed class ClusterSpec
     /// 0 (the default) keeps the old behavior: no limit.</summary>
     public int MemoryLimitMb { get; set; }
 
+    /// <summary>When &gt; 0, pins the node's managed-heap hard limit (<c>DOTNET_GCHeapHardLimit</c>) to
+    /// this many MiB instead of the 60%-of-<see cref="MemoryLimitMb"/> the generator derives. The
+    /// runtime reports this value as <c>TotalAvailableMemoryBytes</c>, and CamusDB sizes its
+    /// memory-proportional defaults (RocksDB block cache, memtables, actor caches) from that number.
+    /// So this is the knob that keeps a node's memory posture identical when the container limit has
+    /// to move for a reason unrelated to the node — the case it exists for is <see cref="DataTmpfsMb"/>:
+    /// tmpfs pages are charged to the container's memory cgroup, so a tmpfs-backed run needs a larger
+    /// <c>memory_limit_mb</c> to make room for the data, and without this pin that larger limit would
+    /// also inflate the heap budget and every proportional cache. A 4096 MiB limit derives
+    /// 0x99999999 bytes, i.e. 2457.6 MiB; 2458 rounds to the same integer-MiB cache sizes.
+    /// 0 (the default) keeps the derived 60%.</summary>
+    public int GcHeapHardLimitMb { get; set; }
+
     /// <summary>Raw passthrough into the generated config's <c>kahuna:</c> section, for knobs the
     /// spec does not model (election timing, pacing, WAL settings). Keys are written verbatim, so
     /// they must be valid CamusDB <c>kahuna.*</c> option names.</summary>
@@ -209,6 +222,19 @@ public sealed class ClusterSpec
             throw new ClusterSpecException(
                 $"'memory_limit_mb' must be 0 (no limit) or >= 512, got {MemoryLimitMb}; " +
                 "native memory (RocksDB) alone uses ~350-400 MiB per node");
+
+        if (GcHeapHardLimitMb < 0)
+            throw new ClusterSpecException($"'gc_heap_hard_limit_mb' must be >= 0 (0 = 60% of memory_limit_mb), got {GcHeapHardLimitMb}");
+
+        // The pin only means something under a container limit, and a heap allowed to grow to the
+        // whole container leaves nothing for native memory: the node would be OOM-killed under load
+        // exactly the way the 75% self-cap was (see memory_limit_mb).
+        if (GcHeapHardLimitMb > 0 && MemoryLimitMb == 0)
+            throw new ClusterSpecException("'gc_heap_hard_limit_mb' requires 'memory_limit_mb'");
+        if (GcHeapHardLimitMb > 0 && GcHeapHardLimitMb > MemoryLimitMb * 3 / 4)
+            throw new ClusterSpecException(
+                $"'gc_heap_hard_limit_mb' ({GcHeapHardLimitMb}) must be <= 75% of 'memory_limit_mb' ({MemoryLimitMb}) " +
+                "to leave room for native memory and any tmpfs data charged to the container");
 
         foreach (int port in (int[])[BaseRestPort, BaseGrpcPort, BaseRaftPort])
             if (port is < 1 or > 65535)

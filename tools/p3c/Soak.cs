@@ -22,6 +22,14 @@ public static class Soak
 {
     private const int WindowSeconds = 300;
 
+    /// <summary>
+    /// How far the two orderings may differ before their mean stops being an estimate of anything. ABBA
+    /// removes a monotonic trend; it cannot remove a term larger than the effect. Set at 25% because the
+    /// campaign already treats a 1.5x durability spread as disqualifying, and a ratio whose two halves
+    /// differ by more than a quarter is in the same territory.
+    /// </summary>
+    private const double MaxOrderingSpread = 0.25;
+
     /// <summary>One soak's throughput windows, failure counts and memory ceiling.</summary>
     public sealed record Window(
         string Name,
@@ -44,6 +52,14 @@ public static class Soak
     {
         List<Window> windows = [.. runDirs.Select(Read)];
         PrintTable(windows);
+
+        Console.WriteLine();
+        foreach (string dir in runDirs)
+            if (Regime.Analyze(dir) is Regime.Report report)
+            {
+                Regime.Print(report);
+                Console.WriteLine();
+            }
     }
 
     /// <summary>
@@ -77,21 +93,54 @@ public static class Soak
         Console.WriteLine();
 
         // A monotonic host trend moves the two orderings in opposite directions by roughly equal
-        // amounts, so their mean is the drift-free estimate. A disagreement in direction means the
-        // drift is not monotonic and no single ratio is defensible.
+        // amounts, so their mean is the drift-free estimate. Two things break that. A disagreement in
+        // direction means the drift is not monotonic. And two orderings that agree in direction but
+        // differ hugely in magnitude mean the trend was not the dominant term either — the mean of
+        // 1.78x and 7.95x is arithmetic, not an estimate. Both are refusals to report.
         bool sameDirection = (avgP1 - 1) * (avgP2 - 1) > 0;
         double spread = Math.Abs(avgP1 - avgP2) / Math.Max(avgP1, avgP2);
+        bool tightEnough = spread <= MaxOrderingSpread;
 
         Console.WriteLine($"  ABBA window ratio        {(avgP1 + avgP2) / 2:F2}x");
         Console.WriteLine($"  ABBA end-of-window ratio {(endP1 + endP2) / 2:F2}x");
-        Console.WriteLine($"  ordering spread          {100 * spread:F1}%{(sameDirection ? "" : "   *** ORDERINGS DISAGREE IN DIRECTION ***")}");
+        Console.WriteLine(
+            $"  ordering spread          {100 * spread:F1}%"
+            + (sameDirection ? "" : "   *** ORDERINGS DISAGREE IN DIRECTION ***")
+            + (sameDirection && !tightEnough ? $"   *** EXCEEDS THE {100 * MaxOrderingSpread:F0}% BAR ***" : ""));
 
         if (!sameDirection)
             Console.WriteLine("  -> NOT REPORTABLE as a ratio: the drift this design controls for is not monotonic.");
+        else if (!tightEnough)
+            Console.WriteLine(
+                "  -> NOT REPORTABLE as a ratio: the orderings agree in direction but not in magnitude, so"
+                + " ordering is not the dominant term and averaging them estimates nothing.");
 
         Console.WriteLine();
         CheckRegimes([baseP1, candP1, candP2, baseP2]);
         CheckDisqualifiers([baseP1, candP1, candP2, baseP2]);
+
+        // The whole-run raft mean above cannot see a regime that broke mid-run — it averages over the
+        // break. Every run of the pair must have held ONE regime for its window, or the ratio is built
+        // on a mixture (the 1.78x / 7.95x campaign: all four runs stepped 3-4x mid-run and every
+        // whole-run check passed them).
+        Console.WriteLine();
+        bool allStable = true;
+        foreach (string dir in runDirs)
+        {
+            Regime.Report? report = Regime.Analyze(dir);
+            if (report is null)
+            {
+                Console.WriteLine($"regime — {Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar))}: no node-metrics.csv, cannot check");
+                allStable = false;
+                continue;
+            }
+            Regime.Print(report);
+            Console.WriteLine();
+            allStable &= report.Stable;
+        }
+        Console.WriteLine(allStable
+            ? "per-window regimes: every run held one regime; the ratio above is built on four single measurements"
+            : "per-window regimes: at least one run broke regime mid-window — NOT REPORTABLE as a ratio whatever the spread says");
     }
 
     /// <summary>

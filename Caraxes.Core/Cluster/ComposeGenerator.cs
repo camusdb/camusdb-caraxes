@@ -97,10 +97,18 @@ public static class ComposeGenerator
             // .NET reads GC env vars as hexadecimal: 3C = 60. The 0x prefix is deliberately
             // omitted — YAML resolves a plain 0x3C to the integer 60, compose would pass "60",
             // and the runtime would re-read that as hex (96%). "3C" stays a string end to end.
+            // An explicit gc_heap_hard_limit_mb replaces the percentage with an absolute byte count
+            // (also hex, no 0x prefix). The runtime lets the absolute form win when both are set, but
+            // emitting only one keeps the compose file unambiguous. This is how a tmpfs-backed run
+            // keeps the node's heap budget and proportional cache sizing identical to a volume-backed
+            // one while the container limit grows to hold the data (see ClusterSpec.GcHeapHardLimitMb).
             if (spec.MemoryLimitMb > 0)
             {
                 service["mem_limit"] = $"{spec.MemoryLimitMb}m";
-                environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
+                if (spec.GcHeapHardLimitMb > 0)
+                    environment["DOTNET_GCHeapHardLimit"] = ((long)spec.GcHeapHardLimitMb * 1024 * 1024).ToString("X");
+                else
+                    environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
             }
 
             // CamusDB calls ClearProviders() and then installs explicit AddFilter rules for

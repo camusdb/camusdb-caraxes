@@ -220,6 +220,18 @@ public sealed class WorkloadRunner
             workloadArgs.Add(plan.InternalNodeEndpoints);
         }
 
+        // Learned client routing, measured run only — seeding stays on the pool for the same reason the
+        // gateway option does: setup is not measured, and routing it would make the arms differ twice.
+        if (!string.IsNullOrWhiteSpace(scenario.Workload.RoutingMode))
+        {
+            workloadArgs.Add("--routing-mode");
+            workloadArgs.Add(scenario.Workload.RoutingMode);
+            workloadArgs.Add("--routing-nodes");
+            workloadArgs.Add(plan.RoutingTrustMap);
+            notes.Add(
+                $"client routing '{scenario.Workload.RoutingMode}' over {plan.Nodes.Count} mapped node(s)");
+        }
+
         AppendCommonFlags(workloadArgs, scenario.Workload);
         return new WorkloadRunPlan(workloadArgs, notes);
     }

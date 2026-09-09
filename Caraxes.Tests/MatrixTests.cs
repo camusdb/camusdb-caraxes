@@ -128,6 +128,7 @@ public sealed class MatrixExpanderTests
             [nameof(ClusterSpec.SpareCerts)] = 2,
             [nameof(ClusterSpec.DataTmpfsMb)] = 256,
             [nameof(ClusterSpec.MemoryLimitMb)] = 1536,
+            [nameof(ClusterSpec.GcHeapHardLimitMb)] = 1024,
             [nameof(ClusterSpec.Kahuna)] = new Dictionary<string, object> { ["wal_sync_writes"] = "true" },
             [nameof(ClusterSpec.LogLevels)] = new Dictionary<string, string> { ["Camus"] = "Debug" },
         };

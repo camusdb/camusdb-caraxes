@@ -284,9 +284,14 @@ public sealed class ScenarioRunner
         // deliberately paid for outside its numbers.
         PlacementPoller placementPoller = new(plan);
 
+        // The host's disk, sampled alongside the nodes: the one series that can say whether a
+        // mid-run change in Raft write cost came from the device the whole cluster shares.
+        HostIoMonitor hostIo = new(runDir);
+
         Task<WorkloadInvocation> workloadTask = workload.RunAsync(scenario, artifactsDir, "run", cancellationToken);
         Task monitorTask = monitor.RunAsync(sideStop.Token);
         Task placementTask = placementPoller.RunAsync(sideStop.Token);
+        Task hostIoTask = hostIo.RunAsync(sideStop.Token);
         Task? nemesisTask = scenario.Nemesis is null
             ? null
             : new NemesisRunner(plan, probes).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
@@ -328,7 +333,20 @@ public sealed class ScenarioRunner
             {
                 notes.Add($"placement watch reported: {e.Message}");
             }
+
+            try
+            {
+                await hostIoTask.ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                notes.Add($"host I/O monitor reported: {e.Message}");
+            }
         }
+
+        notes.Add(hostIo.Device is null
+            ? "host I/O was not sampled (no block device resolved for the run directory)"
+            : $"host I/O sampled on {hostIo.Device}: {hostIo.Samples.Count} sample(s) in host-io.csv");
 
         placementSamples = placementPoller.Samples;
 

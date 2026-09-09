@@ -59,7 +59,10 @@ effect when the workload finishes is healed on the way out, so the cluster is ne
 
 **Disk faults.** `fill-disk` needs a size cap to be meaningful, so set `data_tmpfs_mb: <MiB>` on the
 cluster — each node's `/data` then becomes a RAM-backed, size-capped tmpfs the fault can exhaust. This
-is for disk-pressure behavior, not durability (tmpfs is lost on restart). Device-mapper latency and
+is for disk-pressure behavior, not durability (tmpfs is lost on restart). tmpfs pages are charged to
+the container's memory cgroup, so a tmpfs-backed node needs a `memory_limit_mb` large enough for
+process plus data; pair it with `gc_heap_hard_limit_mb` (the heap budget a 4096 MiB limit derives is
+2458 MiB) so the larger container does not also inflate the heap and CamusDB's proportional caches. Device-mapper latency and
 corruption faults (`dm-delay` / `dm-flakey`) need a Linux host and are a follow-up. See
 `scenarios/disk-full.yml` and `scenarios/zone-failure.yml`.
 

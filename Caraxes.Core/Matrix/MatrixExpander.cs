@@ -117,7 +117,7 @@ public static class MatrixExpander
         ReadValidation = c.ReadValidation, KeyRangeSharding = c.KeyRangeSharding,
         DistributedQueryExecution = c.DistributedQueryExecution, MaxQueryParallelism = c.MaxQueryParallelism,
         Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts,
-        DataTmpfsMb = c.DataTmpfsMb, MemoryLimitMb = c.MemoryLimitMb,
+        DataTmpfsMb = c.DataTmpfsMb, MemoryLimitMb = c.MemoryLimitMb, GcHeapHardLimitMb = c.GcHeapHardLimitMb,
         Kahuna = new Dictionary<string, object>(c.Kahuna),
         LogLevels = new Dictionary<string, string>(c.LogLevels),
     };

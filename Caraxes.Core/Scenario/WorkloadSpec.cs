@@ -78,6 +78,20 @@ public sealed class WorkloadSpec
 
     public bool NoAutoPrepare { get; set; }
 
+    /// <summary>
+    /// Learned statement routing on the client: <c>off</c>, <c>learned</c>, or <c>auto</c>. Empty (the
+    /// default) passes nothing and leaves the driver's own default in force.
+    ///
+    /// <para>The harness supplies the trust map itself (<see cref="Cluster.ClusterPlan.RoutingTrustMap"/>),
+    /// because only it knows both halves: the Raft endpoint a server advertises as the preferred node,
+    /// and the in-cluster gRPC address the workload can reach it on. A client ignores advice naming an
+    /// identity outside that map, so a hand-written one that is subtly wrong does not fail — it silently
+    /// disables routing and makes an <c>on</c> arm measure the <c>off</c> arm.</para>
+    ///
+    /// <para>Like <see cref="Gateway"/>, only the measured run honours it; seeding always uses the pool.</para>
+    /// </summary>
+    public string RoutingMode { get; set; } = "";
+
     /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
     public int RequestTimeout { get; set; }
 
@@ -186,6 +200,13 @@ public sealed class WorkloadSpec
 
         if (Locking is not ("" or "optimistic" or "pessimistic"))
             throw new ScenarioException($"'workload.locking' must be 'optimistic' or 'pessimistic', got '{Locking}'");
+
+        if (!string.IsNullOrWhiteSpace(RoutingMode)
+            && !RoutingMode.Equals("off", StringComparison.OrdinalIgnoreCase)
+            && !RoutingMode.Equals("learned", StringComparison.OrdinalIgnoreCase)
+            && !RoutingMode.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            throw new ScenarioException(
+                $"'workload.routing_mode' must be 'off', 'learned' or 'auto', got '{RoutingMode}'");
 
         if (Isolation is not ("" or "read_committed" or "serializable"))
             throw new ScenarioException($"'workload.isolation' must be 'read_committed' or 'serializable', got '{Isolation}'");

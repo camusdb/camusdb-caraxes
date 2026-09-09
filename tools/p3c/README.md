@@ -14,6 +14,19 @@ Modes:
 - `queue <runDir> ...` — the per-kind KV write queue delay (init, prepare, decision, materialize,
   settle), the completion delay, the Kommander WAL operations-per-batch figure, and the decision rule
   that retired item 4 of `b01a198d`.
+- `soak <runDir> ...` — 45-minute soak windows per run (average, first five, last five, decay, failures,
+  peak RSS) followed by the per-window regime check below.
+- `rebase <base1> <cand1> <cand2> <base2>` — the matched ABBA ratio for the sustained `bank`
+  re-baseline, reported per ordering and refused when the orderings disagree in direction or by more than
+  25% in magnitude, when the arms straddle a 1.5x durability regime, or when any run failed the regime
+  check.
+- `regime <runDir> ...` — per-5-minute regime check of one run: the write leader's Raft batch mean and
+  batch rate, its read latency, the follower repair events in the node logs (`batch landed over a gap`,
+  `min-log-index mismatch`, backfill pacing), and — when the harness recorded `host-io.csv` — the host
+  device's utilisation, read rate and fsync cost. A run whose window Raft means span more than 1.5x, or
+  whose leader read mean grew more than 3x first-to-last, held two regimes and is not admissible for a
+  ratio. Feature `80af367a`: all four `bank-rebase` soaks stepped 3-4x mid-run and every whole-run check
+  passed them.
 
 ## Why comparisons are per replicate
 

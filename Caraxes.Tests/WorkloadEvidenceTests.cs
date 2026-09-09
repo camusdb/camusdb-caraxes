@@ -54,6 +54,58 @@ public sealed class WorkloadEvidenceTests
     }
 
     [Test]
+    public void PassesNoRoutingFlagsUnlessTheScenarioAsksForThem()
+    {
+        // Every measurement taken before client routing existed ran with the driver's own default. A
+        // harness that started passing a mode of its own would silently re-label all of them.
+        WorkloadRunPlan plan = Plan(Minimal);
+
+        Assert.That(plan.Args, Does.Not.Contain("--routing-mode"));
+        Assert.That(plan.Args, Does.Not.Contain("--routing-nodes"));
+    }
+
+    [Test]
+    public void SuppliesTheRoutingTrustMapItselfWhenAModeIsSet()
+    {
+        // The trust map is the routing authority: a client ignores advice naming an identity outside it.
+        // So a map that is subtly wrong does not fail the run — it silently disables routing and makes a
+        // routing arm measure the control arm. The key must be the Raft endpoint, because that is what
+        // the server puts in its advice (StatementRoutingResolver fills PreferredNodeId from the
+        // placement span's LeaderEndpoint); the value must be a pool member, because the client only
+        // dials addresses the operator listed.
+        WorkloadRunPlan plan = Plan("""
+            name: s
+            cluster:
+              name: c
+              nodes: 3
+            workload:
+              rows: 5000
+              routing_mode: learned
+            """);
+
+        Assert.That(ValueAfter(plan.Args, "--routing-mode"), Is.EqualTo("learned"));
+
+        string? map = ValueAfter(plan.Args, "--routing-nodes");
+        Assert.That(map, Is.Not.Null);
+
+        string[] entries = map!.Split(',');
+        Assert.That(entries, Has.Length.EqualTo(3), "one entry per node, or advice for the rest is ignored");
+
+        string pool = ValueAfter(plan.Args, "--endpoint")!;
+        foreach (string entry in entries)
+        {
+            string[] halves = entry.Split('=', 2);
+            Assert.That(halves, Has.Length.EqualTo(2), $"'{entry}' is not an identity=address pair");
+            Assert.That(halves[0], Does.Match(@"^\d+\.\d+\.\d+\.\d+:\d+$"),
+                $"'{halves[0]}' is not a Raft endpoint, so no advice will ever match it");
+            Assert.That(pool.Split(',').Contains(halves[1]), Is.True,
+                $"'{halves[1]}' is not a member of the endpoint pool, so the client will never dial it");
+        }
+
+        Assert.That(plan.Notes.Any(n => n.Contains("client routing")), Is.True);
+    }
+
+    [Test]
     public void DrivesOneGatewayWhenTheScenarioNamesOne()
     {
         WorkloadRunPlan plan = Plan("""

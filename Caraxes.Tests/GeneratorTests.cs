@@ -189,6 +189,41 @@ public sealed class ComposeGeneratorTests
     }
 
     [Test]
+    public void MemoryLimitDerivesHeapPercent()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: comp\nmemory_limit_mb: 4096"));
+        string yml = ComposeGenerator.Generate(plan, "./config");
+
+        Assert.That(yml, Does.Contain("mem_limit: 4096m"));
+        Assert.That(yml, Does.Contain("DOTNET_GCHeapHardLimitPercent: 3C"));
+        Assert.That(yml, Does.Not.Contain("DOTNET_GCHeapHardLimit:"));
+    }
+
+    [Test]
+    public void GcHeapHardLimitPinReplacesPercent()
+    {
+        // The tmpfs case: a 10240 MiB container holding 6 GiB of tmpfs data, with the heap pinned to
+        // what a 4096 MiB limit would have derived (0x99999999 ~ 2457.6 MiB -> 2458 MiB = 0x99A00000).
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(
+            "name: comp\nmemory_limit_mb: 10240\ndata_tmpfs_mb: 6144\ngc_heap_hard_limit_mb: 2458"));
+        string yml = ComposeGenerator.Generate(plan, "./config");
+
+        Assert.That(yml, Does.Contain("mem_limit: 10240m"));
+        Assert.That(yml, Does.Contain("DOTNET_GCHeapHardLimit: 99A00000"));
+        Assert.That(yml, Does.Not.Contain("DOTNET_GCHeapHardLimitPercent"));
+    }
+
+    [Test]
+    public void GcHeapHardLimitPinIsValidated()
+    {
+        Assert.Throws<ClusterSpecException>(() => ClusterSpecReader.Read("name: comp\ngc_heap_hard_limit_mb: 2458"),
+            "needs memory_limit_mb");
+        Assert.Throws<ClusterSpecException>(() => ClusterSpecReader.Read("name: comp\nmemory_limit_mb: 1024\ngc_heap_hard_limit_mb: 1000"),
+            "over 75% of the container");
+        Assert.Throws<ClusterSpecException>(() => ClusterSpecReader.Read("name: comp\nmemory_limit_mb: 1024\ngc_heap_hard_limit_mb: -1"));
+    }
+
+    [Test]
     public void KillsStayKilled()
     {
         ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: comp"));

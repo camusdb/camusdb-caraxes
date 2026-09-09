@@ -1,0 +1,91 @@
+# CLIENT ROUTING A/B — fanout, control arm, routing OFF
+#
+# WHAT IS BEING MEASURED. CamusDB `e89bc8c4` added learned client routing: the server attaches advisory
+# routing metadata to a statement's response (`sql_routing_advice_enabled`, on by default) naming the
+# node that leads the statement's partition, and the .NET gRPC client learns it and sends subsequent
+# matching statements straight there. The claim is that this removes hops. This pair tests that claim
+# against the one metric only it should move.
+#
+# ARMS. Identical in every respect except `workload.routing_mode`:
+#   off      the client rotates over the endpoint pool and never negotiates or learns. This is the
+#            posture EVERY existing measurement in the campaign was taken with.
+#   learned  the client negotiates routing metadata and prefers learned destinations.
+#
+# The harness supplies the trust map itself (`ClusterPlan.RoutingTrustMap`, ip:raftPort=https://name:5096)
+# because a client IGNORES advice naming an identity outside that map. A hand-written map that is subtly
+# wrong does not fail — it silently turns this arm into a second copy of the control and reports a null
+# result as evidence of no effect.
+#
+# THE MECHANISM METRIC, NOT JUST THROUGHPUT. kahuna `1bc70727` shipped
+# `session_registration_forwards{op,route,result}` and (1.6.6) `session_registration_forward_ms`.
+# Measured before routing existed: **19.62 forwarded registration hops per committed write transaction
+# on `fanout`, 40% of all registrations remote**. Hops are what routing is supposed to remove, they are
+# counted exactly rather than inferred, and nothing else in this pair should move them. Throughput is
+# the secondary reading here; the hop counters are the primary one.
+#
+# WHY THIS SHAPE AND NOT A SOAK. `80af367a` records that 45-minute soak ratios are not currently
+# resolvable on this host — two runs of an identical arm differed by 2.78x. Five-minute interleaved arms
+# with three replicates and per-replicate admissibility ARE resolvable: that is the method that produced
+# the +23-24% one-phase result. So this campaign deliberately uses the method that works.
+#
+# DECISION RULE, STATED BEFORE THE RUN.
+#   - Primary: forwarded hops per committed write transaction, off -> learned. Routing WORKS if the
+#     forwarded share falls materially (the remote share was 40%); it is INERT if hops do not move.
+#   - Secondary: throughput delta per replicate, compared only within a replicate, and only where the
+#     arms' `kahuna.kv.write.raft_duration` means stay inside the standing 1.5x regime bar.
+#   - A throughput gain with UNCHANGED hop counts does not count as routing working. It would mean
+#     something else moved and the arms are confounded.
+#   - `1bc70727` measured the hop cost at only 1.4-2.0% of p50 commit latency at a bare 0.055 ms network
+#     round trip, against a 10% bar. So the honest prior is that removing hops is worth little on
+#     latency even if it works perfectly. `session_registration_forward_ms` now measures the real
+#     per-call cost, so this run can finally check that estimate instead of assuming it.
+#
+# CONFOUND, STATED. Three changes landed together in this stack: Kommander `08b7ea9` (lost follower
+# acks), Kahuna `1b382123` (off-actor snapshot scans) and this. Both arms here run the SAME image, so
+# the pair isolates routing cleanly — but no absolute number from either arm is comparable to a run
+# taken before those three.
+name: cr-fanout-off
+cluster:
+  name: crfanoff
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    # Held constant across both arms.
+    recent_heartbeat_ms: 25
+    # The shipping default as of `529f8611`, stated rather than inherited so the manifest names it.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # ONE image for both arms: routing is a client-side behaviour, so the server binary must not differ.
+  image: "caraxes/camusdb:cr"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  routing_mode: off
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

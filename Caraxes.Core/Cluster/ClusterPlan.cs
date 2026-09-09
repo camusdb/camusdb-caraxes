@@ -117,6 +117,22 @@ public sealed class ClusterPlan
     /// </summary>
     public string InternalNodeEndpoints =>
         string.Join(',', Nodes.Select(n => $"{n.Name}=http://{n.Name}:5095"));
+
+    /// <summary>
+    /// The client's routing trust map: every node's advertised identity mapped to the in-cluster gRPC
+    /// address the workload can reach it on, as <c>ip:raftPort=url</c> pairs.
+    ///
+    /// <para>The key is the Raft endpoint because that is what the server puts in its routing advice —
+    /// <c>StatementRoutingResolver</c> fills <c>PreferredNodeId</c> from the placement span's
+    /// <c>LeaderEndpoint</c>. The value is a pool member, since the client only ever dials addresses the
+    /// operator listed; it never derives one from a server-supplied identity.</para>
+    ///
+    /// <para>This is why the harness builds the map rather than the scenario: advice naming an identity
+    /// outside it is ignored silently, so a map that is subtly wrong turns a routing arm into a second
+    /// copy of the control arm with nothing to show that it did.</para>
+    /// </summary>
+    public string RoutingTrustMap =>
+        string.Join(',', Nodes.Select(n => $"{n.Ip}:{n.RaftPort}=https://{n.Name}:5096"));
 }
 
 /// <summary>One node's derived identity: docker names, addresses, ports, and zone.</summary>
