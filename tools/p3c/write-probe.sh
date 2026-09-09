@@ -4,6 +4,7 @@
 set -u
 cd ~/camusdb-caraxes || exit 1
 tag=${TAG:-w1}; out=~/camusdb-caraxes/runs/writeprobe-$tag; mkdir -p "$out"
+build_flag=""; [ "${BUILD:-0}" = "1" ] || build_flag="--skip-build"
 log=$out/driver.log
 sampler() {
   echo "ts,container,write_bytes,cancelled_write_bytes,kv_mib,wal_mib,logs_mib" > "$out/io.csv"
@@ -21,7 +22,7 @@ sampler() {
 }
 echo "$(date -Is) === START writeprobe ===" >> "$log"
 sampler & spid=$!
-dotnet run --project Caraxes -c Release -- run --scenario scenarios/bank-rebase-cand-p1-w128-writeprobe.yml --tag "$tag" --skip-build >> "$log" 2>&1
+dotnet run --project Caraxes -c Release -- run --scenario scenarios/bank-rebase-cand-p1-w128-writeprobe.yml --tag "$tag" $build_flag >> "$log" 2>&1
 echo "$(date -Is) === END writeprobe exit=$? ===" >> "$log"
 kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
 echo "$(date -Is) === WRITEPROBE COMPLETE ===" >> "$log"
