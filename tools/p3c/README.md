@@ -52,3 +52,12 @@ dotnet run --project tools/p3c -- compare grp-accounts cand onep
 
 Scenarios live in `scenarios/p3c-*.yml`; each states its arm, its image and what it expects to see
 before it runs.
+
+
+### Regime rules (as of 2026-09-09)
+
+`regime <runDir>` refuses a run as a ratio input when any of these fails: leader Raft batch mean spread across
+5-minute windows > 1.5x; leader query mean last/first window > 3.0x; client completed ops/s best/worst **minute**
+> 1.5x, or any failed write (the Raft-mean rule cannot see a collapse that starves batches while the round stays
+constant); device ballast (`precondition.json`) finishing after `measureStartUtc`. It prints `host-io.csv`
+columns (fsync probe p50, util, reads) per window when the harness recorded them.

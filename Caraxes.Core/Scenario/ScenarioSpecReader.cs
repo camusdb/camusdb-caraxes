@@ -24,6 +24,7 @@ public static class ScenarioSpecReader
     {
         "name", "cluster", "workload", "nemesis", "checks", "teardown", "settle_seconds",
         "capture_node_logs", "node_log_tail", "drain_observation_seconds", "drain_observation_interval_seconds",
+        "precondition_device_gb",
     };
 
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)

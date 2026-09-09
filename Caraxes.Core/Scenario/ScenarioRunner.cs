@@ -289,6 +289,13 @@ public sealed class ScenarioRunner
         HostIoMonitor hostIo = new(runDir);
 
         Task<WorkloadInvocation> workloadTask = workload.RunAsync(scenario, artifactsDir, "run", cancellationToken);
+
+        // Device preconditioning overlaps the workload's warm-up on purpose: the ballast fills the
+        // device's write cache, and the warm-up's own writes keep it from folding back before the
+        // measured window opens. Started after the workload so that no idle gap sits between them.
+        Task<DevicePreconditioner.Result>? preconditionTask = scenario.PreconditionDeviceGb > 0
+            ? new DevicePreconditioner(runDir, scenario.PreconditionDeviceGb).RunAsync(cancellationToken)
+            : null;
         Task monitorTask = monitor.RunAsync(sideStop.Token);
         Task placementTask = placementPoller.RunAsync(sideStop.Token);
         Task hostIoTask = hostIo.RunAsync(sideStop.Token);
@@ -341,6 +348,19 @@ public sealed class ScenarioRunner
             catch (Exception e)
             {
                 notes.Add($"host I/O monitor reported: {e.Message}");
+            }
+
+            if (preconditionTask is not null)
+            {
+                try
+                {
+                    DevicePreconditioner.Result pre = await preconditionTask.ConfigureAwait(false);
+                    notes.Add($"device preconditioned: {pre.Bytes / (1024.0 * 1024 * 1024):N0} GiB written to {pre.Device} at {pre.MegabytesPerSecond:N0} MB/s, finished {pre.EndUtc:HH:mm:ss}Z (must precede measureStartUtc; p3c regime checks)");
+                }
+                catch (Exception e)
+                {
+                    notes.Add($"device preconditioning failed: {e.Message}");
+                }
             }
         }
 

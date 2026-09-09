@@ -52,6 +52,15 @@ public sealed class ScenarioSpec
     public int SettleSeconds { get; set; } = 30;
 
     /// <summary>
+    /// GiB of ballast to write to the device backing the run directory while the workload warms up, so
+    /// the measured window opens with the device's write cache already full and every run measures the
+    /// same (steady) device regime. 0 (the default) does nothing. See <see cref="Cluster.DevicePreconditioner"/>
+    /// for why this exists and what it does to comparability: runs with and without it are not comparable
+    /// to each other, and neither is comparable to a tmpfs run.
+    /// </summary>
+    public int PreconditionDeviceGb { get; set; }
+
+    /// <summary>
     /// Copy every node's container log into the run artifacts before the cluster is torn down.
     /// Default true.
     ///

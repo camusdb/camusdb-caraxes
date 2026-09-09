@@ -62,7 +62,15 @@ cluster — each node's `/data` then becomes a RAM-backed, size-capped tmpfs the
 is for disk-pressure behavior, not durability (tmpfs is lost on restart). tmpfs pages are charged to
 the container's memory cgroup, so a tmpfs-backed node needs a `memory_limit_mb` large enough for
 process plus data; pair it with `gc_heap_hard_limit_mb` (the heap budget a 4096 MiB limit derives is
-2458 MiB) so the larger container does not also inflate the heap and CamusDB's proportional caches. Device-mapper latency and
+2458 MiB) so the larger container does not also inflate the heap and CamusDB's proportional caches.
+
+**Steady device regime.** `precondition_device_gb: <GiB>` (top level) streams that much fsynced ballast
+to the device backing the run directory during the workload's warm-up and records `precondition.json`.
+The benchmark host's NVMe serves the first ~30-35 GB of a run from a write cache and then changes
+regime (fsync 0.4 → 1.9 ms), folding back only in idle gaps; filling the cache right before the measured
+window puts every run in the same steady regime from its first second. `p3c regime` reports it and refuses
+a run whose ballast finished after `measureStartUtc`. Preconditioned, unpreconditioned and tmpfs runs are
+three different denominators; compare within one kind. Device-mapper latency and
 corruption faults (`dm-delay` / `dm-flakey`) need a Linux host and are a follow-up. See
 `scenarios/disk-full.yml` and `scenarios/zone-failure.yml`.
 

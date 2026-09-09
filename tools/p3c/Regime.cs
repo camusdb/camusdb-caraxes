@@ -31,6 +31,16 @@ public static class Regime
     /// <summary>Leader read latency growth (last window over first) beyond which the run carried a read stall.</summary>
     public const double MaxReadWindowGrowth = 3.0;
 
+    /// <summary>Best 60-second minute of completed ops over the worst one. The Raft-mean rule cannot see a
+    /// collapse that starves batches of items while the round stays constant (the 2026-09-09 preconditioned
+    /// runs: 2,500 → 600 ops/s for a minute at an unchanged 16 ms round, all three nodes idle, 1,282 failed
+    /// writes), so throughput dispersion is judged directly, at minute resolution because those collapses
+    /// last one to two minutes and a five-minute window averages them away. Healthy runs sit within 1.1x.</summary>
+    public const double MaxOpsMinuteSpread = 1.5;
+
+    /// <summary>The harness's device preconditioning record (<c>precondition.json</c>), if the run wrote one.</summary>
+    public sealed record Precondition(DateTime StartUtc, DateTime EndUtc, long Bytes, double MegabytesPerSecond, string Device, bool OverlapsWindow);
+
     public sealed record Window(
         int Index,
         double RaftMeanMs,
@@ -41,8 +51,34 @@ public static class Regime
         double? HostUtilPercent,
         double? HostReadsPerSecond);
 
-    public sealed record Report(string Run, string? Leader, IReadOnlyList<Window> Windows)
+    public sealed record Report(string Run, string? Leader, IReadOnlyList<Window> Windows, Precondition? Precondition = null,
+        IReadOnlyList<double>? OpsPerMinute = null, long FailedOps = 0)
     {
+        /// <summary>Best minute over worst minute of completed ops/s (1 when the client series is absent).</summary>
+        public double OpsMinuteSpread
+        {
+            get
+            {
+                double[] m = [.. (OpsPerMinute ?? []).Where(v => v > 0)];
+                return m.Length < 2 ? 1 : m.Max() / m.Min();
+            }
+        }
+
+        public int? WorstMinute
+        {
+            get
+            {
+                if (OpsPerMinute is null || OpsPerMinute.Count < 2) return null;
+                int idx = 0;
+                for (int i = 1; i < OpsPerMinute.Count; i++) if (OpsPerMinute[i] < OpsPerMinute[idx]) idx = i;
+                return idx;
+            }
+        }
+
+        /// <summary>Throughput held minute to minute and no write failed. A failed or indeterminate write is
+        /// already disqualifying under every scenario's rules; here it also means the window is not one regime.</summary>
+        public bool OpsStable => OpsMinuteSpread <= MaxOpsMinuteSpread && FailedOps == 0;
+
         public double RaftSpread
         {
             get
@@ -67,8 +103,13 @@ public static class Regime
 
         public bool ReadsStable => ReadGrowth <= MaxReadWindowGrowth;
 
-        /// <summary>One measurement, not two: both the durable-write cost and the leader read cost held.</summary>
-        public bool Stable => RaftStable && ReadsStable;
+        /// <summary>The device ballast, when the run wrote one, must have finished before the measured
+        /// window opened; ballast still streaming inside the window is a second workload on the device.</summary>
+        public bool PreconditionClean => Precondition is null || !Precondition.OverlapsWindow;
+
+        /// <summary>One measurement, not two: both the durable-write cost and the leader read cost held,
+        /// and no preconditioning ballast leaked into the window.</summary>
+        public bool Stable => RaftStable && ReadsStable && PreconditionClean && OpsStable;
 
         /// <summary>The first window whose Raft mean exceeds the fastest window by the spread bar, if any.</summary>
         public int? RaftBreakWindow
@@ -143,7 +184,8 @@ public static class Regime
             result.Add(new Window(i, raftMean, raftRate, readMean, repairs.GetValueOrDefault(i), fsync, util, reads));
         }
 
-        return new Report(Path.GetFileName(runDir.TrimEnd(Path.DirectorySeparatorChar)), leader, result);
+        (List<double> opsPerMinute, long failedOps) = LoadClientMinutes(artifacts, measureSeconds);
+        return new Report(Path.GetFileName(runDir.TrimEnd(Path.DirectorySeparatorChar)), leader, result, LoadPrecondition(runDir, start), opsPerMinute, failedOps);
     }
 
     public static void Print(Report report)
@@ -165,13 +207,66 @@ public static class Regime
             : $"*** LEADER READ STALL: last/first window read mean {report.ReadGrowth:F2}x (bar {MaxReadWindowGrowth:F1}x) ***";
         Console.WriteLine($"  {raftLine}");
         Console.WriteLine($"  {readLine}");
+        if (report.OpsPerMinute is { Count: > 1 } opm)
+        {
+            Console.WriteLine($"  client ops/s by minute: {string.Join(' ', opm.Select(v => v.ToString("F0", CultureInfo.InvariantCulture)))}");
+            Console.WriteLine(report.OpsMinuteSpread <= MaxOpsMinuteSpread
+                ? $"  throughput held: best/worst minute {report.OpsMinuteSpread:F2}x"
+                : $"  *** THROUGHPUT COLLAPSE at minute {report.WorstMinute}: best/worst minute {report.OpsMinuteSpread:F2}x (bar {MaxOpsMinuteSpread:F1}x) ***");
+            if (report.FailedOps > 0)
+                Console.WriteLine($"  *** {report.FailedOps} FAILED WRITES in the window: not a capacity measurement ***");
+        }
         Console.WriteLine($"  follower repair events (gap / min-log-index mismatch / backfill pacing): {report.RepairEvents}");
+        if (report.Precondition is Precondition pre)
+            Console.WriteLine(pre.OverlapsWindow
+                ? $"  *** DEVICE BALLAST OVERLAPPED THE WINDOW: {pre.Bytes / (1024.0 * 1024 * 1024):F0} GiB on {pre.Device} finished {pre.EndUtc:HH:mm:ss}Z, after measureStartUtc ***"
+                : $"  device preconditioned: {pre.Bytes / (1024.0 * 1024 * 1024):F0} GiB on {pre.Device} at {pre.MegabytesPerSecond:F0} MB/s, finished {pre.EndUtc:HH:mm:ss}Z before the window (steady-regime run; not comparable to an unpreconditioned one)");
         Console.WriteLine(report.Stable
             ? "  -> one regime for the whole window; admissible for a ratio"
             : "  -> two regimes in one run; NOT admissible for a ratio (the window average is a mixture)");
     }
 
     // ── Readers ────────────────────────────────────────────────────────────────
+
+    /// <summary>Per-minute completed ops/s and the total failed count from the client's <c>intervals.csv</c>
+    /// (one row per measured second: second, offered, started, completed, failed, ...). Only whole minutes count.</summary>
+    private static (List<double> OpsPerMinute, long FailedOps) LoadClientMinutes(string artifacts, int measureSeconds)
+    {
+        string path = Path.Combine(artifacts, "intervals.csv");
+        List<double> minutes = [];
+        long failed = 0;
+        if (!File.Exists(path))
+            return (minutes, failed);
+
+        double[] sums = new double[Math.Max(1, measureSeconds / 60) + 1];
+        int[] counts = new int[sums.Length];
+        foreach (string line in File.ReadLines(path).Skip(1))
+        {
+            string[] f = line.Split(',');
+            if (f.Length < 5 || !int.TryParse(f[0], out int second)) continue;
+            int m = Math.Max(0, second - 1) / 60;
+            if (m >= sums.Length) continue;
+            if (double.TryParse(f[3], NumberStyles.Float, CultureInfo.InvariantCulture, out double completed)) { sums[m] += completed; counts[m]++; }
+            if (long.TryParse(f[4], out long fail)) failed += fail;
+        }
+        for (int i = 0; i < sums.Length; i++)
+            if (counts[i] >= 55) minutes.Add(sums[i] / counts[i]);
+        return (minutes, failed);
+    }
+
+    private static Precondition? LoadPrecondition(string runDir, DateTime measureStartUtc)
+    {
+        string path = Path.Combine(runDir, "precondition.json");
+        if (!File.Exists(path))
+            return null;
+
+        using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+        System.Text.Json.JsonElement r = doc.RootElement;
+        DateTime start = r.GetProperty("StartUtc").GetDateTime().ToUniversalTime();
+        DateTime end = r.GetProperty("EndUtc").GetDateTime().ToUniversalTime();
+        return new Precondition(start, end, r.GetProperty("Bytes").GetInt64(), r.GetProperty("MegabytesPerSecond").GetDouble(),
+            r.GetProperty("Device").GetString() ?? "unknown", OverlapsWindow: end > measureStartUtc);
+    }
 
     private static Dictionary<(string, string), List<(long, double)>> LoadSeries(string path)
     {
