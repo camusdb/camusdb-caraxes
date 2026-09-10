@@ -86,7 +86,7 @@ cluster:
   # Both arms share ONE image built once from ~/camusdb, so the only difference between them
   # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
   # on the build being reproducible, which is a weaker guarantee than not rebuilding.
-  image: "caraxes/camusdb:bankrouting171b"
+  image: "caraxes/camusdb:bankrouting172"
 workload:
   kind: bank
   database: caraxes

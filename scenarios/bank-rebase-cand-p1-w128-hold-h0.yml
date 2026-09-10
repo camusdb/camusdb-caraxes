@@ -1,12 +1,31 @@
-# WRITE-ATTRIBUTION PROBE (2026-09-09) — the candidate arm on the NVMe volume, Kahuna 1.7.0 image, routing
-# off, with a driver-side sampler recording per node every 10 s: /proc/1/io write_bytes (bytes the node
-# process handed to the block layer), du of /data/kv and /data/wal, and a copy of both RocksDB LOG files
-# (whose 600-second stats dump splits bytes into WAL written, flush and compaction, and counts WAL syncs).
-# Purpose: attribute the ~40 KB written per operation (host-io.csv, feature 80af367a) to the Raft WAL
-# (Kommander RocksDbWAL) vs the Kahuna store (RocksDB, sync=true per background batch) before deciding
-# how to cut it (plan step 1, cfe716da part 2). Not a comparison arm; its throughput is not quoted.
+# POST-COMPLETION HOLD ARM hold=0 ms (2026-09-10) — the learned-routing tmpfs arm on Kahuna 1.7.2 / Kommander
+# 1.5.7 (image caraxes/camusdb:bankrouting172), one batch in flight, default linger, with
+# kahuna.key_value_write_post_completion_hold_ms: 0. The linger trio was null because completion re-dispatches
+# at once; the hold is the knob that adds density at occupancy. Model: round ≈ 1.4 ms + 18 us/item, so a 2 ms
+# hold should roughly double items/batch. Three arms (0 = control, 2, 4); judged per window with p3c regime;
+# compare only within this trio (Kahuna feature fac7be26).
 #
-# ROUTING A/B ARM (routing_mode: off) — 10-minute variant of `bank-rebase-cand-p1-w128` on CamusDB 3e8b8541,
+#
+#
+# TMPFS ARM (routing_mode: learned) — the routing A/B pair re-run with each node's /data on a RAM-backed
+# tmpfs, so the host NVMe's regime change (fsync 0.4 -> 1.9 ms after ~30-35 GB of writes in a run,
+# recorded in host-io.csv on 2026-09-09) cannot enter the comparison. Same image, same workload, same
+# client routing as the volume-backed arm; three cluster settings differ and only those three:
+#   data_tmpfs_mb: 6144        /data is a 6 GiB tmpfs (the 10-minute run writes ~2 GB of logical KV
+#                              bytes on the leader; the cap is a ceiling, not a reservation).
+#   memory_limit_mb: 9728      tmpfs pages are charged to the container's memory cgroup (verified:
+#                              300 MB written to a --tmpfs mount showed as 300 MB shmem in
+#                              memory.current), so the 4096 MiB container would OOM under its own data.
+#   gc_heap_hard_limit_mb: 2458  pins the heap budget to what the 4096 MiB limit derived (0x99999999
+#                              bytes), which is also the number CamusDB sizes its proportional caches
+#                              from — so the larger container changes nothing about the node itself.
+# 2026-09-09 t2: image rebuilt as caraxes/camusdb:bankrouting170 from CamusDB a75a8432 (Kahuna.Core 1.7.0:
+# the commit-repair drive re-verifies durability and re-promotes from the parked intent — the fix for the
+# lost committed write recorded by run t1 / Vorpal dd2f6aa9 — plus gRPC inter-node batching changes).
+# Not comparable to the campaign figures (fsync on tmpfs is free, so Raft batch latency is not the
+# device's). Comparable ONLY to the other tmpfs arm; judged per window with `p3c regime`.
+#
+# ROUTING A/B ARM (routing_mode: learned) — 10-minute variant of `bank-rebase-cand-p1-w128` on CamusDB 3e8b8541,
 # which adds deferred transaction START and session anchoring (8a6d37f9). Both arms share ONE image
 # (`caraxes/camusdb:bankrouting`); the only difference between them is the client's routing mode.
 # Primary signals: kahuna_durable_tx_session_registration_forwards_total on the leader, read p50 on the
@@ -44,9 +63,9 @@
 # MEMORY IS A REPORTED OUTCOME HERE, NOT A SIDE NOTE. Feature `efa86ffa` is open on growth without
 # an observed plateau under this exact workload. The honest question this run also answers: does a
 # faster commit path reach the cap sooner? Record peak RSS and the RSS curve alongside throughput.
-name: bank-rebase-cand-p1-w128-writeprobe
+name: bank-rebase-cand-p1-w128-hold-h0
 cluster:
-  name: bankwriteprobe
+  name: bankholdh0
   nodes: 3
   partitions: 1
   replication_factor: 3
@@ -55,16 +74,20 @@ cluster:
   locking: optimistic
   isolation: read_committed
   diagnostics: true
-  memory_limit_mb: 4096
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
   kahuna:
     # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
     one_phase_apply_time_validation: true
     staged_base_fence_retention_ms: 600000
+    key_value_write_max_in_flight_batches_per_partition: 1
+    key_value_write_post_completion_hold_ms: 0
   camusdb_repo: "~/camusdb"
   # Both arms share ONE image built once from ~/camusdb, so the only difference between them
   # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
   # on the build being reproducible, which is a weaker guarantee than not rebuilding.
-  image: "caraxes/camusdb:bankrouting174"
+  image: "caraxes/camusdb:bankrouting172"
 workload:
   kind: bank
   database: caraxes
@@ -81,7 +104,7 @@ workload:
   node_metrics: true
   metrics_interval: 5s
   cluster_facts: true
-  routing_mode: off
+  routing_mode: learned
 checks:
   require_client_headroom: true
   require_cluster_facts: true

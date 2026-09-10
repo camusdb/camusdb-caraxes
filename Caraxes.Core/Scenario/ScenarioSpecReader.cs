@@ -45,6 +45,7 @@ public static class ScenarioSpecReader
         "connections", "max_in_flight", "locking", "isolation", "no_auto_prepare", "request_timeout",
         "expect_faults", "reconcile_timeout", "node_metrics", "metrics_interval", "cluster_facts", "gateway",
         "routing_mode",
+        "connection_options",
     };
 
     public static ScenarioSpec ReadFile(string path)

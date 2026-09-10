@@ -232,6 +232,15 @@ public sealed class WorkloadRunner
                 $"client routing '{scenario.Workload.RoutingMode}' over {plan.Nodes.Count} mapped node(s)");
         }
 
+        // Client connection options, measured run only, for the same reason as routing: the seed is not
+        // measured, and a client knob under test must differ between arms exactly once.
+        if (!string.IsNullOrWhiteSpace(scenario.Workload.ConnectionOptions))
+        {
+            workloadArgs.Add("--connection-options");
+            workloadArgs.Add(scenario.Workload.ConnectionOptions);
+            notes.Add($"client connection options '{scenario.Workload.ConnectionOptions}'");
+        }
+
         AppendCommonFlags(workloadArgs, scenario.Workload);
         return new WorkloadRunPlan(workloadArgs, notes);
     }

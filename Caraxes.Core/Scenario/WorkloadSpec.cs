@@ -92,6 +92,12 @@ public sealed class WorkloadSpec
     /// </summary>
     public string RoutingMode { get; set; } = "";
 
+    /// <summary>Extra connection-string pairs the workload appends verbatim to every client connection on
+    /// the measured run (e.g. <c>CoalescingDelay=0</c> to disable the driver's 2 ms batch coalescing).
+    /// Recorded in the run manifest by the workload; arms that differ here are different clients and are
+    /// not comparable to each other or to earlier runs. Seeding stays on the default client.</summary>
+    public string ConnectionOptions { get; set; } = "";
+
     /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
     public int RequestTimeout { get; set; }
 

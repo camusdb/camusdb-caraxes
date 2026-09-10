@@ -65,6 +65,25 @@ public sealed class WorkloadEvidenceTests
     }
 
     [Test]
+    public void PassesConnectionOptionsOnlyWhenTheScenarioSetsThem()
+    {
+        // A client with different batching is a different client, so the flag is never implied.
+        Assert.That(Plan(Minimal).Args, Does.Not.Contain("--connection-options"));
+
+        WorkloadRunPlan plan = Plan("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              rows: 5000
+              connection_options: "CoalescingDelay=0"
+            """);
+
+        Assert.That(ValueAfter(plan.Args, "--connection-options"), Is.EqualTo("CoalescingDelay=0"));
+        Assert.That(plan.Notes.Any(n => n.Contains("CoalescingDelay=0")), Is.True, "the arm announces its client");
+    }
+
+    [Test]
     public void SuppliesTheRoutingTrustMapItselfWhenAModeIsSet()
     {
         // The trust map is the routing authority: a client ignores advice naming an identity outside it.

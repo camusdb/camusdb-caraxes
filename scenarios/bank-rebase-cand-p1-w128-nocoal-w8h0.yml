@@ -1,0 +1,68 @@
+# CLIENT-COALESCING-OFF ARM w8h0 (2026-09-10) — same shape as its source arm, with the driver's 2 ms batch
+# coalescing disabled (connection_options: CoalescingDelay=0). Finding behind it: at 8 workers a transfer's
+# write p50 was 26.9 ms while the server spent ~4.8 ms on its six requests; CamusDB.Client's GrpcBatcher
+# sleeps CoalescingDelayMs (default 2) after every small drain, so each round trip paid ~3.5 ms of client
+# batching. These arms measure the true server floor (w8) and what the coalescing costs or buys at
+# 128 workers (throughput may move either way: fewer, larger gRPC writes vs added latency).
+# NOT comparable to arms with the default client; compare within this trio and against the same-shape
+# default-client arm run the same day (Kahuna feature fac7be26; CamusDB client follow-up).
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+name: bank-rebase-cand-p1-w128-nocoal-w8h0
+cluster:
+  name: banknocoalw8h0
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    key_value_write_max_in_flight_batches_per_partition: 1
+    key_value_write_post_completion_hold_ms: 0
+  camusdb_repo: "~/camusdb"
+  # Both arms share ONE image built once from ~/camusdb, so the only difference between them
+  # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
+  # on the build being reproducible, which is a weaker guarantee than not rebuilding.
+  image: "caraxes/camusdb:bankrouting172"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 8
+  connections: 8
+  duration: 5m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  connection_options: "CoalescingDelay=0"
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

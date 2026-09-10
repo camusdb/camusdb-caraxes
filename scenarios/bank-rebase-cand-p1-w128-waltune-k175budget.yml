@@ -1,10 +1,18 @@
-# WRITE-ATTRIBUTION PROBE (2026-09-09) — the candidate arm on the NVMe volume, Kahuna 1.7.0 image, routing
-# off, with a driver-side sampler recording per node every 10 s: /proc/1/io write_bytes (bytes the node
-# process handed to the block layer), du of /data/kv and /data/wal, and a copy of both RocksDB LOG files
-# (whose 600-second stats dump splits bytes into WAL written, flush and compaction, and counts WAL syncs).
-# Purpose: attribute the ~40 KB written per operation (host-io.csv, feature 80af367a) to the Raft WAL
-# (Kommander RocksDbWAL) vs the Kahuna store (RocksDB, sync=true per background batch) before deciding
-# how to cut it (plan step 1, cfe716da part 2). Not a comparison arm; its throughput is not quoted.
+# RAFT-LOG LAYOUT ARM 'k175budget' (2026-09-10) — k175 plus a memtable budget sized for the flush unit.
+# RAFT-LOG LAYOUT ARM 'k175' (2026-09-10) — the write probe on Kahuna 1.7.5 / Kommander 1.6.0 (image
+# caraxes/camusdb:bankrouting175, built from ~/camusdb with only the Kahuna.Core bump). Kommander 1.6.0 lays
+# the Raft-log shard out so L0 files do not overlap (trivial move to base, DeleteFilesInRange drops them whole)
+# and adds the raft.wal.shard_l0_files gauge. Same shape as the 'default' arm (Kommander defaults, NVMe,
+# 10 min): the question is whether the L0->base rewrite (~1x of flushed bytes on 1.5.8) disappears from
+# host bytes/op. Compare against runs/writeprobe-wt-default (1.5.8: ~20-21 KB/op host, RocksDB LOG
+# compaction write ~= flush write).
+# RAFT-LOG LAYOUT ARM 'default' (2026-09-10) — the write probe on Kahuna 1.7.4 / Kommander 1.5.8 (image
+# caraxes/camusdb:bankrouting174) with the Raft-log RocksDB shard tuning: default = Kommander's shipped
+# defaults (control, expected to reproduce w4: Raft log DB 4.65 GB/600 s, compaction 1.93 GB, host 59.6 MB/s);
+# levelbase = wal_shard_max_bytes_for_level_base_mb 2048 (the whole retained log stays in the base level);
+# universal = wal_shard_universal_compaction. One image, back to back; RocksDB LOG + /proc/1/io sampler and the
+# 1.5.8 gauges (raft_wal_shard_live_sst_bytes, raft_wal_shard_l6_files). teardown: false so the driver can
+# time a follower restart before tearing down (CamusDB feature 6f0e0fb7, task 3).
 #
 # ROUTING A/B ARM (routing_mode: off) — 10-minute variant of `bank-rebase-cand-p1-w128` on CamusDB 3e8b8541,
 # which adds deferred transaction START and session anchoring (8a6d37f9). Both arms share ONE image
@@ -13,16 +21,13 @@
 # non-leader gateways, GrpcServerBatcher reaper lines, and throughput — judged per window with `p3c regime`.
 # Not a capacity number and not comparable to the 45-minute campaign figures.
 # 45-MINUTE CANDIDATE, RE-MEASURED ON THE 1.6.6 STACK — 1 partition, 128 workers, 4096 MB/node.
-#
 # The candidate half of the matched pair described in full in `bank-rebase-base-p3-w32.yml`. Read
 # that header first: it carries the arms, the ABBA ordering and why it is required, the decision
 # rule, and the recorded prediction. Only what is specific to this arm is repeated here.
-#
 # WHY p1-w128 AND NOT p1-w256. `p1-w256` was disqualified outright by task `41b2d6bf`, independently
 # of its ratio: 6,093 failed and 1,028 indeterminate writes, write p99 reaching 12.2 seconds. w128
 # recorded zero failures and zero indeterminate across 45 minutes and is the only surviving
 # candidate. Re-measuring a disqualified cell would not tell us anything about the plan's target.
-#
 # CONFIGURATION IS UNCHANGED FROM `bank-soak-p1-w128`, INCLUDING THE 4096 MB CAP. That cap is not
 # comfortable — the previous run reached 4,056 MiB of 4,096, 99%, and was still climbing at 45
 # minutes. Raising it would be the obvious "fix" and it is deliberately NOT done here, for two
@@ -30,23 +35,20 @@
 # `ApplyMemoryProportionalDefaults` a larger container limit also inflates the cache budgets, which
 # is exactly the confound the addendum to `41b2d6bf` had to go back and disentangle (~555 MiB of the
 # measured "growth" turned out to be proportional cache sizing). Same cap, same sizing, one variable.
-#
 # THIS ARM IS THE ONE THE GATE CAN HELP. One partition means a bank transfer's two accounts are
 # necessarily co-located, so the transaction has a single participant partition and its reads are on
 # the anchor — both locality preconditions met for free. Combined with the grouped key layout this
 # is the configuration that measured +10.7% and +3.5% from the flag in the close-out campaign.
-#
 # WHAT WOULD BE BAD NEWS, beyond the ratio: any bank-invariant violation, reconciliation that does
 # not close, nonzero failed or indeterminate writes, a node that dies or fails to rejoin, or an
 # error code none of the earlier arms produced. Any of those disqualifies the arm whatever the
 # throughput says. Rising CADB0509 alone is a lead, not a verdict.
-#
 # MEMORY IS A REPORTED OUTCOME HERE, NOT A SIDE NOTE. Feature `efa86ffa` is open on growth without
 # an observed plateau under this exact workload. The honest question this run also answers: does a
 # faster commit path reach the cap sooner? Record peak RSS and the RSS curve alongside throughput.
-name: bank-rebase-cand-p1-w128-writeprobe
+name: bank-rebase-cand-p1-w128-waltune-k175budget
 cluster:
-  name: bankwriteprobe
+  name: bankwaltunek175budget
   nodes: 3
   partitions: 1
   replication_factor: 3
@@ -60,11 +62,18 @@ cluster:
     # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
     one_phase_apply_time_validation: true
     staged_base_fence_retention_ms: 600000
+    # The k175 arm's Kommander 1.6.0 warned at open: shared memtable budget 61 MB < shard flush unit + headroom
+    # (192 MB), so RocksDB flushes the Raft log on the budget's cadence and entries that would die in memory
+    # reach disk once. This arm sizes the budget for the flush unit (9bd74955 follow-up): 320 MB memtables
+    # inside a 640 MB shared RocksDB budget. Memory envelope is a reported outcome (4096 MB cap).
+    rocksdb_shared_memory_budget_mb: 640
+    rocksdb_shared_memtable_budget_mb: 320
+
   camusdb_repo: "~/camusdb"
   # Both arms share ONE image built once from ~/camusdb, so the only difference between them
   # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
   # on the build being reproducible, which is a weaker guarantee than not rebuilding.
-  image: "caraxes/camusdb:bankrouting174"
+  image: "caraxes/camusdb:bankrouting175"
 workload:
   kind: bank
   database: caraxes
@@ -86,4 +95,4 @@ checks:
   require_client_headroom: true
   require_cluster_facts: true
   require_quiet_host: true
-teardown: true
+teardown: false
