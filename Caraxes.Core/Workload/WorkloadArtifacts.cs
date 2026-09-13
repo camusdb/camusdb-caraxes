@@ -80,6 +80,38 @@ public sealed class ReconciliationSummary
     public bool Passed { get; set; }
 
     public List<string> Failures { get; set; } = [];
+
+    /// <summary>The in-window scan probe's verdict, or null when the run did not probe.</summary>
+    public ScanProbeSummary? ScanProbe { get; set; }
+}
+
+/// <summary>
+/// The subset of the workload's in-window scan probe the verdict reports: how many <c>COUNT(*)</c>
+/// probes ran on how many gateways, how many came back short of the row count or failed, and whether
+/// the workload judged it a pass. The pass/fail itself is already folded into
+/// <see cref="ReconciliationSummary.Passed"/>; this is what the note says.
+/// </summary>
+public sealed class ScanProbeSummary
+{
+    public long Probes { get; set; }
+
+    public long Exact { get; set; }
+
+    public long Short { get; set; }
+
+    public long Errors { get; set; }
+
+    public long InWindowProbes { get; set; }
+
+    public long MinRows { get; set; }
+
+    public double MeanElapsedMs { get; set; }
+
+    public double MaxElapsedMs { get; set; }
+
+    public int Gateways { get; set; }
+
+    public bool Passed { get; set; }
 }
 
 /// <summary>One assembly a node reported loading.</summary>

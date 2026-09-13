@@ -101,6 +101,10 @@ public sealed class WorkloadSpec
     /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
     public int RequestTimeout { get; set; }
 
+    /// <summary>Per-request timeout in seconds for the scan probe's own connections
+    /// (<c>--scan-probe-timeout</c>); 0 leaves the workload default (60 s).</summary>
+    public int ScanProbeTimeout { get; set; }
+
     /// <summary>
     /// Which node the workload sends every request to. Empty (the default) uses the endpoint pool —
     /// every node, round-robin — which is the standard posture and what every existing measurement
@@ -136,6 +140,24 @@ public sealed class WorkloadSpec
     /// waiting longer costs wall-clock only and never touches the measured numbers. Raise it for
     /// long soaks; lower it for smoke scenarios that should fail fast.</summary>
     public int ReconcileTimeout { get; set; }
+
+    /// <summary>
+    /// How often the workload's in-window scan probe counts the rows on every gateway
+    /// (<c>--scan-probe-interval</c>), e.g. <c>5s</c>; <c>off</c> disables it. Unset (the default)
+    /// passes nothing and leaves the workload's own default, which is off — an image built before the
+    /// probe existed rejects the flag outright, so the gate is opt-in per scenario rather than a
+    /// harness default that would refuse to start every older image.
+    ///
+    /// <para>The probe is the only witness for a scan that drops rows while writes are in flight:
+    /// the post-run reconciliation counts rows on a quiet cluster and passed every time while
+    /// <c>COUNT(*)</c> under load returned 1,962-1,999 of 2,000 on every gateway (CamusDB feature
+    /// e31cf9bc). The workload folds its verdict into <c>reconciliation.json</c> — a short count fails
+    /// the run, and so does a read that could not be answered unless faults are expected — so a
+    /// scenario with the probe on gates on scan visibility without any harness-side logic. It costs one
+    /// <c>COUNT(*)</c> per gateway per interval; turn it off for a dataset large enough that the
+    /// count itself would perturb the measurement.</para>
+    /// </summary>
+    public string ScanProbeInterval { get; set; } = "";
 
     /// <summary>
     /// Collect a per-node metric time series for the whole run (<c>node-metrics.csv</c>), and with it

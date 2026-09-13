@@ -91,6 +91,36 @@ public sealed class ScenarioSpecTests
     }
 
     [Test]
+    public void ScanProbeInterval_UnsetMeansWorkloadDefault_AndParsesWhenSet()
+    {
+        ScenarioSpec unset = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            """);
+        Assert.That(unset.Workload.ScanProbeInterval, Is.Empty,
+            "unset passes no flag: an image built before the probe existed would refuse an unknown option");
+
+        ScenarioSpec off = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              scan_probe_interval: off
+            """);
+        Assert.That(off.Workload.ScanProbeInterval, Is.EqualTo("off"));
+
+        ScenarioSpec custom = ScenarioSpecReader.Read("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              scan_probe_interval: 10s
+            """);
+        Assert.That(custom.Workload.ScanProbeInterval, Is.EqualTo("10s"));
+    }
+
+    [Test]
     public void UnknownRootKey_IsRejected()
     {
         ScenarioException ex = Assert.Throws<ScenarioException>(

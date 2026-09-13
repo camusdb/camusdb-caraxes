@@ -184,6 +184,19 @@ public sealed class WorkloadRunner
             workloadArgs.Add(scenario.Workload.ReconcileTimeout.ToString());
         }
 
+        // Passed only when the scenario sets it: the workload's own default is off, and an image built
+        // before the probe existed rejects an unknown flag, so unset must mean "say nothing".
+        if (!string.IsNullOrWhiteSpace(scenario.Workload.ScanProbeInterval))
+        {
+            workloadArgs.Add("--scan-probe-interval");
+            workloadArgs.Add(scenario.Workload.ScanProbeInterval.Trim());
+            if (scenario.Workload.ScanProbeTimeout > 0)
+            {
+                workloadArgs.Add("--scan-probe-timeout");
+                workloadArgs.Add(scenario.Workload.ScanProbeTimeout.ToString());
+            }
+        }
+
         List<string> notes = [];
 
         // Said out loud because it changes what the number means: a single-gateway run is not

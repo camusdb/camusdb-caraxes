@@ -84,6 +84,27 @@ public sealed class WorkloadEvidenceTests
     }
 
     [Test]
+    public void PassesTheScanProbeOnlyWhenTheScenarioAsksForIt()
+    {
+        // The probe is part of the run's verdict (a short COUNT fails validity), so an arm that runs it
+        // must say so; the default stays off, which is the workload's own default.
+        Assert.That(Plan(Minimal).Args, Does.Not.Contain("--scan-probe-interval"));
+
+        WorkloadRunPlan plan = Plan("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              rows: 5000
+              scan_probe_interval: 5s
+              scan_probe_timeout: 90
+            """);
+
+        Assert.That(ValueAfter(plan.Args, "--scan-probe-interval"), Is.EqualTo("5s"));
+        Assert.That(ValueAfter(plan.Args, "--scan-probe-timeout"), Is.EqualTo("90"));
+    }
+
+    [Test]
     public void SuppliesTheRoutingTrustMapItselfWhenAModeIsSet()
     {
         // The trust map is the routing authority: a client ignores advice naming an identity outside it.

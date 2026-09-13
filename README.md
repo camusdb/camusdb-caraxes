@@ -64,6 +64,11 @@ the container's memory cgroup, so a tmpfs-backed node needs a `memory_limit_mb` 
 process plus data; pair it with `gc_heap_hard_limit_mb` (the heap budget a 4096 MiB limit derives is
 2458 MiB) so the larger container does not also inflate the heap and CamusDB's proportional caches.
 
+**In-window scan probe.** `workload.scan_probe_interval: 5s` (and optional `scan_probe_timeout` seconds) makes the
+measured run issue `SELECT COUNT(*)` on every gateway at that interval over read-only, routing-pinned connections and
+fail the run's validity on any short count — the check a post-load reconciliation can never make (CamusDB feature
+e31cf9bc). `tools/p3c/count-probe.sh` is the manual, REST-based equivalent for a held cluster.
+
 **Steady device regime.** `precondition_device_gb: <GiB>` (top level) streams that much fsynced ballast
 to the device backing the run directory during the workload's warm-up and records `precondition.json`.
 The benchmark host's NVMe serves the first ~30-35 GB of a run from a write cache and then changes

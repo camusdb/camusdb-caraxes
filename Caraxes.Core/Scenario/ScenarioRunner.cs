@@ -453,6 +453,18 @@ public sealed class ScenarioRunner
             foreach (string failure in reconciliation.Failures)
                 notes.Add($"reconciliation failure: {failure}");
 
+        // Said out loud in every case, because its absence is the finding that matters most: a run
+        // without the probe has not tested scan visibility under load at all, and "reconciliation
+        // passed" then means less than it reads.
+        if (reconciliation?.ScanProbe is ScanProbeSummary probe)
+            notes.Add(
+                $"scan probe: {(probe.Passed ? "PASS" : "FAIL")} — {probe.Probes:N0} COUNT(*) probe(s) on " +
+                $"{probe.Gateways} gateway(s), {probe.InWindowProbes:N0} in the window, {probe.Short:N0} short, " +
+                $"{probe.Errors:N0} failed, lowest count {probe.MinRows:N0}, " +
+                $"{probe.MeanElapsedMs:N0} ms mean / {probe.MaxElapsedMs:N0} ms max");
+        else if (reconciliation is not null)
+            notes.Add("scan probe: not run — scan visibility under load was not tested (set workload.scan_probe_interval)");
+
         // A scenario passes when the workload accepted the run AND reconciliation held — that is the
         // real consistency guard (versions, row count, accounting all balanced). Internal errors get
         // graded by context: with NO fault injected, an internal error is unexplained and damns the

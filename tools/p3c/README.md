@@ -84,11 +84,20 @@ normal tmpfs case.
 
 ### In-window scan-visibility probe
 
-`COUNT_PROBE=1` on `tools/p3c/retention-tmpfs.sh` starts `tools/p3c/count-probe.sh` once the leader shows resident durable
-records (load on): `SELECT COUNT(*)` via REST on every gateway every 5 s for `COUNT_PROBE_SECONDS` (default 540), csv in
-`runs/count-probe-<tag>.csv`, summary (exact / SHORT / errors) appended to the driver log. A read_committed scan must return the
-row count every time (CamusDB feature e31cf9bc; Kahuna 1.7.8 fixed the drop). `tools/p3c/scan-diff-probe.sh` diffs `SELECT id`
-scans against a baseline id set and point-reads every missing id, to prove which rows a scan skipped.
+The probe is part of the run verdict now: with `workload.scan_probe_interval: 5s` in the scenario (unset = off, because an
+image built before the probe existed rejects the flag), `CamusDB.Workload` counts the rows on every gateway of its endpoint
+pool every interval for the whole run, on its own routing-off connections,
+writes `artifacts/run/scan-probe.csv` (`ts,endpoint,table,expected,rows,elapsed_ms,status,code`) and folds the verdict into
+`reconciliation.json` (`ScanProbe`): any count below the row count fails reconciliation — never waived — and a read that could
+not be answered fails it too unless `expect_faults` is on. The scenario verdict prints a `scan probe:` note in every case,
+including "not run". A read_committed scan must return the row count every time (CamusDB feature e31cf9bc; Kahuna 1.7.8 fixed
+the drop, CamusDB then stopped carrying the transaction id on read-only scans so a retried page can no longer abort them).
+
+The shell tools remain for a held cluster or a run driven outside the harness: `COUNT_PROBE=1` on
+`tools/p3c/retention-tmpfs.sh` starts `tools/p3c/count-probe.sh` once the leader shows resident durable records (load on):
+`SELECT COUNT(*)` via REST on every gateway every 5 s for `COUNT_PROBE_SECONDS` (default 540), csv in
+`runs/count-probe-<tag>.csv`, summary (exact / SHORT / errors) appended to the driver log. `tools/p3c/scan-diff-probe.sh`
+diffs `SELECT id` scans against a baseline id set and point-reads every missing id, to prove which rows a scan skipped.
 
 ### Durable-2PC retention summary
 

@@ -176,7 +176,11 @@ public static class Regime
 
         /// <summary>One measurement, not two: both the durable-write cost and the leader read cost held,
         /// and no preconditioning ballast leaked into the window.</summary>
-        public bool Stable => RaftStable && ReadsStable && PreconditionClean && OpsStable && Zombie is null;
+        /// <summary>True when the leader's Raft series is missing entirely (failed scrapes, renamed metric): the Raft
+        /// and read rules cannot run, and a run without them is not admissible.</summary>
+        public bool NoRaftData => Leader is null || Windows.All(w => w.RaftMeanMs <= 0);
+
+        public bool Stable => !NoRaftData && RaftStable && ReadsStable && PreconditionClean && OpsStable && Zombie is null;
 
         /// <summary>The first window whose Raft mean exceeds the fastest window by the spread bar, if any.</summary>
         public int? RaftBreakWindow
@@ -268,7 +272,10 @@ public static class Regime
                 + $"{(w.HostUtilPercent is double u ? u.ToString("F0", CultureInfo.InvariantCulture) : "-"),7}"
                 + $"{(w.HostReadsPerSecond is double r ? r.ToString("F0", CultureInfo.InvariantCulture) : "-"),9}");
 
-        string raftLine = report.RaftStable
+        bool noRaftData = report.Leader is null || report.Windows.All(w => w.RaftMeanMs <= 0);
+        string raftLine = noRaftData
+            ? "*** NO RAFT DATA: kahuna_kv_write_raft_duration is absent from node-metrics.csv (metrics scrape failed or metric renamed) — the Raft and read rules did not run; NOT admissible ***"
+            : report.RaftStable
             ? $"raft regime held: window means within {report.RaftSpread:F2}x"
             : $"*** RAFT REGIME BREAK at window {report.RaftBreakWindow}: window means span {report.RaftSpread:F2}x (bar {MaxRaftWindowSpread:F1}x) ***";
         string readLine = report.ReadsStable
