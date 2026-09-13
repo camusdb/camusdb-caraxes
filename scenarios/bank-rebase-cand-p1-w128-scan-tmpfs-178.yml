@@ -1,0 +1,124 @@
+# FLUSHER BACK-PRESSURE ARM (2026-09-11): ~/kahuna working tree on top of 1.7.7 (71076005), packed as Kahuna.Core
+# 1.7.8-flusher.1 (write-aggregator / flusher changes for Kahuna feature 14ac0ca6: on 1.7.7 the durable-apply lag grew
+# ~500K entries/min and two followers fail-fasted on OOM in 7-10 min). Same 20-minute tmpfs learned-routing arm, teardown
+# false. Pass: durable-apply lag bounded (Compaction-blocked warnings show a plateau), follower gen2 flat, no OOM, and then
+# the scan question: reconciliation completes and COUNT(*)/SUM server time at ~10M versions vs 11.1 s on 1.7.6.
+# SCAN-COST ARM (2026-09-10): Kahuna.Core 1.7.7 (scan fixes) from nuget.org, image bankrel177. 20 minutes on tmpfs with
+# learned routing — the length whose reconciliation failed on 1.7.6 because full-table aggregates cost ~1 us per accumulated
+# row version (CamusDB feature 1a318d74: 11 s at 10.4M versions, beyond the client deadline). teardown: false so the
+# aggregates can be timed via REST (/execute-sql-query serverTimeMs) on the idle cluster afterwards, then compose down.
+# Pass: reconciliation completes on the first attempt per aggregate; COUNT(*) server time independent of version count.
+# RELEASED-PACKAGE RETENTION ARM (2026-09-10): Kahuna.Core 1.7.6 / Kommander 1.6.1 from nuget.org, image bankrel176 (built by
+# the k177 arm). 10 minutes, not 20: full-table aggregates cost ~1 us per accumulated row version (CamusDB feature 1a318d74)
+# and a 20-minute run's reconciliation exceeds the client deadline; at 10 minutes it verifies. Judged with
+# tools/p3c/retention-summary.sh against r1/h1 (resident records plateau ~340k, follower gen2 ~810 MB, zero OOM).
+# DURABLE-2PC METADATA RETENTION ARM (2026-09-10) — CamusDB on Kahuna.Core 1.7.6-retention.1, packed from the
+# ~/kahuna working tree (unreleased) into ~/camusdb/.localnuget: DurableRecordRetentionMax 200,000 records /
+# DurableRecordRetentionMaxBytes 256 MB / heap-pressure valve 0.85 / retention floor 90 s / FailFastOnOutOfMemory,
+# against the 5-minute TTL-only retention that filled the 2,458 MiB heap in ~5 min at ~8,000 ops/s (CamusDB feature
+# caf52e10). Same shape as the learned-routing tmpfs arm (the fastest cell, hence the most metadata per second),
+# 20 minutes so a plateau is distinguishable from a slower climb. Also carries today's CamusDB compaction-cadence
+# defaults (compact_every_operations 100 / max_entries_per_compaction 100000) and Kommander 1.6.0.
+# Primary signals: managed heap (dotnet_gc_*), container memory minus the tmpfs footprint, the Kahuna durable
+# retention gauges, zero OutOfMemory lines, no zombie follower (WAL queue pinned, batches 0), exact reconciliation.
+# TMPFS ARM (routing_mode: learned) — the routing A/B pair re-run with each node's /data on a RAM-backed
+# tmpfs, so the host NVMe's regime change (fsync 0.4 -> 1.9 ms after ~30-35 GB of writes in a run,
+# recorded in host-io.csv on 2026-09-09) cannot enter the comparison. Same image, same workload, same
+# client routing as the volume-backed arm; three cluster settings differ and only those three:
+#   data_tmpfs_mb: 6144        /data is a 6 GiB tmpfs (the 10-minute run writes ~2 GB of logical KV
+#                              bytes on the leader; the cap is a ceiling, not a reservation).
+#   memory_limit_mb: 9728      tmpfs pages are charged to the container's memory cgroup (verified:
+#                              300 MB written to a --tmpfs mount showed as 300 MB shmem in
+#                              memory.current), so the 4096 MiB container would OOM under its own data.
+#   gc_heap_hard_limit_mb: 2458  pins the heap budget to what the 4096 MiB limit derived (0x99999999
+#                              bytes), which is also the number CamusDB sizes its proportional caches
+#                              from — so the larger container changes nothing about the node itself.
+# 2026-09-09 t2: image rebuilt as caraxes/camusdb:bankrouting170 from CamusDB a75a8432 (Kahuna.Core 1.7.0:
+# the commit-repair drive re-verifies durability and re-promotes from the parked intent — the fix for the
+# lost committed write recorded by run t1 / Vorpal dd2f6aa9 — plus gRPC inter-node batching changes).
+# Not comparable to the campaign figures (fsync on tmpfs is free, so Raft batch latency is not the
+# device's). Comparable ONLY to the other tmpfs arm; judged per window with `p3c regime`.
+#
+# ROUTING A/B ARM (routing_mode: learned) — 10-minute variant of `bank-rebase-cand-p1-w128` on CamusDB 3e8b8541,
+# which adds deferred transaction START and session anchoring (8a6d37f9). Both arms share ONE image
+# (`caraxes/camusdb:bankrouting`); the only difference between them is the client's routing mode.
+# Primary signals: kahuna_durable_tx_session_registration_forwards_total on the leader, read p50 on the
+# non-leader gateways, GrpcServerBatcher reaper lines, and throughput — judged per window with `p3c regime`.
+# Not a capacity number and not comparable to the 45-minute campaign figures.
+# 45-MINUTE CANDIDATE, RE-MEASURED ON THE 1.6.6 STACK — 1 partition, 128 workers, 4096 MB/node.
+#
+# The candidate half of the matched pair described in full in `bank-rebase-base-p3-w32.yml`. Read
+# that header first: it carries the arms, the ABBA ordering and why it is required, the decision
+# rule, and the recorded prediction. Only what is specific to this arm is repeated here.
+#
+# WHY p1-w128 AND NOT p1-w256. `p1-w256` was disqualified outright by task `41b2d6bf`, independently
+# of its ratio: 6,093 failed and 1,028 indeterminate writes, write p99 reaching 12.2 seconds. w128
+# recorded zero failures and zero indeterminate across 45 minutes and is the only surviving
+# candidate. Re-measuring a disqualified cell would not tell us anything about the plan's target.
+#
+# CONFIGURATION IS UNCHANGED FROM `bank-soak-p1-w128`, INCLUDING THE 4096 MB CAP. That cap is not
+# comfortable — the previous run reached 4,056 MiB of 4,096, 99%, and was still climbing at 45
+# minutes. Raising it would be the obvious "fix" and it is deliberately NOT done here, for two
+# reasons. It would break the pairing with the figure this run is replacing. And under
+# `ApplyMemoryProportionalDefaults` a larger container limit also inflates the cache budgets, which
+# is exactly the confound the addendum to `41b2d6bf` had to go back and disentangle (~555 MiB of the
+# measured "growth" turned out to be proportional cache sizing). Same cap, same sizing, one variable.
+#
+# THIS ARM IS THE ONE THE GATE CAN HELP. One partition means a bank transfer's two accounts are
+# necessarily co-located, so the transaction has a single participant partition and its reads are on
+# the anchor — both locality preconditions met for free. Combined with the grouped key layout this
+# is the configuration that measured +10.7% and +3.5% from the flag in the close-out campaign.
+#
+# WHAT WOULD BE BAD NEWS, beyond the ratio: any bank-invariant violation, reconciliation that does
+# not close, nonzero failed or indeterminate writes, a node that dies or fails to rejoin, or an
+# error code none of the earlier arms produced. Any of those disqualifies the arm whatever the
+# throughput says. Rising CADB0509 alone is a lead, not a verdict.
+#
+# MEMORY IS A REPORTED OUTCOME HERE, NOT A SIDE NOTE. Feature `efa86ffa` is open on growth without
+# an observed plateau under this exact workload. The honest question this run also answers: does a
+# faster commit path reach the cap sooner? Record peak RSS and the RSS curve alongside throughput.
+name: bank-rebase-cand-p1-w128-scan-tmpfs-178
+cluster:
+  name: bankscantmpfs178
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Both arms share ONE image built once from ~/camusdb, so the only difference between them
+  # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
+  # on the build being reproducible, which is a weaker guarantee than not rebuilding.
+  image: "caraxes/camusdb:bankfl178"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 20m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: false

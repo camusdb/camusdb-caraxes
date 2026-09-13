@@ -38,8 +38,37 @@ public static class Regime
     /// last one to two minutes and a five-minute window averages them away. Healthy runs sit within 1.1x.</summary>
     public const double MaxOpsMinuteSpread = 1.5;
 
+    /// <summary>Raft-log live SST bytes (Kommander gauge <c>raft_wal_shard_live_sst_bytes</c>, worst node), last
+    /// minute over first minute. Kommander 1.6.0 reclaims the log by dropping whole files below a persisted floor
+    /// that advances at most <c>max_entries_per_compaction</c> per pass; when passes cannot keep up with ingest the
+    /// gauge climbs in a straight line (k175 arm, 2026-09-10: 73 → 1,193 MB in 12 minutes, 16x) and the node
+    /// retains gigabytes of dead log per hour. A bounded log sits within a few flush units of its first value.
+    /// Only judged once the last-minute value exceeds <see cref="WalLiveFloorMb"/>: a log that grows from 2 to
+    /// 10 MB is not a finding. A finding, not an admissibility rule — retention does not make the throughput
+    /// window a mixture — so it is reported beside <see cref="Report.Stable"/>, not folded into it.</summary>
+    public const double MaxWalLiveGrowth = 3.0;
+
+    public const double WalLiveFloorMb = 64;
+
+    /// <summary>A follower whose Raft WAL writer has died while the process, its health endpoint and its gRPC
+    /// service stay up (Kahuna feature caf52e10: an OutOfMemoryException swallowed inside the WAL write left
+    /// camus2 with <c>raft_wal_queue_depth</c> pinned at 4,096 and zero batches for four minutes, reported
+    /// reachable throughout). Signature: a node's <c>raft_wal_batches_total</c> advances by less than this
+    /// fraction of the busiest node's per-minute rate for two consecutive minutes while that node keeps writing.
+    /// Disqualifying: the cluster ran on a quorum of two, not the configuration under test.</summary>
+    public const double ZombieBatchFraction = 0.01;
+
     /// <summary>The harness's device preconditioning record (<c>precondition.json</c>), if the run wrote one.</summary>
     public sealed record Precondition(DateTime StartUtc, DateTime EndUtc, long Bytes, double MegabytesPerSecond, string Device, bool OverlapsWindow);
+
+    /// <summary>Worst node's <c>raft_wal_shard_live_sst_bytes</c>: mean of the first measured minute and of the last.</summary>
+    public sealed record WalLive(string Node, double FirstMb, double LastMb)
+    {
+        public double Growth => FirstMb > 0 ? LastMb / FirstMb : (LastMb > 0 ? double.PositiveInfinity : 1);
+    }
+
+    /// <summary>A node whose WAL writer stopped while another node's continued (see <see cref="ZombieBatchFraction"/>).</summary>
+    public sealed record Zombie(string Node, int FromMinute, double LastQueueDepth, double LeaderBatchesPerMinute);
 
     public sealed record Window(
         int Index,
@@ -52,8 +81,46 @@ public static class Regime
         double? HostReadsPerSecond);
 
     public sealed record Report(string Run, string? Leader, IReadOnlyList<Window> Windows, Precondition? Precondition = null,
-        IReadOnlyList<double>? OpsPerMinute = null, long FailedOps = 0)
+        IReadOnlyList<double>? OpsPerMinute = null, long FailedOps = 0, WalLive? WalLive = null, Zombie? Zombie = null)
     {
+        /// <summary>The longest suffix of windows whose Raft means lie within <see cref="MaxRaftWindowSpread"/> of each other:
+        /// the part of a run measured in one device regime after the host NVMe's step (feature 80af367a). On a drive whose
+        /// cache folds inside the window, the whole-run average is a mixture, but the tail is a clean measurement and two
+        /// arms' tails are comparable when both are long enough. First window index of the tail, or null when the run has
+        /// fewer than two windows.</summary>
+        public int? SteadyTailStart
+        {
+            get
+            {
+                double[] raft = [.. Windows.Select(w => w.RaftMeanMs)];
+                if (raft.Length < 2) return null;
+                int start = raft.Length - 1;
+                for (int i = raft.Length - 2; i >= 0; i--)
+                {
+                    double[] span = raft[i..];
+                    double lo = span.Where(v => v > 0).DefaultIfEmpty(0).Min(), hi = span.Max();
+                    if (lo <= 0 || hi / lo > MaxRaftWindowSpread) break;
+                    start = i;
+                }
+                return start;
+            }
+        }
+
+        /// <summary>Mean completed ops/s over the steady tail's minutes (null without a client series or a tail).</summary>
+        public double? SteadyTailOps
+        {
+            get
+            {
+                if (SteadyTailStart is not int start || OpsPerMinute is null) return null;
+                int fromMinute = start * (WindowSeconds / 60);
+                double[] m = [.. OpsPerMinute.Skip(fromMinute).Where(v => v > 0)];
+                return m.Length == 0 ? null : m.Average();
+            }
+        }
+
+        /// <summary>The Raft-log live bytes held within <see cref="MaxWalLiveGrowth"/> (or the gauge is absent).</summary>
+        public bool WalLiveBounded => WalLive is null || WalLive.LastMb <= WalLiveFloorMb || WalLive.Growth <= MaxWalLiveGrowth;
+
         /// <summary>Best minute over worst minute of completed ops/s (1 when the client series is absent).</summary>
         public double OpsMinuteSpread
         {
@@ -109,7 +176,7 @@ public static class Regime
 
         /// <summary>One measurement, not two: both the durable-write cost and the leader read cost held,
         /// and no preconditioning ballast leaked into the window.</summary>
-        public bool Stable => RaftStable && ReadsStable && PreconditionClean && OpsStable;
+        public bool Stable => RaftStable && ReadsStable && PreconditionClean && OpsStable && Zombie is null;
 
         /// <summary>The first window whose Raft mean exceeds the fastest window by the spread bar, if any.</summary>
         public int? RaftBreakWindow
@@ -185,7 +252,9 @@ public static class Regime
         }
 
         (List<double> opsPerMinute, long failedOps) = LoadClientMinutes(artifacts, measureSeconds);
-        return new Report(Path.GetFileName(runDir.TrimEnd(Path.DirectorySeparatorChar)), leader, result, LoadPrecondition(runDir, start), opsPerMinute, failedOps);
+        return new Report(Path.GetFileName(runDir.TrimEnd(Path.DirectorySeparatorChar)), leader, result, LoadPrecondition(runDir, start), opsPerMinute, failedOps,
+            WorstWalLive(series, startMs, startMs + (long)measureSeconds * 1000),
+            FindZombie(series, startMs, startMs + (long)measureSeconds * 1000));
     }
 
     public static void Print(Report report)
@@ -207,6 +276,21 @@ public static class Regime
             : $"*** LEADER READ STALL: last/first window read mean {report.ReadGrowth:F2}x (bar {MaxReadWindowGrowth:F1}x) ***";
         Console.WriteLine($"  {raftLine}");
         Console.WriteLine($"  {readLine}");
+        if (report.SteadyTailStart is int tail && report.Windows.Count > 1)
+        {
+            int tailWindows = report.Windows.Count - tail;
+            double tailRaft = report.Windows.Skip(tail).Select(w => w.RaftMeanMs).Where(v => v > 0).DefaultIfEmpty(0).Average();
+            string ops = report.SteadyTailOps is double o ? $"{o:F0} ops/s" : "ops n/a";
+            Console.WriteLine(tail == 0
+                ? $"  steady tail = whole run ({tailWindows} windows): {ops}, raft {tailRaft:F2} ms"
+                : $"  steady tail from window {tail} ({tailWindows} of {report.Windows.Count} windows, {tailWindows * WindowSeconds / 60} min): {ops}, raft {tailRaft:F2} ms — the comparable figure when the device stepped inside the window");
+        }
+        if (report.Zombie is Zombie z)
+            Console.WriteLine($"  *** WAL ZOMBIE: {z.Node} wrote < {ZombieBatchFraction:P0} of the busiest node's Raft batches from minute {z.FromMinute} (busiest {z.LeaderBatchesPerMinute:F0}/min; {z.Node} queue depth at end {z.LastQueueDepth:F0}) — process up, WAL writer dead; the run ran on a reduced quorum ***");
+        if (report.WalLive is WalLive wl)
+            Console.WriteLine(report.WalLiveBounded
+                ? $"  raft-log live SST bounded: {wl.Node} {wl.FirstMb:F0} → {wl.LastMb:F0} MB ({wl.Growth:F2}x)"
+                : $"  *** RAFT-LOG RETENTION GROWING: {wl.Node} live SST {wl.FirstMb:F0} → {wl.LastMb:F0} MB ({wl.Growth:F1}x, bar {MaxWalLiveGrowth:F1}x) — compaction floor not keeping up with ingest ***");
         if (report.OpsPerMinute is { Count: > 1 } opm)
         {
             Console.WriteLine($"  client ops/s by minute: {string.Join(' ', opm.Select(v => v.ToString("F0", CultureInfo.InvariantCulture)))}");
@@ -280,7 +364,10 @@ public static class Regime
 
             string metric = parts[2];
             bool wanted = metric.StartsWith("kahuna_kv_write_raft_duration_milliseconds_", StringComparison.Ordinal)
-                || metric.StartsWith("camus_request_duration_milliseconds_", StringComparison.Ordinal);
+                || metric.StartsWith("camus_request_duration_milliseconds_", StringComparison.Ordinal)
+                || metric == "raft_wal_shard_live_sst_bytes"
+                || metric == "raft_wal_batches_total"
+                || metric == "raft_wal_queue_depth";
             if (!wanted || metric.EndsWith("_bucket", StringComparison.Ordinal))
                 continue;
 
@@ -309,6 +396,68 @@ public static class Regime
     }
 
     /// <summary>Mean of a (sum, count) histogram pair over [lo, hi), plus the count's rate per second.</summary>
+    /// <summary>First-minute and last-minute means of the live Raft-log SST gauge, for the node whose last-minute
+    /// value is largest. Null when no node exported the gauge inside the window (pre-1.5.8 Kommander).</summary>
+    private static WalLive? WorstWalLive(Dictionary<(string, string), List<(long Ts, double Value)>> series, long lo, long hi)
+    {
+        WalLive? worst = null;
+        foreach (KeyValuePair<(string Node, string Metric), List<(long Ts, double Value)>> kv in series)
+        {
+            if (kv.Key.Metric != "raft_wal_shard_live_sst_bytes")
+                continue;
+            (long Ts, double Value)[] inWindow = [.. kv.Value.Where(p => p.Ts >= lo && p.Ts < hi)];
+            if (inWindow.Length < 2)
+                continue;
+            long firstEnd = inWindow[0].Ts + 60_000, lastStart = inWindow[^1].Ts - 60_000;
+            double first = inWindow.Where(p => p.Ts < firstEnd).Average(p => p.Value) / 1e6;
+            double last = inWindow.Where(p => p.Ts >= lastStart).Average(p => p.Value) / 1e6;
+            if (worst is null || last > worst.LastMb)
+                worst = new WalLive(kv.Key.Node, first, last);
+        }
+        return worst;
+    }
+
+    /// <summary>Per-minute WAL batch counts per node; a node under <see cref="ZombieBatchFraction"/> of the busiest
+    /// node for two consecutive minutes (busiest node > 0) is the zombie signature. Null when the counter is absent.</summary>
+    private static Zombie? FindZombie(Dictionary<(string, string), List<(long Ts, double Value)>> series, long lo, long hi)
+    {
+        Dictionary<string, List<double>> perMinute = [];
+        Dictionary<string, double> lastDepth = [];
+        int minutes = (int)((hi - lo) / 60_000);
+        foreach (KeyValuePair<(string Node, string Metric), List<(long Ts, double Value)>> kv in series)
+        {
+            if (kv.Key.Metric == "raft_wal_queue_depth")
+            {
+                (long Ts, double Value)[] d = [.. kv.Value.Where(p => p.Ts >= lo && p.Ts < hi)];
+                if (d.Length > 0) lastDepth[kv.Key.Node] = d[^1].Value;
+                continue;
+            }
+            if (kv.Key.Metric != "raft_wal_batches_total")
+                continue;
+            List<double> mins = [];
+            for (int m = 0; m < minutes; m++)
+            {
+                long a = lo + (long)m * 60_000, b = a + 60_000;
+                (long Ts, double Value)[] inMin = [.. kv.Value.Where(p => p.Ts >= a && p.Ts < b)];
+                mins.Add(inMin.Length >= 2 ? inMin[^1].Value - inMin[0].Value : double.NaN);
+            }
+            perMinute[kv.Key.Node] = mins;
+        }
+        if (perMinute.Count < 2)
+            return null;
+        for (int m = 1; m < minutes; m++)
+        {
+            double busiestPrev = perMinute.Values.Select(v => v[m - 1]).Where(v => !double.IsNaN(v)).DefaultIfEmpty(0).Max();
+            double busiest = perMinute.Values.Select(v => v[m]).Where(v => !double.IsNaN(v)).DefaultIfEmpty(0).Max();
+            if (busiest <= 0 || busiestPrev <= 0)
+                continue;
+            foreach ((string node, List<double> v) in perMinute)
+                if (!double.IsNaN(v[m]) && !double.IsNaN(v[m - 1]) && v[m] < busiest * ZombieBatchFraction && v[m - 1] < busiestPrev * ZombieBatchFraction)
+                    return new Zombie(node, m - 1, lastDepth.GetValueOrDefault(node, double.NaN), busiest);
+        }
+        return null;
+    }
+
     private static (double Mean, double Rate) MeanAndRate(
         Dictionary<(string, string), List<(long Ts, double Value)>> series, string node, string metric, long lo, long hi)
     {

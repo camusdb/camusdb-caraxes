@@ -61,3 +61,49 @@ before it runs.
 > 1.5x, or any failed write (the Raft-mean rule cannot see a collapse that starves batches while the round stays
 constant); device ballast (`precondition.json`) finishing after `measureStartUtc`. It prints `host-io.csv`
 columns (fsync probe p50, util, reads) per window when the harness recorded them.
+
+**Finding, not a rule (2026-09-10):** `RAFT-LOG RETENTION GROWING` when the worst node's
+`raft_wal_shard_live_sst_bytes` (Kommander ≥ 1.5.8) grows more than 3x from the first measured minute to the last
+and ends above 64 MB. Kommander 1.6.0 reclaims the Raft log by dropping whole files below a persisted floor that
+advances at most `max_entries_per_compaction` per pass, one pass per `compact_every_operations` WAL *batches*; when
+that cannot keep up with ingest the gauge climbs linearly (k175 arm: 277 → 1,153 MB inside the 10-minute window)
+and the node retains gigabytes of dead log per hour. Retention does not make the throughput window a mixture, so
+the line is printed beside the verdict rather than folded into it.
+
+**Rule (2026-09-10):** `WAL ZOMBIE` — a node whose `raft_wal_batches_total` advanced by less than 1% of the busiest
+node's per-minute count for two consecutive minutes while that node kept writing (Kahuna feature caf52e10: an
+OutOfMemoryException swallowed inside the WAL write left a follower reachable and "healthy" with its queue pinned at
+4,096 and zero batches for four minutes). Disqualifying: the run continued on a reduced quorum. Fires on
+`bank-rebase-cand-p1-w128-hold-h2-v1` (camus2 from minute 6), quiet on healthy runs.
+
+**Steady tail (2026-09-11):** `regime` also prints the longest suffix of 5-minute windows whose Raft means lie within 1.5x of
+each other, with its mean completed ops/s and Raft mean. On the host NVMe the drive's regime step lands inside a 45-minute
+window at today's bytes/op (~15-35 GB written → minute 4-10), so the whole-run average is a mixture; the tail is the clean
+part, and two arms are compared on their tails when both are long enough (≥ 6 windows). A tail equal to the whole run is the
+normal tmpfs case.
+
+### In-window scan-visibility probe
+
+`COUNT_PROBE=1` on `tools/p3c/retention-tmpfs.sh` starts `tools/p3c/count-probe.sh` once the leader shows resident durable
+records (load on): `SELECT COUNT(*)` via REST on every gateway every 5 s for `COUNT_PROBE_SECONDS` (default 540), csv in
+`runs/count-probe-<tag>.csv`, summary (exact / SHORT / errors) appended to the driver log. A read_committed scan must return the
+row count every time (CamusDB feature e31cf9bc; Kahuna 1.7.8 fixed the drop). `tools/p3c/scan-diff-probe.sh` diffs `SELECT id`
+scans against a baseline id set and point-reads every missing id, to prove which rows a scan skipped.
+
+### Durable-2PC retention summary
+
+`tools/p3c/retention-summary.sh <run-dir> [tmpfs-footprint.csv]` prints per-minute `kahuna_durable_tx_resident_records`
+/ `_receipts` / estimated bytes / early reclaims, the long-lived heap generations from
+`dotnet_gc_last_collection_heap_size_bytes`, committed heap, per-node WAL batches per minute and queue depth (the
+zombie signature by eye), OutOfMemory / FailFast / WAL-saturated / over-budget log-line counts, and — with the tmpfs
+driver's footprint csv — cgroup memory minus the tmpfs data footprint. Label rows are summed per timestamp (the
+gauges carry partition labels), then the last sample of each minute is kept.
+
+### Write-probe bytes per operation
+
+`tools/p3c/writeprobe-bytes.sh <runs/writeprobe-<tag>> <runs/scenarios/<run>>` prints, for one write-probe arm: host
+device MB/s over the measured window (`host-io.csv`) divided by achieved ops/s → KB/op; each node's `/proc/1/io`
+write rate over the same window (`io.csv` from `write-probe.sh`); and, from the last RocksDB `LOG` stats dump of
+the Raft-log database, WAL ingest, flush count (and how many were Write-Buffer-Manager-forced), compactions vs
+trivial moves, stalls, and the shard CF's per-level Write / Moved / W-Amp columns. Compaction "write" in RocksDB's
+table includes the L0 flush (L0 write = flush), so rewrite beyond flush is the L1+ Write column, not the Sum.

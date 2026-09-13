@@ -9,14 +9,17 @@ scenario=${SCENARIO:-bank-rebase-cand-p1-w128-writeprobe}; cluster=${CLUSTER:-ba
 build_flag=""; [ "${BUILD:-0}" = "1" ] || build_flag="--skip-build"
 log=$out/driver.log
 sampler() {
-  echo "ts,container,write_bytes,cancelled_write_bytes,kv_mib,wal_mib,logs_mib" > "$out/io.csv"
+  echo "ts,container,write_bytes,cancelled_write_bytes,kv_mib,wal_mib,logs_mib,wal_log_files_mib,wal_sst_mib" > "$out/io.csv"
   while :; do
     for n in 1 2 3; do
       c="$cluster-camus$n"
       io=$(docker exec "$c" cat /proc/1/io 2>/dev/null) || continue
       wb=$(echo "$io" | awk '/^write_bytes/{print $2}'); cwb=$(echo "$io" | awk '/^cancelled_write_bytes/{print $2}')
       d=$(docker exec "$c" sh -c 'du -sm /data/kv /data/wal 2>/dev/null | cut -f1 | tr "\n" ","; du -sm /data --exclude=/data/kv --exclude=/data/wal 2>/dev/null | cut -f1')
-      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ),$c,$wb,$cwb,$d" >> "$out/io.csv"
+      # RocksDB write-ahead .log files vs .sst files under the Raft-log DB: the k175 arms showed /data/wal at 2.5-3.5 GB
+      # against 0.2-0.9 GB of live SST, so the split is recorded to tell pinned WAL logs from retained tables.
+      w=$(docker exec "$c" sh -c 'l=$(find /data/wal -name "*.log" -printf "%s\n" 2>/dev/null | awk "{s+=\$1} END{printf \"%d\", s/1048576}"); t=$(find /data/wal -name "*.sst" -printf "%s\n" 2>/dev/null | awk "{s+=\$1} END{printf \"%d\", s/1048576}"); echo "$l,$t"')
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ),$c,$wb,$cwb,$d,$w" >> "$out/io.csv"
       for db in kv wal; do docker exec "$c" sh -c "cat /data/$db/*/LOG 2>/dev/null" > "$out/rocksdb-LOG-$db-camus$n.txt.tmp" 2>/dev/null && mv "$out/rocksdb-LOG-$db-camus$n.txt.tmp" "$out/rocksdb-LOG-$db-camus$n.txt"; done
     done
     sleep 10
