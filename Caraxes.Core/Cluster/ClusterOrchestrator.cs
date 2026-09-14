@@ -38,7 +38,12 @@ public sealed class ClusterOrchestrator
         Directory.CreateDirectory(configDir);
 
         foreach (NodePlan node in plan.Nodes)
+        {
             File.WriteAllText(Path.Combine(configDir, $"{node.Name}.yml"), NodeConfigGenerator.Generate(plan, node));
+            // Created here, before `up`, so the crash-dump bind mount is owned by the harness user
+            // rather than by the docker daemon creating a missing source directory as root.
+            Directory.CreateDirectory(Path.Combine(runDir, "dumps", node.Name));
+        }
 
         // The config mount is relative so the run directory stays relocatable.
         File.WriteAllText(ComposeFilePath, ComposeGenerator.Generate(plan, configDirInCompose: "./config"));

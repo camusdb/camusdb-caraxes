@@ -174,6 +174,10 @@ public sealed class ComposeGeneratorTests
 
         Assert.That(yml, Does.Contain("camus1-data:/data"));
         Assert.That(yml, Does.Not.Contain("tmpfs"));
+        // Crash dumps go to a per-node host bind mount, never under /data (51311414 item 2).
+        Assert.That(yml, Does.Contain("./dumps/camus1:/dumps"));
+        Assert.That(yml, Does.Contain("DOTNET_DbgMiniDumpName: /dumps/crash-%p-%t.dmp"));
+        Assert.That(yml, Does.Not.Contain("/data/crash"));
     }
 
     [Test]
@@ -186,6 +190,9 @@ public sealed class ComposeGeneratorTests
         Assert.That(yml, Does.Contain("268435456"), "256 MiB in bytes");
         Assert.That(yml, Does.Contain("target: /data"));
         Assert.That(yml, Does.Not.Contain("camus1-data:/data"), "no named volume when tmpfs is used");
+        // The dump directory stays a host bind mount on a tmpfs rig: that is the case that lost the
+        // 1.7.7 OOM dumps when they were written under the tmpfs /data.
+        Assert.That(yml, Does.Contain("./dumps/camus1:/dumps"));
     }
 
     [Test]

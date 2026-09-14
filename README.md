@@ -57,6 +57,12 @@ name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure
 applies to each, so `kill` of a zone kills the whole zone together). Every healable fault still in
 effect when the workload finishes is healed on the way out, so the cluster is never left broken.
 
+**Crash dumps.** Every node runs with the runtime's minidump enabled, written to `/dumps`, which is a
+per-node host bind mount under the cluster's run directory (`runs/clusters/<name>/dumps/camusN/`). It
+is a bind mount rather than a named volume so a dump survives the teardown's `down -v`, and it is
+deliberately not under `/data`: on a tmpfs-backed rig `/data` vanishes with the container, which is how
+the Kahuna 1.7.7 OOM dumps were lost. `%p-%t` in the name keeps every dump of a crash loop.
+
 **Disk faults.** `fill-disk` needs a size cap to be meaningful, so set `data_tmpfs_mb: <MiB>` on the
 cluster — each node's `/data` then becomes a RAM-backed, size-capped tmpfs the fault can exhaust. This
 is for disk-pressure behavior, not durability (tmpfs is lost on restart). tmpfs pages are charged to

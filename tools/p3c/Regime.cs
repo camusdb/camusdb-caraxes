@@ -50,6 +50,13 @@ public static class Regime
 
     public const double WalLiveFloorMb = 64;
 
+    /// <summary>Alive write-ahead <c>.log</c> bytes under the Raft-log engine (Kommander 1.6.6 gauge
+    /// <c>raft_wal_alive_log_bytes</c>, worst node), judged with the same growth bar and floor as the live SST.
+    /// On Kommander 1.6.5 an unstarved memtable budget let a trickle column family pin every log file (k182 arm,
+    /// 2026-09-13: 443 → 2,709 MiB in ten minutes, linear); 1.6.6 caps them at <c>max_total_wal_size</c>, two
+    /// flush units (256 MB) at the defaults, so a bounded run oscillates below that. Finding, not a rule.</summary>
+    public const string WalAliveLogMetric = "raft_wal_alive_log_bytes";
+
     /// <summary>A follower whose Raft WAL writer has died while the process, its health endpoint and its gRPC
     /// service stay up (Kahuna feature caf52e10: an OutOfMemoryException swallowed inside the WAL write left
     /// camus2 with <c>raft_wal_queue_depth</c> pinned at 4,096 and zero batches for four minutes, reported
@@ -81,7 +88,8 @@ public static class Regime
         double? HostReadsPerSecond);
 
     public sealed record Report(string Run, string? Leader, IReadOnlyList<Window> Windows, Precondition? Precondition = null,
-        IReadOnlyList<double>? OpsPerMinute = null, long FailedOps = 0, WalLive? WalLive = null, Zombie? Zombie = null)
+        IReadOnlyList<double>? OpsPerMinute = null, long FailedOps = 0, WalLive? WalLive = null, Zombie? Zombie = null,
+        WalLive? WalAliveLog = null)
     {
         /// <summary>The longest suffix of windows whose Raft means lie within <see cref="MaxRaftWindowSpread"/> of each other:
         /// the part of a run measured in one device regime after the host NVMe's step (feature 80af367a). On a drive whose
@@ -120,6 +128,9 @@ public static class Regime
 
         /// <summary>The Raft-log live bytes held within <see cref="MaxWalLiveGrowth"/> (or the gauge is absent).</summary>
         public bool WalLiveBounded => WalLive is null || WalLive.LastMb <= WalLiveFloorMb || WalLive.Growth <= MaxWalLiveGrowth;
+
+        /// <summary>The alive write-ahead <c>.log</c> bytes held within <see cref="MaxWalLiveGrowth"/> (or the gauge is absent).</summary>
+        public bool WalAliveLogBounded => WalAliveLog is null || WalAliveLog.LastMb <= WalLiveFloorMb || WalAliveLog.Growth <= MaxWalLiveGrowth;
 
         /// <summary>Best minute over worst minute of completed ops/s (1 when the client series is absent).</summary>
         public double OpsMinuteSpread
@@ -257,8 +268,9 @@ public static class Regime
 
         (List<double> opsPerMinute, long failedOps) = LoadClientMinutes(artifacts, measureSeconds);
         return new Report(Path.GetFileName(runDir.TrimEnd(Path.DirectorySeparatorChar)), leader, result, LoadPrecondition(runDir, start), opsPerMinute, failedOps,
-            WorstWalLive(series, startMs, startMs + (long)measureSeconds * 1000),
-            FindZombie(series, startMs, startMs + (long)measureSeconds * 1000));
+            WorstWalLive(series, "raft_wal_shard_live_sst_bytes", startMs, startMs + (long)measureSeconds * 1000),
+            FindZombie(series, startMs, startMs + (long)measureSeconds * 1000),
+            WorstWalLive(series, WalAliveLogMetric, startMs, startMs + (long)measureSeconds * 1000));
     }
 
     public static void Print(Report report)
@@ -298,6 +310,10 @@ public static class Regime
             Console.WriteLine(report.WalLiveBounded
                 ? $"  raft-log live SST bounded: {wl.Node} {wl.FirstMb:F0} → {wl.LastMb:F0} MB ({wl.Growth:F2}x)"
                 : $"  *** RAFT-LOG RETENTION GROWING: {wl.Node} live SST {wl.FirstMb:F0} → {wl.LastMb:F0} MB ({wl.Growth:F1}x, bar {MaxWalLiveGrowth:F1}x) — compaction floor not keeping up with ingest ***");
+        if (report.WalAliveLog is WalLive al)
+            Console.WriteLine(report.WalAliveLogBounded
+                ? $"  raft-log alive .log files bounded: {al.Node} {al.FirstMb:F0} → {al.LastMb:F0} MB ({al.Growth:F2}x)"
+                : $"  *** RAFT-LOG WAL FILES PINNED: {al.Node} alive .log {al.FirstMb:F0} → {al.LastMb:F0} MB ({al.Growth:F1}x, bar {MaxWalLiveGrowth:F1}x) — a column family is not flushing; a restart replays all of it ***");
         if (report.OpsPerMinute is { Count: > 1 } opm)
         {
             Console.WriteLine($"  client ops/s by minute: {string.Join(' ', opm.Select(v => v.ToString("F0", CultureInfo.InvariantCulture)))}");
@@ -374,7 +390,8 @@ public static class Regime
                 || metric.StartsWith("camus_request_duration_milliseconds_", StringComparison.Ordinal)
                 || metric == "raft_wal_shard_live_sst_bytes"
                 || metric == "raft_wal_batches_total"
-                || metric == "raft_wal_queue_depth";
+                || metric == "raft_wal_queue_depth"
+                || metric == WalAliveLogMetric;
             if (!wanted || metric.EndsWith("_bucket", StringComparison.Ordinal))
                 continue;
 
@@ -403,14 +420,15 @@ public static class Regime
     }
 
     /// <summary>Mean of a (sum, count) histogram pair over [lo, hi), plus the count's rate per second.</summary>
-    /// <summary>First-minute and last-minute means of the live Raft-log SST gauge, for the node whose last-minute
-    /// value is largest. Null when no node exported the gauge inside the window (pre-1.5.8 Kommander).</summary>
-    private static WalLive? WorstWalLive(Dictionary<(string, string), List<(long Ts, double Value)>> series, long lo, long hi)
+    /// <summary>First-minute and last-minute means of a Raft-log byte gauge (live SST, or alive <c>.log</c> files),
+    /// for the node whose last-minute value is largest. Null when no node exported the gauge inside the window
+    /// (pre-1.5.8 Kommander for the SST gauge, pre-1.6.6 for the alive-log gauge).</summary>
+    private static WalLive? WorstWalLive(Dictionary<(string, string), List<(long Ts, double Value)>> series, string metric, long lo, long hi)
     {
         WalLive? worst = null;
         foreach (KeyValuePair<(string Node, string Metric), List<(long Ts, double Value)>> kv in series)
         {
-            if (kv.Key.Metric != "raft_wal_shard_live_sst_bytes")
+            if (kv.Key.Metric != metric)
                 continue;
             (long Ts, double Value)[] inWindow = [.. kv.Value.Where(p => p.Ts >= lo && p.Ts < hi)];
             if (inWindow.Length < 2)

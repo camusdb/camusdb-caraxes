@@ -30,7 +30,12 @@ public static class ComposeGenerator
     /// content across host-side file replacement), which broke inter-node TLS with UntrustedRoot
     /// while every on-disk artifact looked correct.
     /// </remarks>
-    public static string Generate(ClusterPlan plan, string configDirInCompose)
+    /// <param name="dumpsDirInCompose">Host directory (as referenced from the compose file) that
+    /// receives the nodes' crash dumps; one sub-directory per node is bind-mounted at <c>/dumps</c>.
+    /// A bind mount, not a named volume, so a dump survives <c>compose down -v</c> and lands beside
+    /// the run's other artifacts; and never under <c>/data</c>, which on a tmpfs-backed rig vanishes
+    /// with the container (Kahuna 51311414 item 2: the 1.7.7 OOM dumps were lost that way).</param>
+    public static string Generate(ClusterPlan plan, string configDirInCompose, string dumpsDirInCompose = "./dumps")
     {
         ClusterSpec spec = plan.Spec;
 
@@ -55,13 +60,17 @@ public static class ComposeGenerator
                 // A native crash (SIGSEGV in RocksDB/gRPC/runtime) exits 139 with nothing in the
                 // container log — soak runs have hit exactly that, unattributably. These make the
                 // runtime write a minidump (stacks, no heap — small) plus a JSON crash report with
-                // per-thread native frames into /data, which is a persistent volume, so the
-                // evidence survives the container's death and even its restart. Dump type is
-                // decimal here (unlike the GC variables, this one is parsed as a plain integer):
+                // per-thread native frames into /dumps, a host bind mount under the cluster's run
+                // directory, so the evidence survives the container's death, its restart, and the
+                // teardown's `down -v`. It used to go to /data: on a tmpfs-backed /data the dump
+                // died with the container (the Kahuna 1.7.7 OOM fail-fasts, 51311414 item 2), and
+                // the Kahuna images had since defaulted to a /dumps volume that this variable was
+                // overriding. %p = pid, %t = unix time, so a crash-loop keeps every dump. Dump type
+                // is decimal here (unlike the GC variables, this one is parsed as a plain integer):
                 // 1 = mini.
                 ["DOTNET_DbgEnableMiniDump"] = 1,
                 ["DOTNET_DbgMiniDumpType"] = 1,
-                ["DOTNET_DbgMiniDumpName"] = "/data/crash-%p.dmp",
+                ["DOTNET_DbgMiniDumpName"] = "/dumps/crash-%p-%t.dmp",
                 ["DOTNET_EnableCrashReport"] = 1,
             };
 
@@ -80,7 +89,7 @@ public static class ComposeGenerator
                 // The config is a DIRECTORY mount on purpose: a single-file bind mount pins the
                 // file's content across host-side regeneration (same failure mode as the cert
                 // mount described above), silently booting nodes with a previous run's config.
-                ["volumes"] = BuildVolumeMounts(spec, node, configDirInCompose),
+                ["volumes"] = BuildVolumeMounts(spec, node, configDirInCompose, dumpsDirInCompose),
                 ["networks"] = new Dictionary<string, object>
                 {
                     ["caraxes"] = new Dictionary<string, object> { ["ipv4_address"] = node.Ip },
@@ -159,9 +168,10 @@ public static class ComposeGenerator
     /// Builds a node's volume mounts. The config directory is always bind-mounted read-only. The data
     /// mount is either a named volume (the default) or, when <c>data_tmpfs_mb</c> is set, a size-capped
     /// tmpfs — the cap is what lets a <c>disk-full</c> fault exhaust free space on demand. A list of
-    /// mixed entries (string short-form and mapping long-form) is valid compose.
+    /// mixed entries (string short-form and mapping long-form) is valid compose. The crash-dump
+    /// directory is a per-node host bind mount in both cases (see <see cref="Generate"/>).
     /// </summary>
-    private static List<object> BuildVolumeMounts(ClusterSpec spec, NodePlan node, string configDirInCompose)
+    private static List<object> BuildVolumeMounts(ClusterSpec spec, NodePlan node, string configDirInCompose, string dumpsDirInCompose)
     {
         List<object> mounts = [];
 
@@ -180,6 +190,7 @@ public static class ComposeGenerator
         }
 
         mounts.Add($"{configDirInCompose}:/app/caraxes-config:ro");
+        mounts.Add($"{dumpsDirInCompose}/{node.Name}:/dumps");
         return mounts;
     }
 }

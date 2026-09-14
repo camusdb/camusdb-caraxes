@@ -70,6 +70,13 @@ that cannot keep up with ingest the gauge climbs linearly (k175 arm: 277 → 1,1
 and the node retains gigabytes of dead log per hour. Retention does not make the throughput window a mixture, so
 the line is printed beside the verdict rather than folded into it.
 
+**Finding, not a rule (2026-09-13):** `RAFT-LOG WAL FILES PINNED`, the same 3x / 64 MB rule applied to
+`raft_wal_alive_log_bytes` (Kommander ≥ 1.6.6): the write-ahead `.log` files alive under the Raft-log engine. On
+Kommander 1.6.5 an unstarved memtable budget let a trickle column family (the meta partition's shard) pin every
+log file for the life of the process (k182 arm: 443 → 2,709 MiB in ten minutes, follower restart 16.7 s instead
+of 12.7 s); 1.6.6 caps them at `max_total_wal_size`, two flush units (256 MB) at the defaults, so a healthy run
+oscillates below that.
+
 **Rule (2026-09-10):** `WAL ZOMBIE` — a node whose `raft_wal_batches_total` advanced by less than 1% of the busiest
 node's per-minute count for two consecutive minutes while that node kept writing (Kahuna feature caf52e10: an
 OutOfMemoryException swallowed inside the WAL write left a follower reachable and "healthy" with its queue pinned at
