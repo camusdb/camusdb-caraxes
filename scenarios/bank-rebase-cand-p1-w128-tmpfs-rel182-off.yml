@@ -1,0 +1,50 @@
+# NEW-CONFIGURATION THROUGHPUT ARM 'rel182-off' (2026-09-13) — the released stack Kahuna.Core 1.8.2 / Kommander 1.6.7 with
+# CamusDB's two new shipped defaults: the memtable flush-unit floor ON (192 MiB budget, Kommander's 256 MB write-ahead cap)
+# and key_value_write_post_completion_hold_ms = 2 (was 0). Same tmpfs + heap-pin shape as scan-tmpfs-rel180b (Kahuna 1.8.0,
+# hold 0: 8,199 / 8,043 ops/s learned, admissible) and the 10-minute routing pair; ONE image (caraxes/camusdb:bankrel182)
+# for both arms, learned first then off. Judge each with `p3c regime`; the ratio is off vs learned on the same image.
+name: bank-rebase-cand-p1-w128-tmpfs-rel182-off
+cluster:
+  name: banktmpfsrel182off
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Both arms share ONE image built once from ~/camusdb, so the only difference between them
+  # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
+  # on the build being reproducible, which is a weaker guarantee than not rebuilding.
+  image: "caraxes/camusdb:bankrel182"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: off
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
