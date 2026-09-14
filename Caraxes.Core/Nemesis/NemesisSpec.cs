@@ -43,7 +43,7 @@ public sealed class NemesisSpec
 /// </summary>
 public sealed class NemesisEvent
 {
-    /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | remove-node.</summary>
+    /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -65,12 +65,38 @@ public sealed class NemesisEvent
     /// <summary>Packet loss percentage for the <c>loss</c> fault.</summary>
     public double LossPercent { get; set; } = 10;
 
+    /// <summary>Write cap in bytes per second for the <c>slow-disk</c> fault (0 = no byte cap). The
+    /// default, 4 KiB/s, is a device pause: one 4 KiB fsync per second, so a node writing tens of KiB
+    /// per operation stalls for the whole hold. Set it to a few MiB/s for a merely slow disk.</summary>
+    public long WriteBps { get; set; } = 4096;
+
+    /// <summary>Write cap in I/O operations per second for the <c>slow-disk</c> fault (0 = none).</summary>
+    public long WriteIops { get; set; }
+
+    /// <summary>Read cap in bytes per second for the <c>slow-disk</c> fault (0 = none). A pausing device
+    /// stalls reads too; leave it 0 to pause writes only.</summary>
+    public long ReadBps { get; set; }
+
+    /// <summary>Whole-disk <c>MAJ:MIN</c> for the <c>slow-disk</c> fault, when the host's docker data
+    /// root cannot be resolved automatically. Null (the default) derives it from /proc and /sys.</summary>
+    public string? Device { get; set; }
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Fault))
             throw new NemesisException("a nemesis event is missing 'fault'");
 
         FaultFactory.EnsureKnownKind(Fault);
+
+        if (Fault == "slow-disk")
+        {
+            if (WriteBps < 0 || WriteIops < 0 || ReadBps < 0)
+                throw new NemesisException("nemesis event 'slow-disk': write_bps, write_iops and read_bps must be >= 0");
+            if (WriteBps == 0 && WriteIops == 0 && ReadBps == 0)
+                throw new NemesisException("nemesis event 'slow-disk': give at least one of write_bps, write_iops, read_bps");
+            if (Device is not null && !System.Text.RegularExpressions.Regex.IsMatch(Device.Trim(), "^[0-9]+:[0-9]+$"))
+                throw new NemesisException($"nemesis event 'slow-disk': device must be MAJ:MIN, got '{Device}'");
+        }
 
         try
         {

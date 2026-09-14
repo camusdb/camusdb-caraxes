@@ -1,0 +1,88 @@
+# SLOW-DEVICE QUALIFICATION (CamusDB Phase 5, task b83c72db) — one node's disk pauses for 30 s, three times.
+#
+# Question: when a single node's durable writes stop for 30 seconds while its process, its network and
+# its two peers stay healthy, does the cluster degrade to *slower* or to *unknown*? On the benchmark
+# host's NVMe the natural version of this (fsync excursions up to 3.2 s under sustained load) turned
+# in-flight commits into 15-second unresolved outcomes (CADB0509) that the client cancelled as
+# indeterminate, and the healthy followers logged inter-node `Unavailable` against the stalled leader.
+# This scenario manufactures that pause on demand, on one node at a time, with cgroup `io.max`.
+#
+# Shape: the 10-minute NVMe bank arm of the routing campaign (1 partition, 128 workers, 4096 MB nodes,
+# /data on a named volume so the throttle has a block device to bite). Offsets are from the start of
+# the workload run, which opens with a 2-minute warm-up, so the measured window is 2m–12m. Each node
+# is paused once — the leader is one of them whichever node it is — with 2 minutes of recovery
+# observable between pauses and after the last one:
+#
+#   4m00s  camus1 paused 30 s      390s (6m30s)  camus2 paused 30 s      9m00s  camus3 paused 30 s
+#
+# `write_bps: 4096` (the default) is a pause: one 4 KiB write per second against a node that writes
+# ~15 KB per operation. Reads are left unthrottled so the node keeps answering point reads from cache.
+#
+# How to read the run (the task's done-when):
+#   1. `Indeterminate` must be 0 and the leader must log no CADB0509 bursts — commits issued during a
+#      pause complete late or return a resumable outcome the client re-drives. Today's expectation is
+#      that this FAILS on the leader's pause (the 15 s finalize budget is shorter than the 30 s pause);
+#      the run then attributes exactly where the pause becomes an unknown outcome.
+#   2. The two healthy peers must log zero `RpcException Unavailable` inter-node expiries during a
+#      follower's pause; during the leader's pause they document whether the stall is the leader's WAL
+#      append (quorum blocked on the leader) or something upstream of it.
+#   3. Recovery: throughput within the pre-fault band within `max_recovery_seconds` of each heal, no
+#      key left read-only, no zero-throughput tail after the pause.
+#   4. Reconciliation exact (never waived); SUM(balance) conserved; the ledger resolves any
+#      indeterminate set that does occur.
+#   5. `timeline.jsonl` shows each inject/heal pair; `host-io.csv` shows the host device itself did NOT
+#      pause (the fsync probe stays flat) — the slowdown is the throttle, not the drive.
+#
+# Progress under fault is deliberately still required: a follower's pause must not stop the cluster.
+# If the leader's pause does, that is finding (c) of the task — leader avoidance on a slow-disk node —
+# and the run records it as a check failure rather than hiding it.
+name: bank-slow-disk-pause-nvme
+cluster:
+  name: bankslowdisk
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # The released stack of record (Kahuna.Core 1.8.2 / Kommander 1.6.7, post-completion hold 2 ms).
+  image: "caraxes/camusdb:bankrel182"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 390s, fault: slow-disk, target: camus2, duration: 30s }
+    - { at: 9m, fault: slow-disk, target: camus3, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

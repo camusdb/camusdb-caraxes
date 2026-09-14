@@ -52,6 +52,7 @@ so a later verdict stage can correlate faults with the workload's per-second `in
 Fault kinds: `kill` (SIGKILL, restart on heal), `stop` (graceful), `pause` (SIGSTOP freeze),
 `partition` (iptables-isolate a node from all peers), `slow` / `loss` (tc netem latency / packet
 loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-capped tmpfs data mount, see
+below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
 below), and `remove-node` (drain via `/v1/cluster/leave`, a one-way scale-down). Targets are a node
 name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
 applies to each, so `kill` of a zone kills the whole zone together). Every healable fault still in
@@ -81,9 +82,37 @@ The benchmark host's NVMe serves the first ~30-35 GB of a run from a write cache
 regime (fsync 0.4 → 1.9 ms), folding back only in idle gaps; filling the cache right before the measured
 window puts every run in the same steady regime from its first second. `p3c regime` reports it and refuses
 a run whose ballast finished after `measureStartUtc`. Preconditioned, unpreconditioned and tmpfs runs are
-three different denominators; compare within one kind. Device-mapper latency and
-corruption faults (`dm-delay` / `dm-flakey`) need a Linux host and are a follow-up. See
-`scenarios/disk-full.yml` and `scenarios/zone-failure.yml`.
+three different denominators; compare within one kind. See `scenarios/disk-full.yml` and
+`scenarios/zone-failure.yml`.
+
+**Slow or paused device (`slow-disk`).** Caps one node's block I/O with cgroup v2 `io.max` on the
+disk that backs docker's named volumes, so every durable write the node issues — WAL appends, SST
+flushes and the fsyncs behind them — waits at the block layer while the process, its network and its
+peers stay healthy. An fsync then takes *bytes ÷ write_bps*: the default `write_bps: 4096` is a device
+pause (one 4 KiB write per second; a node writing tens of KiB per operation stalls for the whole hold),
+a few MiB/s is a merely slow disk. `write_iops` and `read_bps` cap I/O operations and reads the same
+way. The cap is applied and lifted through the Docker Engine's container-update API (the per-device
+throttle resources the CLI does not expose; docker-group membership is enough, no sudo), which rewrites
+the container's own `io.max` line in place, and every write is read back from the host's cgroup tree to
+confirm it took. **Nothing is created or removed while a node is throttled, and nothing may be:**
+removing any container unmounts its overlay, which syncs the whole upper filesystem and waits behind the
+throttled node's writeback; that stuck removal holds the daemon's layer lock, every later `docker
+run`/`create` hangs, and a heal that needs one can never run (run `sd1`, 2026-09-14, wedged the host
+for eighteen minutes that way before the update API released it). `exec`, `inspect`, `kill` and the
+update API stay usable under a cap. Needs a **volume-backed** data mount: on a `data_tmpfs_mb` rig the
+writes never reach a block device and the fault refuses to inject. The disk is derived from
+`/proc/self/mountinfo` and `/sys/dev/block` (a partition is walked up to its disk, which is what
+`io.max` keys on); `device: "MAJ:MIN"` overrides it on a host where that fails. This is the on-demand
+form of the natural fsync pauses the benchmark host's NVMe produces under sustained load (CamusDB
+`b83c72db`), targeted at a single node. `dm-delay` / `dm-flakey` corruption faults remain a follow-up
+because they need root on the host. See `scenarios/bank-slow-disk-pause-nvme.yml`.
+
+```yaml
+nemesis:
+  events:
+    - { at: 4m, fault: slow-disk, target: camus1, duration: 30s }              # pause
+    - { at: 7m, fault: slow-disk, target: camus2, duration: 60s, write_bps: 2097152 }  # 2 MiB/s
+```
 
 Two schedule forms — an explicit `events:` timeline or a seeded `random:` soak:
 
@@ -288,7 +317,8 @@ model.
 
 Phased build-out (see the project plan): cluster orchestration (done) → workload integration (done)
 → nemesis fault injection + membership changes (done) → invariant workloads, verdict engine, and a
-scenario matrix (done) → disk faults and Elle-style history checking.
+scenario matrix (done) → disk faults (`fill-disk`, `slow-disk` done; device-mapper corruption pending) and
+Elle-style history checking.
 
 ## Blog
 
