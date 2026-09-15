@@ -703,8 +703,8 @@ public sealed class ScenarioRunner
             return null;
         }
 
-        FaultAnalysis analysis = FaultCorrelator.Analyze(series, windows);
         ChecksSpec checks = scenario.Checks;
+        FaultAnalysis analysis = FaultCorrelator.Analyze(series, windows, checks.MinRecoveredThroughputFraction);
 
         notes.Add(
             $"fault impact: baseline error {analysis.BaselineErrorRate:P1} / write-p99 {analysis.BaselineWriteP99Ms:N0}ms; " +
@@ -716,7 +716,15 @@ public sealed class ScenarioRunner
             string recovery = !w.Healed
                 ? "not healed (still active at run end)"
                 : w.Recovered ? $"recovered in {w.RecoverySeconds:N1}s" : "NOT recovered before run end";
-            notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}");
+            string throughput = $"throughput {w.InWindowThroughput:N0} ops/s in window (pre-fault {w.PreFaultThroughput:N0})";
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed)
+                throughput += w.ThroughputRecovered
+                    ? $", back to {checks.MinRecoveredThroughputFraction:P0} in {w.ThroughputRecoverySeconds:N1}s" +
+                      (w.ThroughputHeld
+                          ? $" and held (post median {w.PostRecoveryMedianThroughput:N0}, longest dip {w.LongestPostRecoveryDipSeconds}s)"
+                          : $" but NOT held (post median {w.PostRecoveryMedianThroughput:N0}, longest dip {w.LongestPostRecoveryDipSeconds}s)")
+                    : $", NEVER back to {checks.MinRecoveredThroughputFraction:P0} before run end";
+            notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}; {throughput}");
 
             if (checks.RequireProgressUnderFault && !w.WorkloadProgressed)
             {
@@ -733,6 +741,32 @@ public sealed class ScenarioRunner
             if (w.Healed && w.Recovered && w.RecoverySeconds > checks.MaxRecoverySeconds)
             {
                 notes.Add($"  CHECK FAILED: fault {w.Label} recovered in {w.RecoverySeconds:N1}s, over the {checks.MaxRecoverySeconds:N0}s limit");
+                passed = false;
+            }
+
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && checks.RequireRecovery && !w.ThroughputRecovered)
+            {
+                notes.Add(
+                    $"  CHECK FAILED: fault {w.Label} never regained {checks.MinRecoveredThroughputFraction:P0} of its pre-fault " +
+                    $"throughput ({w.PreFaultThroughput:N0} ops/s) before the run ended");
+                passed = false;
+            }
+
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && w.ThroughputRecovered && !w.ThroughputHeld)
+            {
+                notes.Add(
+                    $"  CHECK FAILED: fault {w.Label} regained {checks.MinRecoveredThroughputFraction:P0} of its pre-fault throughput " +
+                    $"but did not hold it: post-recovery median {w.PostRecoveryMedianThroughput:N0} ops/s (pre-fault {w.PreFaultThroughput:N0}), " +
+                    $"longest dip below the bar {w.LongestPostRecoveryDipSeconds}s, on clean seconds before the next fault or the run's end");
+                passed = false;
+            }
+
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && w.ThroughputRecovered
+                && w.ThroughputRecoverySeconds > checks.MaxRecoverySeconds)
+            {
+                notes.Add(
+                    $"  CHECK FAILED: fault {w.Label} took {w.ThroughputRecoverySeconds:N1}s to regain " +
+                    $"{checks.MinRecoveredThroughputFraction:P0} of its pre-fault throughput, over the {checks.MaxRecoverySeconds:N0}s limit");
                 passed = false;
             }
         }
@@ -793,12 +827,15 @@ public sealed class ScenarioRunner
         sb.AppendLine($"- In-fault: error rate {analysis.InFaultErrorRate:P2}, write p99 {analysis.InFaultWriteP99Ms:N1} ms ({analysis.LatencyInflation:N1}x baseline)");
         sb.AppendLine($"- Max recovery time: {analysis.MaxRecoverySeconds:N1} s; all healed faults recovered: {(analysis.AllHealedFaultsRecovered ? "yes" : "no")}");
         sb.AppendLine();
-        sb.AppendLine("| fault | healed | window (s) | peak error | failed | progressed | recovery (s) |");
-        sb.AppendLine("|---|---|---|---|---|---|---|");
+        sb.AppendLine("| fault | healed | window (s) | peak error | failed | progressed | recovery (s) | pre-fault ops/s | in-window ops/s | throughput back (s) |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|---|");
         foreach (WindowImpact w in analysis.Windows)
         {
+            string throughputBack = !w.Healed ? "—" : w.ThroughputRecovered
+                ? (w.ThroughputRecoverySeconds is null ? "n/a" : $"{w.ThroughputRecoverySeconds:N1}")
+                : "not regained";
             string recovery = !w.Healed ? "—" : w.Recovered ? $"{w.RecoverySeconds:N1}" : "not recovered";
-            sb.AppendLine($"| {w.Label} | {(w.Healed ? "yes" : "no")} | {w.DurationSeconds:N1} | {w.PeakErrorRate:P0} | {w.FailedDuringWindow:N0} | {(w.WorkloadProgressed ? "yes" : "NO")} | {recovery} |");
+            sb.AppendLine($"| {w.Label} | {(w.Healed ? "yes" : "no")} | {w.DurationSeconds:N1} | {w.PeakErrorRate:P0} | {w.FailedDuringWindow:N0} | {(w.WorkloadProgressed ? "yes" : "NO")} | {recovery}  {w.PreFaultThroughput:N0} | {w.InWindowThroughput:N0} | {throughputBack} |");
         }
 
         File.WriteAllText(Path.Combine(runDir, "analysis.md"), sb.ToString());

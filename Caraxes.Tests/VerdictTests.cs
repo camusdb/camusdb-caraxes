@@ -170,6 +170,123 @@ public sealed class FaultCorrelatorTests
         Assert.That(w.RecoverySeconds, Is.EqualTo(3).Within(0.001));
         Assert.That(a.MaxRecoverySeconds, Is.EqualTo(3).Within(0.001));
         Assert.That(a.AllHealedFaultsRecovered, Is.True);
+
+        // Throughput gate: pre-fault median is the clean 100/s; the window served 50/s; after the
+        // heal at 20 s the seconds 21-22 are still at 50, so the trailing 5-second mean first reaches
+        // 90% of 100 at second 26 (50,100,100,100,100) → 6 s.
+        Assert.That(w.PreFaultThroughput, Is.EqualTo(100).Within(0.001));
+        Assert.That(w.InWindowThroughput, Is.EqualTo(50).Within(0.001));
+        Assert.That(w.ThroughputRecovered, Is.True);
+        Assert.That(w.ThroughputRecoverySeconds, Is.EqualTo(6).Within(0.001));
+        Assert.That(w.ThroughputHeld, Is.True, "the series stays at 100/s after the recovery");
+    }
+
+    [Test]
+    public void ThroughputGate_FailsARecoveryThatDoesNotHold()
+    {
+        // Recovers fully 1 s after the heal, then collapses to 45% for the rest of the series (run lk2).
+        DateTime start = new(2026, 8, 19, 12, 0, 0, DateTimeKind.Utc);
+        string dir = Path.Combine(Path.GetTempPath(), "caraxes-corr-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "run-meta.json"), "{ \"measureStartUtc\": \"" + start.ToString("O") + "\" }");
+        List<string> rows = ["second,offered,started,completed,failed,in_flight,schedule_drops,read_p50_ms,read_p95_ms,read_p99_ms,write_p50_ms,write_p95_ms,write_p99_ms"];
+        for (int s = 0; s < 90; s++)
+        {
+            long completed = s < 10 ? 100 : s <= 20 ? 30 : s <= 40 ? 100 : 45;
+            long failed = s is >= 10 and <= 20 ? 20 : 0;
+            rows.Add($"{s},100,100,{completed},{failed},4,0,1,2,3,5,10,10");
+        }
+        File.WriteAllText(Path.Combine(dir, "intervals.csv"), string.Join('\n', rows));
+        IntervalSeries series = IntervalSeries.Load(dir)!;
+        Directory.Delete(dir, true);
+
+        var windows = new List<FaultWindow>
+        {
+            new() { Kind = "kill", Target = "camus1", StartUtc = start.AddSeconds(10), EndUtc = start.AddSeconds(20) },
+        };
+
+        WindowImpact w = FaultCorrelator.Analyze(series, windows, 0.9).Windows.Single();
+        Assert.That(w.ThroughputRecovered, Is.True, "it did cross the bar");
+        Assert.That(w.ThroughputHeld, Is.False, "and then fell to 45% until the end");
+        Assert.That(w.PostRecoveryMedianThroughput, Is.LessThan(90));
+    }
+
+    [Test]
+    public void ThroughputGate_ToleratesABriefDip_ButNotASustainedOne()
+    {
+        static IntervalSeries Build(int dipSeconds)
+        {
+            DateTime start = new(2026, 8, 19, 12, 0, 0, DateTimeKind.Utc);
+            string dir = Path.Combine(Path.GetTempPath(), "caraxes-corr-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "run-meta.json"), "{ \"measureStartUtc\": \"" + start.ToString("O") + "\" }");
+            List<string> rows = ["second,offered,started,completed,failed,in_flight,schedule_drops,read_p50_ms,read_p95_ms,read_p99_ms,write_p50_ms,write_p95_ms,write_p99_ms"];
+            for (int s = 0; s < 240; s++)
+            {
+                // fault 10-20; recovered by 25; a dip to 50% from 60 for dipSeconds; 100 otherwise
+                long completed = s is >= 10 and <= 20 ? 30 : (s >= 60 && s < 60 + dipSeconds) ? 50 : 100;
+                long failed = s is >= 10 and <= 20 ? 20 : 0;
+                rows.Add($"{s},100,100,{completed},{failed},4,0,1,2,3,5,10,10");
+            }
+            File.WriteAllText(Path.Combine(dir, "intervals.csv"), string.Join('\n', rows));
+            IntervalSeries series = IntervalSeries.Load(dir)!;
+            Directory.Delete(dir, true);
+            return series;
+        }
+
+        DateTime start = new(2026, 8, 19, 12, 0, 0, DateTimeKind.Utc);
+        var windows = new List<FaultWindow>
+        {
+            new() { Kind = "kill", Target = "camus1", StartUtc = start.AddSeconds(10), EndUtc = start.AddSeconds(20) },
+        };
+
+        WindowImpact brief = FaultCorrelator.Analyze(Build(10), windows, 0.9).Windows.Single();
+        Assert.That(brief.ThroughputHeld, Is.True, "a 10-second dip is closed-loop noise");
+        Assert.That(brief.LongestPostRecoveryDipSeconds, Is.LessThan(30));
+
+        WindowImpact sustained = FaultCorrelator.Analyze(Build(45), windows, 0.9).Windows.Single();
+        Assert.That(sustained.ThroughputHeld, Is.False, "45 seconds at half speed is a degraded cluster");
+        Assert.That(sustained.LongestPostRecoveryDipSeconds, Is.GreaterThanOrEqualTo(30));
+    }
+
+    [Test]
+    public void ThroughputGate_CatchesACleanButSlowRecovery_AndCanBeDisabled()
+    {
+        // Errors vanish at the heal, but the cluster serves only 40% of its prior rate for the rest of
+        // the series: the error-rate rule says "recovered", the throughput rule must not.
+        DateTime start = new(2026, 8, 19, 12, 0, 0, DateTimeKind.Utc);
+        string dir = Path.Combine(Path.GetTempPath(), "caraxes-corr-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "run-meta.json"), "{ \"measureStartUtc\": \"" + start.ToString("O") + "\" }");
+        List<string> rows = ["second,offered,started,completed,failed,in_flight,schedule_drops,read_p50_ms,read_p95_ms,read_p99_ms,write_p50_ms,write_p95_ms,write_p99_ms"];
+        for (int s = 0; s < 60; s++)
+        {
+            long completed = s < 10 ? 100 : s <= 20 ? 30 : 40;
+            long failed = s is >= 10 and <= 20 ? 20 : 0;
+            rows.Add($"{s},100,100,{completed},{failed},4,0,1,2,3,5,10,10");
+        }
+        File.WriteAllText(Path.Combine(dir, "intervals.csv"), string.Join('\n', rows));
+        IntervalSeries series = IntervalSeries.Load(dir)!;
+        Directory.Delete(dir, true);
+
+        var windows = new List<FaultWindow>
+        {
+            new() { Kind = "kill", Target = "camus1", StartUtc = start.AddSeconds(10), EndUtc = start.AddSeconds(20) },
+        };
+
+        WindowImpact gated = FaultCorrelator.Analyze(series, windows, 0.9).Windows.Single();
+        Assert.That(gated.Recovered, Is.True, "error rate is clean right after the heal");
+        Assert.That(gated.RecoverySeconds, Is.EqualTo(1).Within(0.001));
+        Assert.That(gated.PreFaultThroughput, Is.EqualTo(100).Within(0.001));
+        Assert.That(gated.ThroughputRecovered, Is.False, "40% of the prior rate is not a recovery");
+        Assert.That(gated.ThroughputRecoverySeconds, Is.Null);
+
+        WindowImpact lenient = FaultCorrelator.Analyze(series, windows, 0.35).Windows.Single();
+        Assert.That(lenient.ThroughputRecovered, Is.True, "a 35% bar is met by 40%");
+
+        WindowImpact off = FaultCorrelator.Analyze(series, windows, 0).Windows.Single();
+        Assert.That(off.ThroughputRecovered, Is.True, "0 disables the gate");
+        Assert.That(off.ThroughputRecoverySeconds, Is.Null);
     }
 
     [Test]

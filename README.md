@@ -139,6 +139,7 @@ near-zero. These feed a `checks:` block of pass/fail rules (all defaulted):
 ```yaml
 checks:
   max_recovery_seconds: 45          # every healed fault must recover within this
+  min_recovered_throughput_fraction: 0.9  # and regain this share of its pre-fault throughput in that time (0 = off)
   require_recovery: true            # a fault that never recovers fails the run
   require_progress_under_fault: true # a total outage (0 ops) during a fault fails the run
 ```

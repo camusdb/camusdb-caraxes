@@ -24,6 +24,14 @@ public sealed class ChecksSpec
     /// a fault whose recovery was not observed (the run ended first) is reported but not failed.</summary>
     public bool RequireRecovery { get; set; } = true;
 
+    /// <summary>The recovery gate on throughput: after each heal, the trailing 5-second mean of
+    /// completed operations must regain this share of the pre-fault median (the clean minute before
+    /// the injection) within <see cref="MaxRecoverySeconds"/>. The error-rate rule alone passes a
+    /// cluster that serves cleanly at a third of its prior rate — the shape of a residual read-only
+    /// key wedge, or of a leader waiting beyond quorum on a lagging replica. 0 disables the gate;
+    /// the default is the plan's 90%.</summary>
+    public double MinRecoveredThroughputFraction { get; set; } = 0.9;
+
     /// <summary>The workload must keep completing at least some operations during every fault window
     /// (availability under fault). A window with zero completed ops means a total outage.</summary>
     public bool RequireProgressUnderFault { get; set; } = true;
@@ -88,5 +96,8 @@ public sealed class ChecksSpec
     {
         if (MaxRecoverySeconds <= 0)
             throw new ScenarioException($"'checks.max_recovery_seconds' must be > 0, got {MaxRecoverySeconds}");
+        if (MinRecoveredThroughputFraction is < 0 or > 1)
+            throw new ScenarioException(
+                $"'checks.min_recovered_throughput_fraction' must be between 0 (off) and 1, got {MinRecoveredThroughputFraction}");
     }
 }

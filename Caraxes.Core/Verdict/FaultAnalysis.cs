@@ -16,7 +16,14 @@ public sealed record WindowImpact(
     long FailedDuringWindow,
     bool WorkloadProgressed,
     double? RecoverySeconds,
-    bool Recovered);
+    bool Recovered,
+    double PreFaultThroughput,
+    double InWindowThroughput,
+    double? ThroughputRecoverySeconds,
+    bool ThroughputRecovered,
+    bool ThroughputHeld,
+    double PostRecoveryMedianThroughput,
+    int LongestPostRecoveryDipSeconds);
 
 /// <summary>
 /// The correlation of a nemesis timeline with the workload's per-second series: what each fault did
@@ -49,7 +56,24 @@ public static class FaultCorrelator
     /// not make the bar unreachably tight.</summary>
     private const double RecoveredErrorRate = 0.01;
 
-    public static FaultAnalysis Analyze(IntervalSeries series, IReadOnlyList<FaultWindow> windows)
+    /// <summary>Clean seconds before a window that establish its pre-fault throughput (median).</summary>
+    private const int PreFaultSeconds = 60;
+
+    /// <summary>Trailing seconds averaged when judging whether throughput is back: one second is
+    /// too noisy (a closed loop completes in bursts), a longer window would hide a slow return.</summary>
+    private const int ThroughputWindowSeconds = 5;
+
+    /// <summary>A recovery "holds" when the post-recovery trailing means have a median at or above
+    /// the bar and never stay below it for this many consecutive clean seconds. A healthy closed loop
+    /// dips under 90% of its own median on a fifth of its 5-second windows (measured on run lk3), so a
+    /// single dip must not fail a run; a tail that sits at half speed for minutes (run lk2) must.</summary>
+    private const int MaxHeldDipSeconds = 30;
+
+    /// <param name="recoveredThroughputFraction">Share of the pre-fault throughput a healed window must
+    /// regain (trailing 5-second mean) to count as recovered on throughput; 0 disables that judgement.
+    /// The error-rate recovery is always computed.</param>
+    public static FaultAnalysis Analyze(
+        IntervalSeries series, IReadOnlyList<FaultWindow> windows, double recoveredThroughputFraction = 0.9)
     {
         DateTime seriesEnd = series.Points.Count > 0 ? series.Points[^1].AbsoluteUtc : series.MeasureStartUtc;
 
@@ -71,7 +95,7 @@ public static class FaultCorrelator
 
         List<WindowImpact> impacts = [];
         foreach (FaultWindow w in windows)
-            impacts.Add(AnalyzeWindow(series, w, seriesEnd));
+            impacts.Add(AnalyzeWindow(series, w, seriesEnd, InAnyWindow, recoveredThroughputFraction));
 
         List<WindowImpact> healed = impacts.Where(i => i.Healed).ToList();
 
@@ -91,7 +115,8 @@ public static class FaultCorrelator
         return new FaultAnalysis(baselineErr, baselineP99, inFaultErr, inFaultP99, maxRecovery, allRecovered, impacts);
     }
 
-    private static WindowImpact AnalyzeWindow(IntervalSeries series, FaultWindow w, DateTime seriesEnd)
+    private static WindowImpact AnalyzeWindow(
+        IntervalSeries series, FaultWindow w, DateTime seriesEnd, Func<DateTime, bool> inAnyWindow, double throughputFraction)
     {
         DateTime end = w.EndUtc ?? seriesEnd;
 
@@ -102,9 +127,23 @@ public static class FaultCorrelator
         double peakErr = during.Count == 0 ? 0 : during.Max(p => p.ErrorRate);
         long failed = during.Sum(p => p.Failed);
         bool progressed = during.Count == 0 || during.Any(p => p.Completed > 0);
+        double inWindowThroughput = Mean(during.Select(p => (double)p.Completed));
+
+        // Pre-fault throughput: the median of the clean seconds in the minute before the injection.
+        // Median, for the same reason as the error baseline — a previous fault's recovery tail must
+        // not drag the bar down. Clean-only, so back-to-back faults judge against real service.
+        DateTime preStart = w.StartUtc.AddSeconds(-PreFaultSeconds);
+        double preFault = Median(series.Points
+            .Where(p => p.AbsoluteUtc >= preStart && p.AbsoluteUtc < w.StartUtc && !inAnyWindow(p.AbsoluteUtc))
+            .Select(p => (double)p.Completed));
 
         double? recovery = null;
         bool recovered = false;
+        double? throughputRecovery = null;
+        bool throughputRecovered = throughputFraction <= 0;
+        bool throughputHeld = true;
+        double postRecoveryMedian = 0;
+        int longestDip = 0;
 
         if (w.Healed)
         {
@@ -120,9 +159,62 @@ public static class FaultCorrelator
                 recovered = true;
             }
             // No such second before the series ended → never observed to recover.
+
+            // Throughput recovery: first second at or after the heal whose trailing mean of completed
+            // ops is back to the required share of the pre-fault median. A cluster whose error rate
+            // is clean but which serves a third of its prior rate (run U's read-only wedges, a
+            // replica being waited on beyond quorum) is caught here and nowhere else.
+            if (throughputFraction > 0 && preFault > 0)
+            {
+                List<IntervalPoint> ordered = series.Points.OrderBy(p => p.AbsoluteUtc).ToList();
+                for (int i = 0; i < ordered.Count; i++)
+                {
+                    if (ordered[i].AbsoluteUtc < w.EndUtc!.Value)
+                        continue;
+                    int from = Math.Max(0, i - ThroughputWindowSeconds + 1);
+                    double trailing = Mean(ordered.Skip(from).Take(i - from + 1).Select(p => (double)p.Completed));
+                    if (trailing >= throughputFraction * preFault)
+                    {
+                        throughputRecovery = Math.Max(0, (ordered[i].AbsoluteUtc - w.EndUtc!.Value).TotalSeconds);
+                        throughputRecovered = true;
+
+                        // A recovery has to hold. Run lk2 (2026-09-15) crossed the bar 15.7 s after a
+                        // restart, then fell to 45% of pre-fault for the last three and a half minutes
+                        // of the window; a single crossing must not pass that. From the crossing to the
+                        // next fault window (or the series end), the trailing mean must stay above the
+                        // bar on clean seconds — a later fault's own window is judged by that fault.
+                        List<double> post = [];
+                        int dip = 0;
+                        for (int j = i + 1; j < ordered.Count; j++)
+                        {
+                            if (inAnyWindow(ordered[j].AbsoluteUtc))
+                                break;
+                            int f = Math.Max(0, j - ThroughputWindowSeconds + 1);
+                            double t = Mean(ordered.Skip(f).Take(j - f + 1).Select(p => (double)p.Completed));
+                            post.Add(t);
+                            dip = t < throughputFraction * preFault ? dip + 1 : 0;
+                            longestDip = Math.Max(longestDip, dip);
+                        }
+                        if (post.Count > 0)
+                        {
+                            postRecoveryMedian = Median(post);
+                            throughputHeld = postRecoveryMedian >= throughputFraction * preFault && longestDip < MaxHeldDipSeconds;
+                        }
+                        break;
+                    }
+                }
+            }
+            else if (throughputFraction > 0)
+            {
+                // Nothing was being served before the fault: there is no rate to regain.
+                throughputRecovered = true;
+            }
         }
 
-        return new WindowImpact(w.Label, w.Healed, (end - w.StartUtc).TotalSeconds, peakErr, failed, progressed, recovery, recovered);
+        return new WindowImpact(
+            w.Label, w.Healed, (end - w.StartUtc).TotalSeconds, peakErr, failed, progressed, recovery, recovered,
+            preFault, inWindowThroughput, throughputRecovery, throughputRecovered, throughputHeld,
+            postRecoveryMedian, longestDip);
     }
 
     private static double Mean(IEnumerable<double> values)
