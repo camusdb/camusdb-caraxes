@@ -141,6 +141,12 @@ public sealed class ClusterSpec
     /// they must be valid CamusDB <c>kahuna.*</c> option names.</summary>
     public Dictionary<string, object> Kahuna { get; set; } = [];
 
+    /// <summary>Raw passthrough into the generated config's <b>root</b>, for CamusDB options the spec
+    /// does not model (transaction budgets, reaper timing, storage thresholds). Keys are written
+    /// verbatim after the modeled fields, so an explicit key wins over them; <c>kahuna</c> and
+    /// <c>data_dir</c> are refused because they would replace whole modeled sections.</summary>
+    public Dictionary<string, object> Camusdb { get; set; } = [];
+
     /// <summary>Per-category log levels for the node containers, e.g.
     /// <c>{ Kommander: Information }</c>. The entries are joined into CamusDB's
     /// <c>CAMUS_LOG_FILTERS</c> environment variable (<c>Category=Level,...</c>), which its
@@ -172,6 +178,12 @@ public sealed class ClusterSpec
             throw new ClusterSpecException(
                 $"'name' must be a non-empty lowercase [a-z0-9-] identifier, got '{Name}'; " +
                 "it names containers, volumes, and the compose project");
+
+        foreach (string reserved in new[] { "kahuna", "data_dir" })
+            if (Camusdb.Keys.Any(k => string.Equals(k, reserved, StringComparison.OrdinalIgnoreCase)))
+                throw new ClusterSpecException(
+                    $"'camusdb.{reserved}' is not allowed: it would replace a section the spec models " +
+                    "(use the 'kahuna:' block for engine knobs)");
 
         if (Nodes < 1)
             throw new ClusterSpecException($"'nodes' must be >= 1, got {Nodes}");

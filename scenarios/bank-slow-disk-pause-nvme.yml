@@ -52,8 +52,8 @@ cluster:
     one_phase_apply_time_validation: true
     staged_base_fence_retention_ms: 600000
   camusdb_repo: "~/camusdb"
-  # The released stack of record (Kahuna.Core 1.8.2 / Kommander 1.6.7, post-completion hold 2 ms).
-  image: "caraxes/camusdb:bankrel182"
+  # Released stack: Kahuna.Core 1.8.3 / Kommander 1.6.8 (nuget.org). The 1.8.2 / 1.6.7 runs (sd2, sd3) are the "before" figures on task b83c72db.
+  image: "caraxes/camusdb:bankslowdiskrel183"
 workload:
   kind: bank
   database: caraxes

@@ -186,6 +186,25 @@ public sealed class TargetSelectorTests
     }
 
     [Test]
+    public void LeaderTarget_IsDeferredToInjectTime()
+    {
+        TargetSelector selector = new(Plan(), new Random(1));
+        Assert.That(TargetSelector.IsLeaderTarget("leader"), Is.True);
+        Assert.That(TargetSelector.IsLeaderTarget("Leader"), Is.True);
+        Assert.That(selector.ResolveGroup("leader"), Is.Empty, "nothing to pre-resolve; the runner asks the cluster when the event fires");
+        Assert.Throws<NemesisException>(() => selector.Resolve("leader"));
+    }
+
+    [Test]
+    public void PickLeader_TakesTheNodeLeadingMost_TiesToLowestIndex()
+    {
+        ClusterPlan plan = Plan();
+        Assert.That(TargetSelector.PickLeader([(plan.Nodes[0], 0), (plan.Nodes[1], 1), (plan.Nodes[2], 0)]).Name, Is.EqualTo("camus2"));
+        Assert.That(TargetSelector.PickLeader([(plan.Nodes[0], 2), (plan.Nodes[1], 3), (plan.Nodes[2], 3)]).Name, Is.EqualTo("camus2"), "tie goes to the lowest index");
+        Assert.Throws<NemesisException>(() => TargetSelector.PickLeader([(plan.Nodes[0], 0), (plan.Nodes[1], 0)]));
+    }
+
+    [Test]
     public void EmptyZone_IsRejected()
     {
         TargetSelector selector = new(ZonedPlan(), new Random(1));

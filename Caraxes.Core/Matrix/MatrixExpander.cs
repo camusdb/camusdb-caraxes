@@ -119,6 +119,7 @@ public static class MatrixExpander
         Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts,
         DataTmpfsMb = c.DataTmpfsMb, MemoryLimitMb = c.MemoryLimitMb, GcHeapHardLimitMb = c.GcHeapHardLimitMb,
         Kahuna = new Dictionary<string, object>(c.Kahuna),
+        Camusdb = new Dictionary<string, object>(c.Camusdb),
         LogLevels = new Dictionary<string, string>(c.LogLevels),
     };
 
