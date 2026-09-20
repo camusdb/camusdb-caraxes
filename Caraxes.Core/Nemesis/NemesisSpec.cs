@@ -81,12 +81,20 @@ public sealed class NemesisEvent
     /// root cannot be resolved automatically. Null (the default) derives it from /proc and /sys.</summary>
     public string? Device { get; set; }
 
+    /// <summary>Destination node for the <c>leader-transfer</c> fault (a node name). Null hands each
+    /// partition to its first other voter. The target of the event is the node that gives leadership
+    /// up — <c>leader</c> for whoever leads at that moment.</summary>
+    public string? To { get; set; }
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Fault))
             throw new NemesisException("a nemesis event is missing 'fault'");
 
         FaultFactory.EnsureKnownKind(Fault);
+
+        if (To is not null && Fault != "leader-transfer")
+            throw new NemesisException($"nemesis event '{Fault}': 'to' is only meaningful for leader-transfer");
 
         if (Fault == "slow-disk")
         {

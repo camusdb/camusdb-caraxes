@@ -1,0 +1,71 @@
+# LEADER TRANSFER UNDER LOAD (CamusDB Phase 5 fault matrix: "leader transfer at chosen commit points").
+#
+# Three graceful handovers of the data partition's leadership while the bank workload commits at full
+# rate: whoever leads at 4m hands over to its first other voter, whoever leads at 6m does the same, and
+# again at 8m. Nothing is killed, paused or throttled — the handover path is exercised with commits in
+# flight on the giving leader, which no crash fault reaches: a kill has no step-down and a disk pause
+# is a forced one. The lever is CamusDB's `POST /v1/cluster/transfer-leadership` (new with this
+# scenario), called from inside the leader's network namespace because the mutation is loopback-only
+# without authentication.
+#
+# Same 10-minute NVMe bank shape as the slow-disk and leader-kill scenarios, so the numbers compare:
+# 1 partition, rf 3, 128 workers over 2,000 rows, 2-minute warm-up, 30-s drain.
+#
+# Gates: zero indeterminate writes is the point of this row — a graceful handover has a live coordinator
+# throughout, so every in-flight commit must get a verdict (the ledger reports indeterminate separately;
+# read that count first); error rate back to ~0 and throughput back to 90% of the pre-fault median
+# within 15 s of the window's close (the event's 10-s duration is the window; the transfer itself
+# completes inside the call), held until the next fault; progress during the window; every node healthy;
+# reconciliation exact. The placement note WILL say leadership moved — that is the fault.
+name: bank-leader-transfer-nvme
+cluster:
+  name: bankleadertransfer
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Released stack: Kahuna.Core 1.8.5 / Kommander 1.6.10 (nuget.org), CamusDB.Client 0.12.3; CamusDB working tree
+  # on 1485d4a0 + the transfer-leadership endpoint (ClusterController).
+  image: "caraxes/camusdb:banklt1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: leader-transfer, target: leader, duration: 10s }
+    - { at: 6m, fault: leader-transfer, target: leader, duration: 10s }
+    - { at: 8m, fault: leader-transfer, target: leader, duration: 10s }
+checks:
+  max_recovery_seconds: 15
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

@@ -467,3 +467,78 @@ public sealed class DockerEngineApiTests
         Assert.That(DockerEngineApi.SocketPath("tcp://10.0.0.1:2375"), Is.EqualTo("/var/run/docker.sock"), "only unix sockets are supported");
     }
 }
+
+[TestFixture]
+public sealed class LeaderTransferFaultTests
+{
+    private static PartitionPlacement Partition(params (string Endpoint, string Role)[] replicas) => new()
+    {
+        PartitionId = 1,
+        State = "Active",
+        LeaderLocal = true,
+        Replicas = replicas.Select(r => new PartitionReplica { Endpoint = r.Endpoint, Role = r.Role }).ToList(),
+    };
+
+    [Test]
+    public void PicksTheFirstOtherVoter_WhenNoDestinationIsNamed()
+    {
+        PartitionPlacement p = Partition(("10.0.0.2:7070", "Voter"), ("10.0.0.3:7072", "Voter"), ("10.0.0.4:7074", "Voter"));
+
+        Assert.That(LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", null), Is.EqualTo("10.0.0.3:7072"));
+        Assert.That(LeaderTransferFault.PickDestination(p, "10.0.0.3:7072", null), Is.EqualTo("10.0.0.2:7070"));
+    }
+
+    [Test]
+    public void NeverPicksALearner()
+    {
+        PartitionPlacement p = Partition(("10.0.0.2:7070", "Voter"), ("10.0.0.3:7072", "Learner"), ("10.0.0.4:7074", "Voter"));
+
+        Assert.That(LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", null), Is.EqualTo("10.0.0.4:7074"));
+        Assert.Throws<NemesisException>(() => LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", "10.0.0.3:7072"));
+    }
+
+    [Test]
+    public void HonoursANamedDestination_AndRefusesTheLeaderItself()
+    {
+        PartitionPlacement p = Partition(("10.0.0.2:7070", "Voter"), ("10.0.0.3:7072", "Voter"), ("10.0.0.4:7074", "Voter"));
+
+        Assert.That(LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", "10.0.0.4:7074"), Is.EqualTo("10.0.0.4:7074"));
+        Assert.Throws<NemesisException>(() => LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", "10.0.0.2:7070"));
+        Assert.Throws<NemesisException>(() => LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", "10.0.0.9:7070"));
+    }
+
+    [Test]
+    public void APartitionHostedByTheWholeMembership_ListsNoReplicas_AndTheRosterStandsIn()
+    {
+        // Observed on the harness cluster (rf 3 on 3 nodes): placement answers "replicas": [] for p1.
+        PartitionPlacement p = Partition();
+        List<PartitionReplica> roster =
+        [
+            new() { Endpoint = "10.101.0.2:7070", Role = "Voter" },
+            new() { Endpoint = "10.101.0.3:7072", Role = "Voter" },
+            new() { Endpoint = "10.101.0.4:7074", Role = "Voter" },
+        ];
+
+        Assert.That(LeaderTransferFault.PickDestination(p, "10.101.0.3:7072", null, roster), Is.EqualTo("10.101.0.2:7070"));
+        Assert.That(LeaderTransferFault.PickDestination(p, "10.101.0.3:7072", "10.101.0.4:7074", roster), Is.EqualTo("10.101.0.4:7074"));
+        Assert.Throws<NemesisException>(() => LeaderTransferFault.PickDestination(p, "10.101.0.3:7072", null), "no roster, no replicas: nothing to pick from");
+    }
+
+    [Test]
+    public void ASinglePartitionWithNoOtherVoter_CannotBeTransferred()
+    {
+        PartitionPlacement p = Partition(("10.0.0.2:7070", "Voter"), ("10.0.0.3:7072", "Learner"));
+
+        Assert.Throws<NemesisException>(() => LeaderTransferFault.PickDestination(p, "10.0.0.2:7070", null));
+    }
+
+    [Test]
+    public void TheSpecKnowsTheKind_AndToIsOnlyForIt()
+    {
+        Assert.That(FaultFactory.KnownKinds, Does.Contain("leader-transfer"));
+        Assert.That(FaultFactory.DefaultHealable("leader-transfer"), Is.True, "the no-op heal closes the graded window");
+
+        new NemesisEvent { Fault = "leader-transfer", Target = "leader", To = "camus2", At = "4m", Duration = "10s" }.Validate();
+        Assert.Throws<NemesisException>(() => new NemesisEvent { Fault = "kill", Target = "leader", To = "camus2" }.Validate());
+    }
+}
