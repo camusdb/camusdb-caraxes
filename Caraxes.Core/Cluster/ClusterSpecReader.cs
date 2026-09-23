@@ -48,6 +48,7 @@ public static class ClusterSpecReader
         "kahuna",
         "camusdb",
         "log_levels",
+        "env",
     };
 
     public static ClusterSpec ReadFile(string path)

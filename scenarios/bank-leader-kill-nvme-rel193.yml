@@ -1,0 +1,77 @@
+# LEADER kill -9 UNDER LOAD on the published Kahuna.Core 1.9.3 (CamusDB Phase 5 fault matrix row 1).
+#
+# Re-run of lk14 (1.9.2 / Kommander 1.7.3) and lk15 (1.9.3-fence.1, ungradeable: it ran on a host at
+# load 11 because the driver had no load-settle between scenarios) on the stack CamusDB is now pinned
+# to: Kahuna.Core 1.9.3 -> Kahuna.Shared 1.9.3 -> Kommander 1.7.6, all from nuget.org. CamusDB working
+# tree at 68fd454d plus the uncommitted transfer-leadership endpoint (unused by this scenario).
+#
+# The published 1.9.3 is Kahuna commit 4792ac4d: the fence work (83658b2b) plus four later commits,
+# three on the apply / durable-store path, and Kommander 1.7.4 -> 1.7.6. Row 1 has never been measured
+# on it.
+#
+# Reads this run is for:
+#   1. The client storm stays closed: zero `ICamusDB RpcException` lines on any node and zero CADB0509
+#      (lk11-lk14 all clean since the transport-failure mapping landed on every Kahuna path).
+#   2. Both restarts by log backfill with zero snapshot installs, no frontier-0, no WAL writer stall,
+#      no boot crash (Kommander b24b3891's acceptance, held since lk8).
+#   3. Reconciliation and row attribution exact, with the indeterminate set admitted by the ledger.
+#   4. `found no prepared intent` line count -- 28 in lk14, 0 in lt8/sd16 on the fence pack. 198705ba
+#      rewrites the writer it came from, so this is a re-confirmation.
+#   5. The replica fence's fixed MaxEntriesBehind = 1,000 still tripping healthy followers at full
+#      speed (18 trips in lk14, Kahuna 029dad72's open item) -- expected to recur, it is unchanged.
+#   6. require_client_headroom: lk14 failed on it alone (generator queue peaked at 102 while the
+#      generator used 11% of 16 cores). The rule still has no fault-window clause, so a repeat is a
+#      harness finding, not a database one.
+#
+# Log levels deliberately left at the default (warning): lk13 and lk14 ran that way, and Information
+# costs ~15% throughput, which would make the tails incomparable.
+name: bank-leader-kill-nvme-rel193
+cluster:
+  name: bankleaderkillrel193
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Same image as the other two rel193 runs, so all three share one binary.
+  image: "caraxes/camusdb:bankrel193"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: kill, target: leader, duration: 30s }
+    - { at: 7m, fault: kill, target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

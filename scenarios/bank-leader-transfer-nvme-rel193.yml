@@ -1,0 +1,98 @@
+# LEADER TRANSFER UNDER LOAD on the published Kahuna.Core 1.9.3 (CamusDB Phase 5 fault matrix row 3).
+#
+# Re-run of lt8 (1.9.3-fence.2, the local repack of Kahuna 83658b2b + Kommander 1.7.4) on the stack
+# CamusDB is now pinned to: Kahuna.Core 1.9.3 -> Kahuna.Shared 1.9.3 -> Kommander 1.7.6, all from
+# nuget.org. CamusDB working tree at 68fd454d plus the uncommitted POST /v1/cluster/transfer-leadership
+# endpoint the fault drives; .localnuget and the two Dockerfile COPY lines are reverted, so the
+# container build resolves the published packages.
+#
+# Why this run exists. The published 1.9.3 is Kahuna commit 4792ac4d, which has the fence work
+# (83658b2b) as an ancestor -- so every fix lt7/lt8/sd15/sd16 measured is in it -- plus four later
+# commits, three of them on the apply / durable-store path the fence work itself changed:
+#   198705ba  Make the ordered consumer apply the sole writer of the durable stores
+#   4e392fa5  Fixed warnings and tests
+#   23e940f1  Add gRPC batch frames and rate-limit workload
+#   4792ac4d  Add single-key actor-turn fast paths
+# It also moves Kommander 1.7.4 -> 1.7.6, two releases this phase has never run. No row of the fault
+# matrix has been measured on this pin.
+#
+# Reads this run is for, in order:
+#   1. Reconciliation and row attribution. lt3 lost exactly one committed write through a non-unanimous
+#      apply-time rejection on the ex-leader (Kahuna feature f91b6784); 15 handovers since have been
+#      clean. Reconciliation is the gate that would catch a recurrence.
+#   2. Apply-time rejections unanimous across the three replicas, compared by HLC and not merely
+#      counted, and Kahuna's per-node fingerprint at each leader change --
+#      "KeyValues: leader for partition 1 is now <endpoint> (local applied kv log id N, committed heads
+#      N, live intents N)" -- identical on all three nodes, with the ex-leader's demotion-time line
+#      carrying the index Kommander reports as "reached #N". That pairing localizes a recurrence to the
+#      ack-path demotion; it is why the run is at Information.
+#   3. `found no prepared intent` line count. It ran 14-30 per run from lk11 through lk14 and was 0 in
+#      lt8 and sd16 on the fence pack. 198705ba rewrites the writer it came from, so this is a
+#      re-confirmation, not an assumption.
+#   4. Every handover on the first ask (Kommander 31098233): MaxAttempts = 1, so a ReplicationFailed
+#      answer fails the run instead of being retried away.
+#   5. Zero indeterminate writes. A graceful handover has a live coordinator throughout.
+#   6. Counters expected at zero: kahuna.durable_tx.ordered_apply_wait_timeouts,
+#      kahuna.keyvalues.apply_divergence_detected.
+#
+# Comparison run is lt8 (same shape, same log levels, 3,350 ops/s on a device that moved mid-tail).
+# Grade throughput only through the verdict's own regime rules; the correctness reads above are
+# device-independent.
+name: bank-leader-transfer-nvme-rel193
+cluster:
+  name: bankleadertransferrel193
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  # Kept from lt5/lt6/lt8: Kommander and Kahuna at Information on every node, so a recurrence of the
+  # lt3 divergence carries the converging-transfer lines next to the per-node apply fingerprints. It
+  # costs throughput, so this run's rate is comparable with lt5/lt6/lt8 only.
+  log_levels:
+    Kommander: Information
+    Kahuna: Information
+  camusdb_repo: "~/camusdb"
+  # New tag on purpose: bankfence193 was rebuilt in place for the fence.2 repack and no longer resolves
+  # to the fence.1 binary lt7/lk15/sd15 ran on. cluster-facts.json is the record of what actually ran.
+  image: "caraxes/camusdb:bankrel193"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: leader-transfer, target: leader, duration: 10s }
+    - { at: 6m, fault: leader-transfer, target: leader, duration: 10s }
+    - { at: 8m, fault: leader-transfer, target: leader, duration: 10s }
+checks:
+  max_recovery_seconds: 15
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

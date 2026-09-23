@@ -168,6 +168,24 @@ public sealed class ClusterSpec
     /// a diagnostic run where leadership behaviour is the thing under test.</summary>
     public Dictionary<string, string> LogLevels { get; set; } = [];
 
+    /// <summary>Extra environment variables set on every node container, applied <b>after</b> the ones
+    /// Caraxes derives itself, so a deliberate experiment can override them.
+    ///
+    /// <para>This exists because a node's resident set is mostly native memory that no application
+    /// setting reaches. CamusDB's Phase 5 fault soaks lost a node to container OOM three times
+    /// (fs1/fs2/fs3) with ~3 GB of native memory per node; the managed heap, RocksDB's block cache,
+    /// its memtables, its table readers and Kahuna's durable-2PC stores together accounted for under
+    /// a third of it. Reading <c>/proc/1/smaps</c> in a live node found 116 anonymous mappings of
+    /// 60-70 MB holding 1,227 MB resident — glibc's secondary malloc arenas, whose count is capped at
+    /// <c>8 x ncores</c> and which retain freed memory per thread rather than returning it. The lever
+    /// for that is <c>MALLOC_ARENA_MAX</c>, an allocator environment variable with no representation
+    /// anywhere in CamusDB, Kahuna or Kommander configuration.</para>
+    ///
+    /// <para>Kept general rather than a dedicated <c>malloc_arena_max</c> key: the same need recurs for
+    /// any runtime or allocator knob the spec does not model, and a scenario that sets one records it
+    /// in the generated compose file either way.</para></summary>
+    public Dictionary<string, string> Env { get; set; } = [];
+
     private static readonly Regex NamePattern = new("^[a-z0-9][a-z0-9-]*$", RegexOptions.Compiled);
 
     private static readonly Regex SubnetPattern = new(@"^\d{1,3}\.\d{1,3}\.\d{1,3}$", RegexOptions.Compiled);

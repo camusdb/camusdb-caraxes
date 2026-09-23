@@ -130,6 +130,11 @@ public static class ComposeGenerator
                 environment["CAMUS_LOG_FILTERS"] =
                     string.Join(',', spec.LogLevels.Select(kv => $"{kv.Key}={kv.Value}"));
 
+            // Applied last, so a scenario can deliberately override a variable Caraxes derived
+            // (including the GC budget above). See ClusterSpec.Env for why this exists.
+            foreach ((string key, string value) in spec.Env)
+                environment[key] = value;
+
             services[node.Name] = service;
 
             // Only a named-volume data mount needs a top-level volume entry; a tmpfs mount does not.

@@ -121,6 +121,7 @@ public static class MatrixExpander
         Kahuna = new Dictionary<string, object>(c.Kahuna),
         Camusdb = new Dictionary<string, object>(c.Camusdb),
         LogLevels = new Dictionary<string, string>(c.LogLevels),
+        Env = new Dictionary<string, string>(c.Env),
     };
 
     private sealed record AxisOption(string? CoordinateKey, string? NamePrefix, string? Label, Action<ScenarioSpec> Apply);

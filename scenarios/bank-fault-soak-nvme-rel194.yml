@@ -1,0 +1,153 @@
+# TWO-HOUR FAULT SOAK fs5 (CamusDB Phase 5, task 3301b6f8): the fs4 configuration on the release stack
+# that carries the fixes for both fs-series blockers.
+#
+# Stack: Kahuna.Core 1.9.4 -> Kahuna.Shared 1.9.4 -> Kommander 1.7.7 (nuget.org, built from kommander
+# 98ed3d2c: "Followers report how far their data runs without gaps" for the WAL-hole leaderless wedge
+# fs4 hit, Kommander task 37b63337 / b9b27edf; plus the shared-cache index/filter pinning and the
+# raft.wal.* memory gauges). CamusDB 47beb13e + pin bump to 1.9.4, no local feed. Image
+# caraxes/camusdb:bankrel194 (sha256:3ba4f7ff514e). MALLOC_ARENA_MAX=2 kept from fs4 (glibc arena
+# retention was the fs1-fs3 node OOM). Fault schedule, workload and budgets identical to fs4.
+#
+# Everything below is fs4's text, unchanged except name/cluster name/image.
+#
+# TWO-HOUR FAULT SOAK with the bank ledger (CamusDB Phase 5, task 3301b6f8).
+#
+# Done-when this run exists to answer: "the two-hour window completes, the conservation invariant
+# holds exactly, and the ledger resolves every indeterminate outcome." Those three are
+# device-independent, which matters here (see the device note below).
+#
+# Stack: Kahuna.Core 1.9.3+4792ac4d -> Kahuna.Shared 1.9.3 -> Kommander 1.7.6+14b564a2, all from
+# nuget.org; CamusDB commit 883c3426; workload on CamusDB.Client 0.12.3. Same image as lt9/lk16/sd17
+# (caraxes/camusdb:bankrel193, cluster fingerprint sha256:15c44afd14e0b5db), so the soak shares one
+# binary with the three 10-minute rows it extends.
+#
+# FAULT KINDS. The task names "pause, slow, kill, and restart". Read here as the three kinds whose
+# behaviour is already characterised on this pin, so that a soak failure is attributable:
+#   * kill      - SIGKILL the current leader, restart 30 s later (kill AND restart in one event)
+#   * pause     - SIGSTOP/SIGCONT a node's process for 30 s
+#   * slow-disk - cgroup v2 io.max at 4 KiB/s on one node's data device for 30 s
+# Netem "slow" (network delay) is deliberately NOT in this run: it has no recorded 10-minute row yet,
+# and a 2-hour qualification is the wrong place to meet a fault kind for the first time. Row 4 of the
+# fault matrix is where it belongs.
+#
+# SCHEDULE: 14 windows, one every 8 minutes from 8m to 112m, leaving ~10 clean minutes before the
+# window closes so the last tail and the drain can be read. Six kills (the restart path), four pauses,
+# four slow-disk, rotating targets so every node takes each kind; kills and two pauses take 'leader',
+# resolved from the placement at inject time.
+#
+# THE SECOND QUESTION THIS RUN ANSWERS. lk16 failed the held rule on its second kill by a hair: tail
+# median 97% of pre-fault, failing only the "no dip longer than 30 s" clause at exactly 30 s, while
+# kill 1 showed the identical mechanism (the restarted node withholding Raft Success acks while it
+# backfills over its log gap) and passed with a 6-s dip. Two samples cannot say whether 30 s is a
+# stable property or where the sub-bar seconds happened to cluster. Six kills here give a
+# distribution, and that decides whether the item is Kommander's (don't withhold that long during gap
+# backfill) or the harness's (the dip clause treats interleaved and consecutive sub-bar seconds very
+# differently). Read the per-window "longest dip" column in analysis.md together with each restarted
+# node's "Withholding Success ack ... presence frontier ... does not cover it" span.
+#
+# DEVICE NOTE, and why the throughput gates are expected to go inadmissible late. This host's NVMe
+# changes regime after roughly 30-35 GB of sustained writes inside a run; the three 10-minute runs of
+# 2026-09-22 stayed fast end to end precisely because they were short and the host was idle. A
+# 2-hour window will cross that threshold, so later windows will very likely be marked INADMISSIBLE
+# or voided by verdict rules v2/v3. That is expected and is not a failure of this run: the soak's
+# done-when is conservation and ledger resolution, both device-independent. The early windows are the
+# ones to read for the dip distribution above.
+#
+# MEMORY, and the resource gate (task 8a5c7533, "no monotonic collapse"). In the 10-minute runs node
+# memory climbed to 3.3-3.9 GB of the 4,096 MiB limit within ~10 minutes and then plateaued noisily
+# (sd17 camus1 peaked 3,942). memory_limit_mb is deliberately left at 4096 rather than raised: whether
+# that plateau holds for two hours or creeps is exactly what the resource gate asks. A node OOM-killed
+# partway is a finding to record, not a wasted run - memory-samples.csv carries the trajectory either
+# way, and the ledger still resolves the indeterminate set for the part that ran.
+#
+# Log levels at the default (warning). Information costs ~15% throughput and would produce multi-GB
+# node logs over two hours.
+name: bank-fault-soak-nvme-rel194
+cluster:
+  name: bankfaultsoakrel194
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    # fs2: bound RocksDB's native memory. fs1 died of native growth, not the managed heap:
+    # camus2 climbed 248 MB -> 3,615 MB native over two hours while its managed committed
+    # memory FELL to 441 MB, and the container OOM-killed it at 99.6% of 4,096 MiB. Without
+    # this bundle the KV backend and the Raft WAL hold two independent, unbudgeted
+    # block-cache + memtable footprints, while DOTNET_GCHeapHardLimitPercent=60% lets the
+    # managed heap claim 2,458 MiB of the same container - the two budgets overcommit it.
+    rocksdb_shared_memory: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    # fs3 runs the SAME configuration as fs2 on a Kommander that charges the Raft log's index and
+    # filter blocks to this budget. fs2 proved the budget was ineffective, not wrong: table-reader
+    # memory sat outside it at ~8.9% of live SST bytes (measured), which is where fs1/fs2's ~3 GB of
+    # unexplained native memory per node came from. Local packs Kommander 1.7.7-tablereaders.1 /
+    # Kahuna.Core+Shared 1.9.3-tablereaders.1, the latter packed from the published 1.9.3 commit
+    # (4792ac4d) with only the Kommander reference changed, so the binary delta against fs2 is that
+    # one fix. Watch raft.wal.table_readers_memory (should now stay inside the 768 MiB budget rather
+    # than tracking SST growth) and raft.wal.block_cache_pinned_usage (approaching the budget means
+    # the cache cannot make room and reads go to disk instead).
+  # fs4: cap glibc's secondary malloc arenas. fs1/fs2/fs3 each lost a node to container OOM with
+  # ~3 GB of native memory that no subsystem gauge could account for; /proc/1/smaps on a live fs3 node
+  # found 116 anonymous mappings of 60-70 MB holding 1,227 MB resident, which is glibc's per-thread
+  # arena signature (64 MB arenas, capped at 8 x ncores = 128 on this 16-core host, with 133 threads
+  # in the process). Arenas retain freed memory rather than returning it, so this is retention, not
+  # live data - which is why bounding durable-2PC retention, the block cache, memtables and table
+  # readers in turn each failed to move the total. MALLOC_ARENA_MAX=2 trades allocator contention for
+  # resident memory. Everything else is identical to fs3, so the delta is this one variable.
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel194"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 2h
+  warmup: 3m
+  drain: 60s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 8m,   fault: kill,      target: leader, duration: 30s }
+    - { at: 16m,  fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 24m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 32m,  fault: pause,     target: camus2, duration: 30s }
+    - { at: 40m,  fault: slow-disk, target: camus3, duration: 30s }
+    - { at: 48m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 56m,  fault: pause,     target: leader, duration: 30s }
+    - { at: 64m,  fault: slow-disk, target: camus2, duration: 30s }
+    - { at: 72m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 80m,  fault: pause,     target: camus3, duration: 30s }
+    - { at: 88m,  fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 96m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 104m, fault: pause,     target: leader, duration: 30s }
+    - { at: 112m, fault: kill,      target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

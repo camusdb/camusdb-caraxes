@@ -1,0 +1,108 @@
+# Re-run of bank-leader-kill-nvme-192 on the Kahuna working tree packed as Kahuna.Core 1.9.3-fence.1
+# (~/kahuna at 83658b2b "Fence stale leaders and detect apply drift" plus its uncommitted work:
+# DurableOrderedApplyAwaiter, the replica-fence lag tracker, write-aggregator and persistence-backlog
+# changes). Resolves Kahuna.Shared 1.9.3-fence.1 and the published Kommander 1.7.4; CamusDB.Core is
+# pinned to the local pack through .localnuget/nuget.config, and docker/Dockerfile copies both into
+# the build context again. Restore the pin and revert those two files before committing CamusDB.
+#
+# What this stack adds over 1.9.2/1.7.3, and therefore what to read in the artifacts:
+#   * the ordered-apply rendezvous — a completion for a locally proposed durable entry waits for that
+#     entry's own ordered apply instead of judging the delta early. This is the rule aimed at the lt3
+#     divergence (Kahuna feature f91b6784): an ex-leader alone rejecting a bundled commit its peers
+#     admitted. Counters `kahuna.durable_tx.ordered_apply_wait_timeouts` (expected 0) and
+#     `kahuna.durable_tx.ordered_apply_results_displaced` (expected 0), plus the warning
+#     "did not see its ordered apply within 10000ms".
+#   * the apply fingerprint compared at every promotion. Counter
+#     `kahuna.keyvalues.apply_divergence_detected` (expected 0) and the error line
+#     "apply divergence on partition N at promotion".
+#   * quorum-confirmed actor-only mutations and the Kommander 1.7.4 term fence. Warning
+#     "Refusing an actor-state mutation on partition N" — a few at a failover are expected, a stream
+#     from one node is not — and "leadership of partition N lost in term M; dropping the staged
+#     transactional writes and exclusive locks".
+#   * the throughput question the rendezvous raises: it puts a wait on the durable commit path, so
+#     compare the run-wide rate and the write p99 against lk14 on the same shape and device
+#     regime before reading anything else as a win.
+#
+# LEADER KILL UNDER LOAD, on the published 1.9.2 stack (CamusDB Phase 5 fault matrix row 1; also the
+# SIGKILL-under-load leg Phase 3 left open on kahuna task eeb2fafc).
+#
+# Rerun of lk13 (`bank-leader-kill-nvme-rel185`, Kahuna.Core 1.8.5 / Kommander 1.6.10) on the stack
+# CamusDB is pinned to today: Kahuna.Core 1.9.2 -> Kahuna.Shared 1.9.2 -> Kommander 1.7.3, all from
+# nuget.org, with the released CamusDB.Client 0.12.3. Row 1's evidence was three releases behind; this
+# run is what makes it current. Same shape and same image as lt6, so all three runs of this campaign
+# share one binary.
+#
+# Whoever leads at 4m is SIGKILLed and restarted 30 s later; whoever leads at 7m (the successor) gets
+# the same. No follower fault, so both catch-ups are the ex-leaders'.
+#
+# What lk13 established on 1.8.5/1.6.10, and what this run re-tests:
+#   1. Correctness: reconciliation and row attribution exact, the in-flight set at each kill admitted
+#      by the ledger as indeterminate (lk13: 173), zero `ICamusDB RpcException` lines on any node —
+#      the client storm stayed closed on the published Kahuna. Any regression here is the headline.
+#   2. Restart path: both nodes rejoined by log backfill with no snapshot, no frontier-0, no WAL writer
+#      stall, no boot crash (Kommander b24b3891 + the CamusDB ClusterSettingsService boot retry).
+#   3. Failover ~5 s, error rate clean within a second of each restart.
+#   4. The replica fence: each successor held the restarted node lagging until its durable frontier was
+#      within bound (lk13: 73.6 / 63.3 s after the restart, re-attested at 236 / 197 entries behind),
+#      and the fixed MaxEntriesBehind = 1,000 tripped healthy followers 6-8 times per leader per run at
+#      1,004-1,322 entries behind — Kahuna 029dad72's open item. Whether 1.9.2 changed either is a read
+#      this run can make.
+#
+# Device caveat, unchanged: the kill-2 tail has never been measured on a device that stayed in its fast
+# regime (lk8, lk10, lk11, lk13 all flipped to ~83% busy after the second restart). The verdict's regime
+# rules mark such a tail INADMISSIBLE rather than failing it; correctness is device-independent.
+name: bank-leader-kill-nvme-193
+cluster:
+  name: bankleaderkill193
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Log levels deliberately left at the default (warning): lk13 ran that way, and lt5 showed Information
+  # costs ~15% throughput, which would make the tails incomparable.
+  #
+  # Published stack: Kahuna.Core 1.9.2+637668bf -> Kahuna.Shared 1.9.2 -> Kommander 1.7.3+ed0c9d35, all
+  # from nuget.org; workload on the released CamusDB.Client 0.12.3. CamusDB working tree at 734fd1d4 plus
+  # the uncommitted transfer-leadership endpoint (unused by this scenario). Same image as run lt6.
+  image: "caraxes/camusdb:bankfence193"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: kill, target: leader, duration: 30s }
+    - { at: 7m, fault: kill, target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

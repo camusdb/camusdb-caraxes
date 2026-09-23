@@ -1,0 +1,79 @@
+# SLOW / PAUSED DEVICE on the published Kahuna.Core 1.9.3 (CamusDB Phase 5 fault matrix row 5).
+#
+# Re-run of sd16 (1.9.3-fence.2) and sd13 (1.9.2 / Kommander 1.7.3) on the stack CamusDB is now pinned
+# to: Kahuna.Core 1.9.3 -> Kahuna.Shared 1.9.3 -> Kommander 1.7.6, all from nuget.org. CamusDB working
+# tree at 68fd454d plus the uncommitted transfer-leadership endpoint (unused here).
+#
+# The published 1.9.3 is Kahuna commit 4792ac4d: the fence work (83658b2b) plus four later commits,
+# three on the apply / durable-store path, and Kommander 1.7.4 -> 1.7.6. Row 5 has never been measured
+# on it.
+#
+# Reads this run is for:
+#   1. The slow-device task's first done-when, held since sd10: zero indeterminate writes, zero
+#      CADB0509, and zero inter-node request-deadline expiries on healthy peers. Six consecutive clean
+#      runs so far (sd10, sd11, sd12, sd13, sd15, sd16).
+#   2. Kommander's stall watchdog stepping a paused leader down within ~1-3 s, the successor elected in
+#      0 ms, and no snapshot transfer to the paused follower on heal.
+#   3. kahuna.durable_tx.ordered_apply_wait_timeouts at 0 and no "did not see its ordered apply within
+#      10000ms" warnings. sd14 produced 206 of them and 42 CADB0509, which sd15 showed was the busy
+#      host (load 11, device already saturated), not the pack -- Kahuna task 9053ed6f keeps it as a
+#      watch item. 198705ba makes the ordered consumer the sole writer of the durable stores, so this
+#      is the counter to read first on this run.
+#   4. `found no prepared intent` line count -- 0 in sd16, re-confirmed here.
+#
+# Log levels at the default (warning), as sd12/sd13/sd16 ran, so the rates are comparable in kind.
+#
+# Device caveat, unchanged since sd11: every held-throughput finding this host has produced on this row
+# is a device-regime effect that the verdict marks INADMISSIBLE or voids. Correctness is
+# device-independent.
+name: bank-slow-disk-pause-nvme-rel193
+cluster:
+  name: bankslowdiskrel193
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Same image as the other two rel193 runs, so all three share one binary.
+  image: "caraxes/camusdb:bankrel193"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 390s, fault: slow-disk, target: camus2, duration: 30s }
+    - { at: 9m, fault: slow-disk, target: camus3, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
