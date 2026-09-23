@@ -1,0 +1,23 @@
+# A/B arm of append-smoke: the same 8 contended keys, but read-write transactions only (no
+# read-only snapshot transactions). If existing-row write skew stops here, the read-only path is the
+# cause; if it continues, the key count or the contention level is. Fault-free.
+name: append-rw-8keys
+cluster:
+  name: append
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 0
+  write_percent: 100
+  append_keys: 8
+teardown: true
