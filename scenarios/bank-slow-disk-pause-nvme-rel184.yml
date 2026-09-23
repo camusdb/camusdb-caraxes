@@ -36,9 +36,9 @@
 # Progress under fault is deliberately still required: a follower's pause must not stop the cluster.
 # If the leader's pause does, that is finding (c) of the task — leader avoidance on a slow-disk node —
 # and the run records it as a check failure rather than hiding it.
-name: bank-slow-disk-pause-nvme
+name: bank-slow-disk-pause-nvme-rel184
 cluster:
-  name: bankslowdisk
+  name: bankslowdiskrel184
   nodes: 3
   partitions: 1
   replication_factor: 3
@@ -52,8 +52,8 @@ cluster:
     one_phase_apply_time_validation: true
     staged_base_fence_retention_ms: 600000
   camusdb_repo: "~/camusdb"
-  # Released stack: Kahuna.Core 1.8.3 / Kommander 1.6.8 (nuget.org). The 1.8.2 / 1.6.7 runs (sd2, sd3) are the "before" figures on task b83c72db.
-  image: "caraxes/camusdb:bankslowdiskrel183"
+  # Released stack: Kahuna.Core 1.8.4 / Kommander 1.6.9 (nuget.org).
+  image: "caraxes/camusdb:bankrel184"
 workload:
   kind: bank
   database: caraxes

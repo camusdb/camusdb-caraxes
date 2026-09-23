@@ -275,6 +275,7 @@ public sealed class ScenarioRunner
     /// a node that died while its container stayed <c>Up</c>.
     /// </summary>
     private IReadOnlyList<PlacementSample> placementSamples = [];
+    private IReadOnlyList<HostIoSample> hostIoSamples = [];
 
     /// <summary>Whether leadership was spread across the nodes when the measured window opened. Set
     /// by the settle step; graded only when the scenario asks for it.</summary>
@@ -381,6 +382,7 @@ public sealed class ScenarioRunner
             : $"host I/O sampled on {hostIo.Device}: {hostIo.Samples.Count} sample(s) in host-io.csv");
 
         placementSamples = placementPoller.Samples;
+        hostIoSamples = hostIo.Samples;
 
         if (scenario.Nemesis is not null)
             notes.Add($"nemesis timeline: {timelinePath}");
@@ -760,8 +762,8 @@ public sealed class ScenarioRunner
             return null;
         }
 
-        FaultAnalysis analysis = FaultCorrelator.Analyze(series, windows);
         ChecksSpec checks = scenario.Checks;
+        FaultAnalysis analysis = FaultCorrelator.Analyze(series, windows, checks.MinRecoveredThroughputFraction, hostIoSamples);
 
         notes.Add(
             $"fault impact: baseline error {analysis.BaselineErrorRate:P1} / write-p99 {analysis.BaselineWriteP99Ms:N0}ms; " +
@@ -773,7 +775,28 @@ public sealed class ScenarioRunner
             string recovery = !w.Healed
                 ? "not healed (still active at run end)"
                 : w.Recovered ? $"recovered in {w.RecoverySeconds:N1}s" : "NOT recovered before run end";
-            notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}");
+            string throughput = $"throughput {w.InWindowThroughput:N0} ops/s in window (pre-fault {w.PreFaultThroughput:N0})";
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed)
+                throughput += w.ThroughputRecovered
+                    ? $", back to {checks.MinRecoveredThroughputFraction:P0} in {w.ThroughputRecoverySeconds:N1}s" +
+                      (w.ThroughputHeld
+                          ? $" and held (post median {w.PostRecoveryMedianThroughput:N0}, longest dip {w.LongestPostRecoveryDipSeconds}s)"
+                          : $" but NOT held (post median {w.PostRecoveryMedianThroughput:N0}, longest dip {w.LongestPostRecoveryDipSeconds}s)")
+                    : $", NEVER back to {checks.MinRecoveredThroughputFraction:P0} before run end";
+            // The device the bar was set on against the device the tail ran on. A tail measured across
+            // a regime move is not a measurement of the recovery, so the two throughput rules below are
+            // reported as inadmissible for that window rather than failed (run lk11, 2026-09-15).
+            string device = w.Device is null
+                ? ""
+                : $"; host device {w.Device.Describe()}" + (w.Device.Moved ? " — REGIME MOVED during the tail" : "");
+            if (w.Device?.Moved != true && w.DipDevice?.Moved == true)
+                device += $"; over {w.DipDevice.Span} {w.DipDevice.Describe()} — REGIME MOVED during the dip";
+            if (w.Device?.Moved != true && w.RecoveryDevice?.Moved == true)
+                device += $"; over {w.RecoveryDevice.Span} {w.RecoveryDevice.Describe()} — REGIME MOVED during the recovery";
+            if (w.Device?.PreFaultSlow == true)
+                device += " — SLOW REGIME before the fault";
+            bool regimeMoved = w.Device?.Moved == true;
+            notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}; {throughput}{device}");
 
             if (checks.RequireProgressUnderFault && !w.WorkloadProgressed)
             {
@@ -791,6 +814,50 @@ public sealed class ScenarioRunner
             {
                 notes.Add($"  CHECK FAILED: fault {w.Label} recovered in {w.RecoverySeconds:N1}s, over the {checks.MaxRecoverySeconds:N0}s limit");
                 passed = false;
+            }
+
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && checks.RequireRecovery && !w.ThroughputRecovered)
+            {
+                string finding =
+                    $"fault {w.Label} never regained {checks.MinRecoveredThroughputFraction:P0} of its pre-fault " +
+                    $"throughput ({w.PreFaultThroughput:N0} ops/s) before the run ended";
+                if (regimeMoved)
+                    notes.Add($"  INADMISSIBLE: {finding} — but the host device left its regime after the heal ({w.Device!.Describe()}); this window does not measure the recovery and is not judged");
+                else
+                {
+                    notes.Add($"  CHECK FAILED: {finding}");
+                    passed = false;
+                }
+            }
+
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && w.ThroughputRecovered && !w.ThroughputHeld)
+            {
+                string finding =
+                    $"fault {w.Label} regained {checks.MinRecoveredThroughputFraction:P0} of its pre-fault throughput " +
+                    $"but did not hold it: post-recovery median {w.PostRecoveryMedianThroughput:N0} ops/s (pre-fault {w.PreFaultThroughput:N0}), " +
+                    $"longest dip below the bar {w.LongestPostRecoveryDipSeconds}s, on clean seconds before the next fault or the run's end";
+                if (w.HeldRuleInadmissible)
+                    notes.Add($"  INADMISSIBLE: {finding} — but {w.HeldRuleVoidReason}; the held rule is not judged on this window");
+                else
+                {
+                    notes.Add($"  CHECK FAILED: {finding}");
+                    passed = false;
+                }
+            }
+
+            if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && w.ThroughputRecovered
+                && w.ThroughputRecoverySeconds > checks.MaxRecoverySeconds)
+            {
+                string finding =
+                    $"fault {w.Label} took {w.ThroughputRecoverySeconds:N1}s to regain " +
+                    $"{checks.MinRecoveredThroughputFraction:P0} of its pre-fault throughput, over the {checks.MaxRecoverySeconds:N0}s limit";
+                if (w.RegainRuleInadmissible)
+                    notes.Add($"  INADMISSIBLE: {finding} — but {w.RegainRuleVoidReason}; the regain-time rule is not judged on this window");
+                else
+                {
+                    notes.Add($"  CHECK FAILED: {finding}");
+                    passed = false;
+                }
             }
         }
 
@@ -850,12 +917,21 @@ public sealed class ScenarioRunner
         sb.AppendLine($"- In-fault: error rate {analysis.InFaultErrorRate:P2}, write p99 {analysis.InFaultWriteP99Ms:N1} ms ({analysis.LatencyInflation:N1}x baseline)");
         sb.AppendLine($"- Max recovery time: {analysis.MaxRecoverySeconds:N1} s; all healed faults recovered: {(analysis.AllHealedFaultsRecovered ? "yes" : "no")}");
         sb.AppendLine();
-        sb.AppendLine("| fault | healed | window (s) | peak error | failed | progressed | recovery (s) |");
-        sb.AppendLine("|---|---|---|---|---|---|---|");
+        sb.AppendLine("| fault | healed | window (s) | peak error | failed | progressed | recovery (s) | pre-fault ops/s | in-window ops/s | throughput back (s) | held | host device pre→post |");
+        sb.AppendLine("|---|---|---|---|---|---|---|---|---|---|---|---|");
         foreach (WindowImpact w in analysis.Windows)
         {
+            string throughputBack = !w.Healed ? "—" : w.ThroughputRecovered
+                ? (w.ThroughputRecoverySeconds is null ? "n/a" : $"{w.ThroughputRecoverySeconds:N1}")
+                : "not regained";
             string recovery = !w.Healed ? "—" : w.Recovered ? $"{w.RecoverySeconds:N1}" : "not recovered";
-            sb.AppendLine($"| {w.Label} | {(w.Healed ? "yes" : "no")} | {w.DurationSeconds:N1} | {w.PeakErrorRate:P0} | {w.FailedDuringWindow:N0} | {(w.WorkloadProgressed ? "yes" : "NO")} | {recovery} |");
+            string held = !w.Healed || !w.ThroughputRecovered ? "—" : w.ThroughputHeld ? "yes" : w.HeldRuleInadmissible ? "inadmissible" : "NO";
+            string device = w.Device is null ? "n/a" : w.Device.Describe() + (w.Device.Moved ? " (moved)" : "");
+            if (w.Device?.Moved != true && w.DipDevice?.Moved == true)
+                device += $"; {w.DipDevice.DescribeSpan()} (moved)";
+            if (w.Device?.PreFaultSlow == true)
+                device += " (slow before the fault)";
+            sb.AppendLine($"| {w.Label} | {(w.Healed ? "yes" : "no")} | {w.DurationSeconds:N1} | {w.PeakErrorRate:P0} | {w.FailedDuringWindow:N0} | {(w.WorkloadProgressed ? "yes" : "NO")} | {recovery} | {w.PreFaultThroughput:N0} | {w.InWindowThroughput:N0} | {throughputBack} | {held} | {device} |");
         }
 
         File.WriteAllText(Path.Combine(runDir, "analysis.md"), sb.ToString());

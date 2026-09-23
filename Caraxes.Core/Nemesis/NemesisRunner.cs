@@ -105,6 +105,25 @@ public sealed class NemesisRunner
             return; // stopped before this fault was ever injected
         }
 
+        if (TargetSelector.IsLeaderTarget(e.Target))
+        {
+            try
+            {
+                NodePlan leader = await ResolveLeaderAsync(stopToken).ConfigureAwait(false);
+                timeline.Write("note", fault.Kind, leader.Name, $"target 'leader' resolved to {leader.Name}", DateTime.UtcNow);
+                targets = [leader];
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                timeline.Write("error", fault.Kind, null, $"target 'leader' could not be resolved: {ex.Message}", DateTime.UtcNow);
+                return;
+            }
+        }
+
         List<NodePlan> injected = [];
         foreach (NodePlan target in targets)
         {
@@ -243,6 +262,35 @@ public sealed class NemesisRunner
         {
             timeline.Write("error", fault.Kind, target.Name, $"heal failed: {ex.Message}", DateTime.UtcNow);
         }
+    }
+
+    /// <summary>Asks every node which partitions it leads (the <c>LeaderLocal</c> flag on its
+    /// placement) and picks the one leading the most. A node that does not answer counts as leading
+    /// nothing, so a paused or dead node is never chosen by default.</summary>
+    private async Task<NodePlan> ResolveLeaderAsync(CancellationToken cancellationToken)
+    {
+        List<(NodePlan Node, int Led)> observations = [];
+        foreach (NodePlan node in plan.Nodes)
+        {
+            int led = 0;
+            try
+            {
+                ClusterPlacement? placement = await probes
+                    .GetPlacementAsync($"http://localhost:{node.HostRestPort}", cancellationToken).ConfigureAwait(false);
+                led = placement?.Partitions.Count(p => p.LeaderLocal) ?? 0;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // unreachable node: leads nothing as far as the nemesis is concerned
+            }
+            observations.Add((node, led));
+        }
+
+        return TargetSelector.PickLeader(observations);
     }
 
     private static async Task DelayUntilAsync(TimeSpan at, Stopwatch clock, CancellationToken token)

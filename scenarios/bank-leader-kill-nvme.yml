@@ -1,0 +1,69 @@
+# LEADER KILL UNDER LOAD (CamusDB Phase 5 fault matrix, row 1: "leader process pause, and leader kill -9";
+# also the SIGKILL-under-load leg Phase 3 left open on kahuna task eeb2fafc).
+#
+# Whoever leads at 4m is SIGKILLed and restarted 30 s later; whoever leads at 7m (the successor) gets the
+# same. Same 10-minute NVMe bank shape as the slow-disk scenarios, on the released stack that passed them
+# (Kahuna.Core 1.8.3 / Kommander 1.6.8). No follower fault, so the two catch-ups are the ex-leaders'.
+#
+# Differences from a disk pause worth reading for: a kill drops every connection at once (the client's
+# endpoint pool must requarantine, the peers see resets rather than a stall), the killed node's in-flight
+# commits have no coordinator at all until it restarts (no step-down, no released proposals), and the
+# restart replays the WAL below the checkpoint and then catches up ~30 s of log; whether that catch-up
+# is served from the log or escalates to a snapshot is the retention question sd8/sd9 settled for a pause.
+#
+# Gates (all automatic): zero indeterminate writes; error rate back to ~0 and throughput back to 90% of the
+# pre-fault median within 60 s of each restart (min_recovered_throughput_fraction, new in this run);
+# progress during the window; every node healthy outside its own fault; reconciliation exact.
+# Expected on this stack: the failover itself is Kommander's election timing (no watchdog is involved
+# when the process is gone), so the interesting number is how many commits were in flight at the kill and
+# how the client sees them — CANCELED at its deadline, or an explicit verdict from the successor.
+name: bank-leader-kill-nvme
+cluster:
+  name: bankleaderkill
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Released stack: Kahuna.Core 1.8.3 / Kommander 1.6.8 (nuget.org), the release of the slow-disk campaign fixes.
+  image: "caraxes/camusdb:bankslowdiskrel183"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: kill, target: leader, duration: 30s }
+    - { at: 7m, fault: kill, target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

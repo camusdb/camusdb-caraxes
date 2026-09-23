@@ -1,0 +1,79 @@
+# BUDGET-VERSUS-FAILOVER EXPERIMENT (CamusDB Phase 5, task b83c72db, run sd3) — same three 30-second
+# single-node disk pauses as `bank-slow-disk-pause-nvme.yml`, with both deadlines widened past failover.
+#
+# Run sd2 pinned every client-indeterminate write to one gap: on a paused LEADER the coordinator's
+# finalize budget (`transaction_finalize_retry_budget_ms`, 15 s) and the client's request deadline expire
+# 15 s into the pause, while Raft moves leadership only at +19-21 s. A paused FOLLOWER produced zero
+# failures. This scenario asks the cheapest question first: if both budgets simply outlive the failover,
+# do the indeterminate writes disappear, and what does that cost in write latency? It is the number the
+# choice between "resumable outcome that outlives failover" (option b) and "step down faster on a stalled
+# local write" (option c) needs, and it needs no dependency release.
+#
+# Changes against the base scenario, and nothing else:
+#   - `camusdb.transaction_finalize_retry_budget_ms: 45000` — the server keeps re-driving the same
+#     COMMIT for 45 s before surfacing CADB0509 (base: 15 s);
+#   - `workload.request_timeout: 60` — the client waits 60 s per request before cancelling (base: the
+#     client default), so the server's answer is not lost to a client-side CANCELED.
+#
+# How to read it against sd2 (251 indeterminate, all from the two leader pauses, two bursts each at
+# +9 s and +19 s; 5 inter-node Unavailable lines on healthy peers; follower pause 0 failed, -69% throughput):
+#   1. Indeterminate per leader pause. Zero means waiting through failover is sufficient and the
+#      remaining question is only how long the client is willing to wait. A residue means some commits
+#      are lost to the old leader's stalled durable write even after the new leader is up, which points
+#      at option c or a resumable handle on the new leader.
+#   2. Write p99 / max inside the leader pause. The cost of option b in its crudest form.
+#   3. CADB0509 count on the paused leader: should fall from 53 to ~0 if the 45 s budget covers failover.
+#   4. Reconciliation must stay exact; the follower-pause figures should not move.
+name: bank-slow-disk-pause-nvme-budget
+cluster:
+  name: bankslowdiskbudget
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  camusdb:
+    transaction_finalize_retry_budget_ms: 45000
+  # Released stack: Kahuna.Core 1.8.3 / Kommander 1.6.8 (nuget.org). The 1.8.2 / 1.6.7 runs (sd2, sd3) are the "before" figures on task b83c72db.
+  image: "caraxes/camusdb:bankslowdiskrel183"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  request_timeout: 60
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 390s, fault: slow-disk, target: camus2, duration: 30s }
+    - { at: 9m, fault: slow-disk, target: camus3, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

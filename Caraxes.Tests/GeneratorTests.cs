@@ -100,6 +100,37 @@ public sealed class NodeConfigGeneratorTests
     }
 
     [Test]
+    public void CamusdbPassthroughReachesTheRootAndWinsOverModeledFields()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: budget",
+            "locking: optimistic",
+            "camusdb:",
+            "  transaction_finalize_retry_budget_ms: 45000",
+            "  default_transaction_locking: pessimistic")));
+
+        string yml = NodeConfigGenerator.Generate(plan, plan.Nodes[0]);
+
+        Assert.That(yml, Does.Contain("transaction_finalize_retry_budget_ms: 45000"));
+        Assert.That(yml, Does.Contain("default_transaction_locking: pessimistic"), "explicit root key overrides the modeled field");
+        Assert.That(yml, Does.Not.Contain("default_transaction_locking: optimistic"));
+        Assert.That(yml, Does.Contain("replication_factor: 3"), "the kahuna section is untouched");
+    }
+
+    [Test]
+    public void CamusdbPassthroughRefusesTheModeledSections()
+    {
+        ClusterSpecException ex = Assert.Throws<ClusterSpecException>(() => ClusterSpecReader.Read(string.Join('\n',
+            "name: bad",
+            "camusdb:",
+            "  kahuna:",
+            "    replication_factor: 1")))!;
+        Assert.That(ex.Message, Does.Contain("camusdb.kahuna"));
+
+        Assert.Throws<ClusterSpecException>(() => ClusterSpecReader.Read("name: bad\ncamusdb:\n  data_dir: /elsewhere"));
+    }
+
+    [Test]
     public void AutoSplitSettingsReachTheNodeConfig()
     {
         // A split scenario is inert unless all of these land in the file together: key-range routing

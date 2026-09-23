@@ -1,0 +1,73 @@
+# LEADER-ONLY DEVICE PAUSES (CamusDB Phase 5, task b83c72db; Kahuna spec 3c7f6b99 task "step down"/"convergence").
+#
+# Runs sd4 and sd5 established that the Kommander stall watchdog steps a paused leader down in ~3 s, but
+# the in-flight commits on the stepped-down node still ended client-indeterminate because that node could
+# not learn the successor while its own WAL was stalled (sd4), and that a paused FOLLOWER is OOM-killed on
+# catch-up after falling below the leader's WAL compaction floor (sd4, sd5). The follower death then turned
+# every later pause into a quorum-less outage, so successor learning could not be judged with a live cluster.
+#
+# This scenario removes the follower pause entirely and pauses only the CURRENT LEADER, twice, resolved at
+# inject time from the placement probe (`target: leader`): whoever leads at 4m, then whoever leads at 7m
+# (the successor). All three nodes stay alive, so the question is exactly the one the fix targets:
+#
+#   with three healthy peers and a 3-second step-down, do the commits in flight on the paused leader end
+#   with a verdict (Committed/Aborted on the successor) instead of a client-side CANCELED at ~9 s?
+#
+# How to read it against sd4 (leader pauses: 133 / 126 failed, all CANCELED at +9 s and +13 s, with
+# `leader for partition 1 could not be resolved` on the stepped-down node from +13 s, and `Slow dispatch:
+# RequestVote took 10807ms`):
+#   1. failed / indeterminate per leader pause — the target is 0;
+#   2. on the paused node: the time between `stepping down in term N` and its first line naming the
+#      successor (or the last `could not be resolved`), which must now be well under the client deadline;
+#   3. throughput inside the pause (sd4: ~4,700-5,300 ops/s) and recovery within a second of the heal;
+#   4. reconciliation exact, no node death, no snapshot transfer in the leader's log (the paused leader
+#      stays above the compaction floor because it stops receiving appends as leader; verify).
+name: bank-slow-disk-pause-leader-nvme
+cluster:
+  name: bankslowdiskleader
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Released stack: Kahuna.Core 1.8.3 / Kommander 1.6.8 (nuget.org), the release of the slow-disk campaign fixes.
+  image: "caraxes/camusdb:bankslowdiskrel183"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 4m, fault: slow-disk, target: leader, duration: 30s }
+    - { at: 7m, fault: slow-disk, target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

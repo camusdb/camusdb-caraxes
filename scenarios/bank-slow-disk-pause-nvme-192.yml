@@ -36,9 +36,9 @@
 # Progress under fault is deliberately still required: a follower's pause must not stop the cluster.
 # If the leader's pause does, that is finding (c) of the task — leader avoidance on a slow-disk node —
 # and the run records it as a check failure rather than hiding it.
-name: bank-slow-disk-pause-nvme
+name: bank-slow-disk-pause-nvme-192
 cluster:
-  name: bankslowdisk
+  name: bankslowdisk192
   nodes: 3
   partitions: 1
   replication_factor: 3
@@ -52,8 +52,20 @@ cluster:
     one_phase_apply_time_validation: true
     staged_base_fence_retention_ms: 600000
   camusdb_repo: "~/camusdb"
-  # Released stack: Kahuna.Core 1.8.3 / Kommander 1.6.8 (nuget.org). The 1.8.2 / 1.6.7 runs (sd2, sd3) are the "before" figures on task b83c72db.
-  image: "caraxes/camusdb:bankslowdiskrel183"
+  # Published stack: Kahuna.Core 1.9.2+637668bf -> Kahuna.Shared 1.9.2 -> Kommander 1.7.3+ed0c9d35, all from
+  # nuget.org; workload on the released CamusDB.Client 0.12.3. CamusDB working tree at 734fd1d4 plus the
+  # uncommitted transfer-leadership endpoint (unused here). Same image as runs lt6 and lk14.
+  #
+  # Rerun of sd12 (rel185, Kahuna.Core 1.8.5 / Kommander 1.6.10) on the stack CamusDB is pinned to today.
+  # sd10, sd11 and sd12 were correctness-clean three times running (0 indeterminate, 0 CADB0509,
+  # reconciliation exact, every pause recovered in <= 0.6 s, follower pauses costing nothing and the
+  # leader pause answered by Kommander's stall watchdog stepping it down); this run re-tests that on
+  # 1.9.2/1.7.3. Log levels stay at the default (warning), as sd12 ran, so the rates are comparable.
+  #
+  # Device caveat from sd12: the NVMe flipped into its slow regime 85 s into the first pause's tail and
+  # stayed there, so every held-throughput finding on this row so far has been a device-regime effect
+  # that the verdict now marks INADMISSIBLE or voids. Correctness is device-independent.
+  image: "caraxes/camusdb:bankrel192"
 workload:
   kind: bank
   database: caraxes
@@ -80,6 +92,7 @@ nemesis:
     - { at: 9m, fault: slow-disk, target: camus3, duration: 30s }
 checks:
   max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
   require_recovery: true
   require_progress_under_fault: true
   require_client_headroom: true

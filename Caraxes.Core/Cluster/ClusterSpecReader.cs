@@ -46,6 +46,7 @@ public static class ClusterSpecReader
         "memory_limit_mb",
         "gc_heap_hard_limit_mb",
         "kahuna",
+        "camusdb",
         "log_levels",
     };
 

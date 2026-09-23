@@ -35,6 +35,7 @@ public static class ScenarioSpecReader
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "max_recovery_seconds", "require_recovery", "require_progress_under_fault", "require_node_health",
+        "min_recovered_throughput_fraction",
         "require_client_headroom", "require_cluster_facts", "require_quiet_host", "require_spread_leadership",
     };
 

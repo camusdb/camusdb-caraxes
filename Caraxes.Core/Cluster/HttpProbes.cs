@@ -64,6 +64,29 @@ public sealed class PartitionReplica
 }
 
 /// <summary>Answer of CamusDB's <c>POST /v1/cluster/leave</c> graceful-decommission endpoint.</summary>
+/// <summary>Answer of CamusDB's <c>GET /v1/cluster/membership</c>: the committed voter/learner roster.</summary>
+public sealed class ClusterMembership
+{
+    public long MembershipVersion { get; set; }
+
+    public List<ClusterMember> Members { get; set; } = [];
+
+    public string LocalRole { get; set; } = "";
+
+    public bool Initialized { get; set; }
+}
+
+public sealed class ClusterMember
+{
+    public string Endpoint { get; set; } = "";
+
+    public int NodeId { get; set; }
+
+    public string Role { get; set; } = "";
+
+    public long JoinedVersion { get; set; }
+}
+
 public sealed class LeaveResult
 {
     public bool Left { get; set; }
@@ -140,6 +163,24 @@ public sealed class HttpProbes : IDisposable
                 return null;
             string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             return JsonSerializer.Deserialize<ClusterPlacement>(body, JsonOptions);
+        }
+        catch (Exception) when (NotCallerCancellation(cancellationToken))
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The committed membership roster as the node at <paramref name="baseUrl"/> sees it; null when unreachable.</summary>
+    public async Task<ClusterMembership?> GetMembershipAsync(string baseUrl, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using HttpResponseMessage response = await client.GetAsync($"{baseUrl}/v1/cluster/membership", cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return null;
+            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return JsonSerializer.Deserialize<ClusterMembership>(body, JsonOptions);
         }
         catch (Exception) when (NotCallerCancellation(cancellationToken))
         {

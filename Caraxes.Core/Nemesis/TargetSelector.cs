@@ -30,15 +30,46 @@ public sealed class TargetSelector
         this.random = random;
     }
 
+    /// <summary>The target that resolves, at inject time, to the node currently leading the most
+    /// partitions. Unlike a node name it cannot be resolved when the schedule is built: leadership
+    /// moves during a run (a paused leader steps down), and the whole point of targeting the leader is
+    /// to hit whoever leads at that moment.</summary>
+    public const string Leader = "leader";
+
+    public static bool IsLeaderTarget(string target) => string.Equals(target, Leader, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Picks the leader from per-node counts of partitions each node reports leading: the
+    /// node leading the most, ties to the lowest index. Throws when nobody leads anything (an
+    /// election in progress), so the runner records an error event rather than guessing.</summary>
+    public static NodePlan PickLeader(IReadOnlyList<(NodePlan Node, int Led)> observations)
+    {
+        NodePlan? best = null;
+        int bestLed = 0;
+        foreach ((NodePlan node, int led) in observations.OrderBy(o => o.Node.Index))
+        {
+            if (led > bestLed)
+            {
+                best = node;
+                bestLed = led;
+            }
+        }
+
+        return best ?? throw new NemesisException(
+            "target 'leader': no node reports leading any partition right now (election in progress, or placement unreachable)");
+    }
+
     public NodePlan Resolve(string target)
     {
+        if (IsLeaderTarget(target))
+            throw new NemesisException("target 'leader' is resolved at inject time by the runner, not up front");
+
         if (string.Equals(target, "random", StringComparison.OrdinalIgnoreCase))
             return plan.Nodes[random.Next(plan.Nodes.Count)];
 
         NodePlan? node = plan.Nodes.FirstOrDefault(n => n.Name == target);
         if (node is null)
             throw new NemesisException(
-                $"unknown target '{target}'; use a node name ({string.Join(", ", plan.Nodes.Select(n => n.Name))}), 'zone:<name>', or 'random'");
+                $"unknown target '{target}'; use a node name ({string.Join(", ", plan.Nodes.Select(n => n.Name))}), 'zone:<name>', 'leader', or 'random'");
 
         return node;
     }
@@ -51,6 +82,9 @@ public sealed class TargetSelector
     /// </summary>
     public IReadOnlyList<NodePlan> ResolveGroup(string target)
     {
+        if (IsLeaderTarget(target))
+            return [];
+
         const string zonePrefix = "zone:";
         if (target.StartsWith(zonePrefix, StringComparison.OrdinalIgnoreCase))
         {
