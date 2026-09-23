@@ -195,6 +195,48 @@ a split run as a pass. See `scenarios/split-preflight.yml` (short, fault-free, p
 compares directly against the bank runs). CamusDB's `docs/key-range-sharding.md` documents the
 engine side.
 
+### Elle history checking (`append`)
+
+`workload.kind: append` runs Elle's list-append workload over SQL. Each transaction reads and appends
+to a few contended lists in a table of its own (`elle_append`). The workload writes every attempt to
+`run/history.edn` as a Jepsen history: an invoke line, then an `ok`, `fail` or `info` line. After the
+cluster is torn down, elle-cli checks the history for dependency cycles. That finds lost updates, write
+skew, read skew, and aborted or dirty reads, which no conserved sum can see.
+
+```bash
+tools/elle/fetch.sh     # once: downloads the pinned elle-cli jar (needs no local Java)
+dotnet run --project Caraxes -- run --scenario scenarios/append-smoke.yml
+```
+
+The check runs `java` from the `eclipse-temurin:21-jdk` image, so the host needs Docker only. It
+must be a JDK image: the JRE image has no `jdk.random` module, and elle-cli cannot load without it.
+Cycle diagrams are off by default (`elle.plots: false`), because they need Graphviz, which the image
+does not have. It writes `elle-result.json`
+(elle-cli's full analysis) and, for an invalid history, the anomaly explanations and cycle plots under
+`run/elle/`. The scenario passes only when Elle's `valid?` is `true`. `false` fails it. `unknown` (a
+cycle search that timed out) also fails it, because elle-cli exits 0 for `unknown`.
+
+```yaml
+workload:
+  kind: append
+  append_keys: 8                  # lists active at one time; fewer = more contention (default 10)
+  append_max_writes_per_key: 64   # appends before a slot moves to a new key (default 64)
+  append_max_txn_length: 4        # most steps per transaction (default 4)
+  read_percent: 20                # read-only list-append transactions
+  write_percent: 80
+elle:
+  consistency_models: ""          # default: serializable, or read-committed for read_committed runs
+  anomalies: ""                   # extra anomalies to search for, e.g. G1a,G1b
+  cycle_search_timeout_ms: 0      # 0 = elle-cli default (1000); raise it if the verdict is unknown
+  heap_mb: 0                      # JVM -Xmx; 0 = JVM default
+  plots: false                    # cycle diagrams; needs an image with Graphviz
+```
+
+The default model is `serializable`, not `strict-serializable`. A read-only snapshot can lag a write
+that already returned. Set `consistency_models: strict-serializable` when real-time order is the claim
+under test. The seeded dataset is still created and reconciled, and the append shape leaves it
+untouched. See `scenarios/append-*.yml`.
+
 ### Performance evidence (per-node metrics, cluster facts, comparability)
 
 A reliability scenario asks whether the cluster stayed correct. A **capacity** scenario asks how fast
@@ -317,8 +359,8 @@ model.
 
 Phased build-out (see the project plan): cluster orchestration (done) → workload integration (done)
 → nemesis fault injection + membership changes (done) → invariant workloads, verdict engine, and a
-scenario matrix (done) → disk faults (`fill-disk`, `slow-disk` done; device-mapper corruption pending) and
-Elle-style history checking.
+scenario matrix (done) → disk faults (`fill-disk`, `slow-disk` done; device-mapper corruption pending) →
+Elle history checking (list-append done; predicate and index workloads pending).
 
 ## Blog
 

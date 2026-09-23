@@ -3,3 +3,4 @@ obj/
 runs/
 *.user
 .DS_Store
+tools/elle/*.jar

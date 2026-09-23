@@ -180,8 +180,20 @@ public sealed class ScenarioRunner
             }
         }
 
+        // After teardown: Elle needs only the history, and a long check should not hold a fleet up.
+        if (scenario.Workload.Kind == "append" && scenario.Elle.Enabled && run is not null)
+        {
+            Console.WriteLine($"==> checking the history with Elle ({scenario.Elle.EffectiveConsistencyModels(scenario.EffectiveIsolation)})");
+            elleResult = await ElleCheck.RunAsync(
+                scenario.Elle, scenario.EffectiveIsolation, Path.Combine(artifactsDir, "run"),
+                $"{plan.ProjectName}-elle", cancellationToken).ConfigureAwait(false);
+        }
+
         return Finalize(BuildVerdict(run!, artifactsDir, notes), init, run);
     }
+
+    /// <summary>Elle's verdict on an append run's history; null when no check ran.</summary>
+    private ElleResult? elleResult;
 
     /// <summary>
     /// Waits for partition leadership to settle before the measured window opens, and records where it
@@ -493,6 +505,7 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
+        GradeElle(notes, ref passed);
         GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
         GradePlacementStability(artifactsDir, notes);
@@ -507,6 +520,50 @@ public sealed class ScenarioRunner
         {
             Analysis = analysis,
         };
+    }
+
+    /// <summary>
+    /// Fails an append run unless Elle called its history valid. Reconciliation only proves the seeded
+    /// dataset was left alone; for this shape the isolation verdict is Elle's, so a check that did not
+    /// run, did not finish, or found a cycle each fail the scenario.
+    /// </summary>
+    private void GradeElle(List<string> notes, ref bool passed)
+    {
+        if (scenario.Workload.Kind != "append")
+            return;
+
+        if (!scenario.Elle.Enabled)
+        {
+            notes.Add("elle: NOT RUN (elle.enabled: false) — this append run has no isolation verdict");
+            return;
+        }
+
+        if (elleResult is null)
+        {
+            notes.Add("  CHECK FAILED: elle: the check did not run");
+            passed = false;
+            return;
+        }
+
+        string models = scenario.Elle.EffectiveConsistencyModels(scenario.EffectiveIsolation);
+        if (elleResult.Passed)
+        {
+            notes.Add($"elle: PASS — history is {models} (list-append, see elle-result.json)");
+            return;
+        }
+
+        passed = false;
+        if (elleResult.Error is string error)
+            notes.Add($"  CHECK FAILED: elle: no verdict — {error}");
+        else if (elleResult.Valid == "false")
+            notes.Add(
+                $"  CHECK FAILED: elle: history is NOT {models}; anomalies: {string.Join(", ", elleResult.AnomalyTypes)}" +
+                (elleResult.NotModels.Count > 0 ? $"; not {string.Join(", ", elleResult.NotModels)}" : "") +
+                " (explanations under run/elle/)");
+        else
+            notes.Add(
+                $"  CHECK FAILED: elle: verdict '{elleResult.Valid}' — the search did not finish, so {models} is unproven; " +
+                "raise elle.cycle_search_timeout_ms or elle.heap_mb");
     }
 
     /// <summary>

@@ -32,6 +32,10 @@ public sealed class ScenarioSpec
     /// <summary>Pass/fail rules for the resilience the fault correlation measures. Defaulted when omitted.</summary>
     public ChecksSpec Checks { get; set; } = new();
 
+    /// <summary>The Elle check of an append run's history. Defaulted when omitted; ignored for the
+    /// other workload shapes, which write no history.</summary>
+    public ElleSpec Elle { get; set; } = new();
+
     /// <summary>Tear the cluster down after the run. Default true; set false to leave it up for
     /// inspection (the run still completes and artifacts are collected either way).</summary>
     public bool Teardown { get; set; } = true;
@@ -134,6 +138,7 @@ public sealed class ScenarioSpec
         Workload.Validate();
         Nemesis?.Validate();
         Checks.Validate();
+        Elle.Validate();
 
         // Cross-block, so it lives here rather than in WorkloadSpec: the workload names a node and
         // only the cluster block knows how many there are. Caught at read time because the

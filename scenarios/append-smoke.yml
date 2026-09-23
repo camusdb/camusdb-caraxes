@@ -1,0 +1,24 @@
+# Elle list-append, fault-free. Transactions read and append to a few contended lists; every attempt
+# goes to history.edn, and Elle checks it for dependency cycles (lost update, write skew, read skew,
+# aborted and dirty reads). PASS needs Elle to call the history serializable. Needs
+# tools/elle/fetch.sh once.
+name: append-smoke
+cluster:
+  name: append
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+teardown: true

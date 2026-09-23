@@ -197,6 +197,14 @@ public sealed class WorkloadRunner
             }
         }
 
+        // Passed only when set, so 0 keeps the workload's own defaults, the same rule as the timeouts.
+        if (scenario.Workload.Kind == "append")
+        {
+            AppendIfPositive(workloadArgs, "--append-keys", scenario.Workload.AppendKeys);
+            AppendIfPositive(workloadArgs, "--append-max-writes-per-key", scenario.Workload.AppendMaxWritesPerKey);
+            AppendIfPositive(workloadArgs, "--append-max-txn-length", scenario.Workload.AppendMaxTxnLength);
+        }
+
         List<string> notes = [];
 
         // Said out loud because it changes what the number means: a single-gateway run is not
@@ -256,6 +264,14 @@ public sealed class WorkloadRunner
 
         AppendCommonFlags(workloadArgs, scenario.Workload);
         return new WorkloadRunPlan(workloadArgs, notes);
+    }
+
+    private static void AppendIfPositive(List<string> args, string flag, int value)
+    {
+        if (value <= 0)
+            return;
+        args.Add(flag);
+        args.Add(value.ToString());
     }
 
     /// <summary>

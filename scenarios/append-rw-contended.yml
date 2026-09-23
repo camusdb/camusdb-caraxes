@@ -1,0 +1,23 @@
+# Elle list-append, read-write transactions only, on 2 active keys. Isolates the read-write path
+# from the read-only snapshot path, and puts every transaction on the same two lists, so a write skew
+# needs only two transactions that overlap. Fault-free; PASS needs a serializable history.
+name: append-rw-contended
+cluster:
+  name: append
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 0
+  write_percent: 100
+  append_keys: 2
+teardown: true

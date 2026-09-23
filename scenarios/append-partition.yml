@@ -1,0 +1,30 @@
+# Elle list-append under network partitions: isolate one node, heal, then isolate another. A
+# partition is where a stale leader, a lost commit reply or a split coordinator shows up as a cycle.
+# Commits whose reply is lost are recorded :info, and Elle admits both outcomes for them.
+name: append-partition
+cluster:
+  name: append-chaos
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 23
+  events:
+    - { at: 15s, fault: partition, target: random, duration: 20s }
+    - { at: 50s, fault: partition, target: random, duration: 20s }
+checks:
+  max_recovery_seconds: 45
+teardown: true

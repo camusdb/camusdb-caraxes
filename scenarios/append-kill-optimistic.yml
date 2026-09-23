@@ -1,0 +1,30 @@
+# Elle list-append with optimistic locking under node kills. Optimistic mode validates the rows a
+# transaction read at commit instead of locking them; serializable must still hold, and a kill
+# mid-commit is the case that tests the validation's durability.
+name: append-kill-optimistic
+cluster:
+  name: append-chaos
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 29
+  events:
+    - { at: 15s, fault: kill, target: random, duration: 20s }
+    - { at: 50s, fault: kill, target: random, duration: 20s }
+checks:
+  max_recovery_seconds: 45
+teardown: true

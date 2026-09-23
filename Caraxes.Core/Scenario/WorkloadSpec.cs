@@ -21,8 +21,24 @@ public sealed class WorkloadSpec
     /// land in different tables; requires <see cref="Tables"/> &gt;= 2). Bank is the stronger anomaly
     /// detector under contention and faults; fanout keeps that invariant and adds the placement
     /// pressure — every table is a separate key space, so a many-table dataset loads every partition
-    /// and, under <c>key_range_sharding</c>, gives the range splitter something to split.</summary>
+    /// and, under <c>key_range_sharding</c>, gives the range splitter something to split.
+    /// <c>append</c> runs Elle list-append transactions on a table of its own and records every attempt
+    /// to <c>history.edn</c>; the scenario's <c>elle:</c> step then checks that history for dependency
+    /// cycles, which no conserved sum can see. The seeded dataset is still created and reconciled, but
+    /// the append shape leaves it untouched.</summary>
     public string Kind { get; set; } = "accounts";
+
+    /// <summary><c>append</c> only: lists active at one time (<c>--append-keys</c>). Fewer keys means
+    /// more contention and more dependency edges for Elle. 0 leaves the workload default (10).</summary>
+    public int AppendKeys { get; set; }
+
+    /// <summary><c>append</c> only: appends a list takes before its slot moves to a new key
+    /// (<c>--append-max-writes-per-key</c>). 0 leaves the workload default (64).</summary>
+    public int AppendMaxWritesPerKey { get; set; }
+
+    /// <summary><c>append</c> only: most steps in one transaction (<c>--append-max-txn-length</c>).
+    /// 0 leaves the workload default (4).</summary>
+    public int AppendMaxTxnLength { get; set; }
 
     /// <summary>Database the workload seeds and drives; <c>init</c> creates it if absent.</summary>
     public string Database { get; set; } = "caraxes";
@@ -197,8 +213,19 @@ public sealed class WorkloadSpec
 
     public void Validate()
     {
-        if (Kind is not ("accounts" or "bank" or "fanout"))
-            throw new ScenarioException($"'workload.kind' must be 'accounts', 'bank' or 'fanout', got '{Kind}'");
+        if (Kind is not ("accounts" or "bank" or "fanout" or "append"))
+            throw new ScenarioException($"'workload.kind' must be 'accounts', 'bank', 'fanout' or 'append', got '{Kind}'");
+
+        if (AppendKeys < 0 || AppendMaxWritesPerKey < 0 || AppendMaxTxnLength < 0)
+            throw new ScenarioException(
+                "'workload.append_keys', 'workload.append_max_writes_per_key' and 'workload.append_max_txn_length' " +
+                $"must be >= 0 (0 = workload default), got {AppendKeys}, {AppendMaxWritesPerKey}, {AppendMaxTxnLength}");
+
+        // Said at read time: an append knob on another shape is ignored, so a scenario that sets one is
+        // a scenario that believes it tests something it does not.
+        if (Kind != "append" && (AppendKeys > 0 || AppendMaxWritesPerKey > 0 || AppendMaxTxnLength > 0))
+            throw new ScenarioException(
+                $"'workload.append_*' settings apply only to 'workload.kind: append', but kind is '{Kind}'");
 
         if (string.IsNullOrWhiteSpace(Database) || Database is "default" or "system")
             throw new ScenarioException($"'workload.database' must be a non-empty, non-reserved name, got '{Database}'");
