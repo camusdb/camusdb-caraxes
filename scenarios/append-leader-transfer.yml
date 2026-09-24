@@ -1,0 +1,31 @@
+# Elle list-append while partition leadership moves between nodes. A transfer in the middle of a
+# commit moves in-memory write intents and range locks away from the actor that holds them; a read or a
+# lock taken on the new leader must still see them. PASS needs a serializable history.
+name: append-leader-transfer
+cluster:
+  name: append-chaos
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 41
+  events:
+    - { at: 15s, fault: leader-transfer, target: random }
+    - { at: 30s, fault: leader-transfer, target: random }
+    - { at: 45s, fault: leader-transfer, target: random }
+    - { at: 60s, fault: leader-transfer, target: random }
+    - { at: 75s, fault: leader-transfer, target: random }
+teardown: true

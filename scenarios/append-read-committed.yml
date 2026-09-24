@@ -1,0 +1,23 @@
+# Elle list-append at read committed, no faults. Elle checks the read-committed model (G0, G1a, G1b,
+# G1c): no dirty writes, no aborted or intermediate reads, no cycles of write and read dependencies.
+# Write skew and read skew are allowed at this level. PASS needs a read-committed history.
+name: append-read-committed
+cluster:
+  name: append
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: read_committed
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+teardown: true

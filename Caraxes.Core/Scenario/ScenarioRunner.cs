@@ -508,6 +508,7 @@ public sealed class ScenarioRunner
         }
 
         GradeElle(notes, ref passed);
+        GradeDivergentApply(outputDir, notes, ref passed);
         GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
         GradePlacementStability(artifactsDir, notes);
@@ -523,6 +524,46 @@ public sealed class ScenarioRunner
             Analysis = analysis,
         };
     }
+
+    /// <summary>
+    /// Fails the run when the captured node logs hold a same-revision divergent apply (see
+    /// <see cref="DivergentApplyCheck"/>), and writes every matched line to <c>divergent-applies.txt</c>. Runs for every
+    /// workload. Without captured logs it cannot decide, and it says so instead of passing silently.
+    /// </summary>
+    private void GradeDivergentApply(string outputDir, List<string> notes, ref bool passed)
+    {
+        DivergentApplyResult result = DivergentApplyCheck.Scan(outputDir);
+        if (!result.LogsFound)
+        {
+            notes.Add("divergent applies: NOT CHECKED — no node logs were captured (capture_node_logs: false or capture failed)");
+            return;
+        }
+
+        if (result.Lines == 0)
+        {
+            notes.Add($"divergent applies: none in {CountLogs(outputDir)} node log(s)");
+            return;
+        }
+
+        DivergentApplyCheck.WriteMatches(outputDir, Path.Combine(outputDir, "divergent-applies.txt"));
+        string summary =
+            $"{result.Lines} same-revision divergent apply line(s) on {result.Keys.Count} key(s) " +
+            $"({string.Join(", ", result.LinesByNode.Select(n => $"{n.Key}={n.Value}"))}); an acknowledged write was " +
+            "overwritten — see divergent-applies.txt";
+
+        if (scenario.Checks.RequireNoDivergentApply)
+        {
+            notes.Add($"  CHECK FAILED: {summary}");
+            passed = false;
+        }
+        else
+        {
+            notes.Add($"divergent applies (not required by this scenario): {summary}");
+        }
+    }
+
+    private static int CountLogs(string outputDir) =>
+        Directory.Exists(outputDir) ? Directory.GetFiles(outputDir, "node-log-*.txt").Length : 0;
 
     /// <summary>
     /// Fails an append run unless Elle called its history valid. Reconciliation only proves the seeded

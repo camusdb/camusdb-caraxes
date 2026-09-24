@@ -1,0 +1,30 @@
+# Elle list-append while a node is frozen (SIGSTOP) and then resumed. A paused leader keeps its
+# in-memory locks and intents but answers nothing; on resume it may still believe it leads. That is
+# where a stale leader serves a read or finishes a commit it should not. PASS needs a serializable history.
+name: append-pause
+cluster:
+  name: append-chaos
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 31
+  events:
+    - { at: 15s, fault: pause, target: random, duration: 15s }
+    - { at: 50s, fault: pause, target: random, duration: 15s }
+checks:
+  max_recovery_seconds: 45
+teardown: true

@@ -1,0 +1,23 @@
+# Elle list-append with optimistic locking, no faults. Optimistic transactions skip the explicit
+# write lock and validate at commit, but keep serializable predicate locks; this is the fault-free
+# baseline for that mode. PASS needs a serializable history.
+name: append-optimistic
+cluster:
+  name: append
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+teardown: true

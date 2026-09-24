@@ -1,0 +1,30 @@
+# Elle list-append over a slow network: 150 ms added latency on one node, then on another. Slow
+# links stretch every window between a probe and a decision, and between a prepare and its commit, so a
+# race that needs a narrow window gets a wide one. PASS needs a serializable history.
+name: append-slow
+cluster:
+  name: append-chaos
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 37
+  events:
+    - { at: 15s, fault: slow, target: random, duration: 20s, delay_ms: 150 }
+    - { at: 50s, fault: slow, target: random, duration: 20s, delay_ms: 150 }
+checks:
+  max_recovery_seconds: 45
+teardown: true

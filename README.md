@@ -146,6 +146,23 @@ checks:
 
 The correlation is written to `analysis.md` and `scenario.json`.
 
+### Divergent-apply check (every scenario)
+
+Kahuna logs `Same-revision divergent apply for key … overwrites a different value already recorded at this
+revision` when two committed log entries write different values to one key at one revision. The second record
+replaces the first, so an acknowledged write is gone, and Kahuna continues. Caraxes scans the captured node logs
+for that line after every run, for every workload, and fails the scenario when it finds one. The matched lines go
+to `run/divergent-applies.txt`.
+
+```yaml
+checks:
+  require_no_divergent_apply: true  # default; false only for a run that reproduces the defect on purpose
+```
+
+The check needs the node logs (`capture_node_logs`, on by default). Without them the verdict says the check did
+not run; it does not pass silently. It was first seen in an Elle run under a pause fault, where the history held
+an acknowledged append that no later read contained.
+
 ### Bank-transfer invariant workload
 
 `workload.kind: bank` swaps the shard-disjoint baseline for **transfers between two rows across the

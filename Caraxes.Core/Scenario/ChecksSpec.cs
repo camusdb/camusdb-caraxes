@@ -43,6 +43,16 @@ public sealed class ChecksSpec
     public bool RequireNodeHealth { get; set; } = true;
 
     /// <summary>
+    /// Fail the run when any node logged a same-revision divergent apply: two committed log entries wrote different
+    /// values to one key at one revision, so the second replaced the first and an acknowledged write is gone.
+    ///
+    /// <para>Default true, for every workload: it is a correctness signal, like reconciliation, and it needs no workload
+    /// model to be read. It depends on captured node logs; with <c>capture_node_logs: false</c> the check cannot run and
+    /// says so. Turn it off only for a run that expects the line, such as a reproduction of the defect itself.</para>
+    /// </summary>
+    public bool RequireNoDivergentApply { get; set; } = true;
+
+    /// <summary>
     /// Fail the run when the load generator's own resource check flagged it — CPU-bound, pausing for
     /// GC, backed up in its thread pool, or pinned at its in-flight cap.
     ///
