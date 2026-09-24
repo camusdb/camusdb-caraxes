@@ -45,6 +45,20 @@ public sealed class WorkloadRunner
     /// <summary>Published workload mount point inside the workload container.</summary>
     private const string ContainerWorkloadDir = "/workload";
 
+    /// <summary>
+    /// Where the measured run writes its artifacts: the container's own filesystem, not the artifacts
+    /// mount. The harness copies the directory out with <c>docker cp</c> after the workload exits.
+    ///
+    /// <para>On Docker Desktop for macOS, a file that a container is still writing through a bind
+    /// mount can lose pages: each <c>docker run</c> of another container while the workload wrote
+    /// <c>history.edn</c> (the leader-transfer fault starts one per transfer) left a page-aligned run
+    /// of NUL bytes in the host copy, ending at the moment that container started. Elle then cannot
+    /// parse the history, so the run has no verdict. A file that never crosses the mount while it is
+    /// written cannot lose pages that way. Under <c>/tmp</c> because the Linux <c>--user</c> mapping
+    /// can write nowhere else in the image.</para>
+    /// </summary>
+    internal const string ContainerRunOutputRoot = "/tmp/caraxes-output";
+
     public WorkloadRunner(ClusterPlan plan, string publishDir)
     {
         this.plan = plan;
@@ -126,7 +140,8 @@ public sealed class WorkloadRunner
         foreach (string note in runPlan.Notes)
             Console.WriteLine($"    {note}");
 
-        return await RunContainerAsync(runPlan.Args, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
+        return await RunContainerAsync(runPlan.Args, hostArtifactsDir, cancellationToken, containerOutputSubdir)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -154,7 +169,7 @@ public sealed class WorkloadRunner
             "run",
             "--endpoint", MeasuredEndpoint(plan, scenario),
             "--database", scenario.Workload.Database,
-            "--output", $"{ContainerArtifactsDir}/{containerOutputSubdir}",
+            "--output", $"{ContainerRunOutputRoot}/{containerOutputSubdir}",
             "--seed", scenario.Workload.Seed.ToString(),
             "--rows", scenario.Workload.Rows.ToString(),
             "--payload-bytes", scenario.Workload.PayloadBytes.ToString(),
@@ -327,8 +342,17 @@ public sealed class WorkloadRunner
     /// </summary>
     public static string ContainerName(ClusterPlan plan) => $"{plan.ProjectName}-workload";
 
+    /// <summary>
+    /// Runs the workload container. With <paramref name="copyOutSubdir"/> set, the workload writes that
+    /// subdirectory under <see cref="ContainerRunOutputRoot"/>, and it is copied to the same name under
+    /// <paramref name="hostArtifactsDir"/> after the workload exits. The container is then kept until
+    /// the copy is done, so it runs without <c>--rm</c> and is removed here.
+    /// </summary>
     private async Task<WorkloadInvocation> RunContainerAsync(
-        IReadOnlyList<string> workloadArgs, string hostArtifactsDir, CancellationToken cancellationToken)
+        IReadOnlyList<string> workloadArgs,
+        string hostArtifactsDir,
+        CancellationToken cancellationToken,
+        string? copyOutSubdir = null)
     {
         Directory.CreateDirectory(hostArtifactsDir);
 
@@ -340,12 +364,14 @@ public sealed class WorkloadRunner
         await ProcessRunner.RunAsync(
             "docker", ["rm", "--force", containerName], cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        List<string> dockerArgs =
+        List<string> dockerArgs = copyOutSubdir is null
+            ? ["run", "--rm"]
+            : ["run"];
+        dockerArgs.AddRange(
         [
-            "run", "--rm",
             "--name", containerName,
             "--network", plan.NetworkName,
-        ];
+        ]);
         dockerArgs.AddRange(BuildUserArgs());
         dockerArgs.AddRange(
         [
@@ -360,10 +386,51 @@ public sealed class WorkloadRunner
         // The workload's own non-zero exit (invalid run / usage) is data the caller branches on,
         // not a harness failure, so this uses RunAsync (never throws on exit code) and streams the
         // workload's console output through for live progress.
-        ProcessResult result = await ProcessRunner.RunAsync(
-            "docker", dockerArgs, streamOutput: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (copyOutSubdir is null)
+        {
+            ProcessResult result = await ProcessRunner.RunAsync(
+                "docker", dockerArgs, streamOutput: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return new WorkloadInvocation(result.ExitCode);
+            return new WorkloadInvocation(result.ExitCode);
+        }
+
+        try
+        {
+            ProcessResult result = await ProcessRunner.RunAsync(
+                "docker", dockerArgs, streamOutput: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await CopyOutAsync(containerName, copyOutSubdir, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
+            return new WorkloadInvocation(result.ExitCode);
+        }
+        finally
+        {
+            // Not the caller's token: a cancelled run must still not leave the container behind.
+            await ProcessRunner.RunAsync("docker", ["rm", "--force", containerName]).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Copies the run's output directory out of the stopped workload container. A workload that failed
+    /// before it created the directory leaves nothing to copy; that is said, and the missing artifacts
+    /// are then reported by the verdict like any other run that wrote none.
+    /// </summary>
+    private static async Task CopyOutAsync(
+        string containerName, string subdir, string hostArtifactsDir, CancellationToken cancellationToken)
+    {
+        string hostOutput = Path.Combine(hostArtifactsDir, subdir);
+
+        // `docker cp` into an existing directory nests the source inside it (run/run), so the target
+        // must not exist. RunAsync already cleared a prior run's output; this covers anything since.
+        if (Directory.Exists(hostOutput))
+            Directory.Delete(hostOutput, recursive: true);
+
+        ProcessResult copy = await ProcessRunner.RunAsync(
+            "docker",
+            ["cp", $"{containerName}:{ContainerRunOutputRoot}/{subdir}", Path.GetFullPath(hostOutput)],
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (copy.ExitCode != 0)
+            Console.WriteLine($"==> could not copy the workload output out of the container: {copy.StdErr.Trim()}");
     }
 }
 

@@ -291,7 +291,7 @@ public sealed class WorkloadEvidenceTests
 
         Assert.That(ValueAfter(plan.Args, "--endpoint"), Is.EqualTo("https://camus1:5096,https://camus2:5096,https://camus3:5096"));
         Assert.That(ValueAfter(plan.Args, "--rows"), Is.EqualTo("5000"));
-        Assert.That(ValueAfter(plan.Args, "--output"), Is.EqualTo("/artifacts/run"));
+        Assert.That(ValueAfter(plan.Args, "--output"), Is.EqualTo("/tmp/caraxes-output/run"));
         Assert.That(plan.Args[0], Is.EqualTo("run"));
     }
 
