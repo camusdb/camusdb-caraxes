@@ -72,6 +72,10 @@ public sealed class RunOptions
     [Option("tag", Required = false,
         HelpText = "Suffix for the run directory, so repeated runs of one scenario keep their artifacts side by side (runs/scenarios/<name>-<tag>). Use it to establish a baseline: a median needs several matched runs, and without a tag each run deletes the one before it.")]
     public string? Tag { get; set; }
+
+    [Option("correctness-only", Required = false, Default = false,
+        HelpText = "Do not fail the run on the recovery rules (recovery time and throughput recovery); report them as NOT GRADED. Elle, reconciliation, the divergent-apply check, node health and the total-outage rule still grade the run. For CI runners, whose speed says nothing about the change.")]
+    public bool CorrectnessOnly { get; set; }
 }
 
 [Verb("matrix", HelpText = "Run a cartesian sweep of scenarios and write a cross-cell report")]

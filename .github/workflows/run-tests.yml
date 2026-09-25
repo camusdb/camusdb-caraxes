@@ -1,0 +1,21 @@
+name: Run Tests
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+jobs:
+  Caraxes-Tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v5
+      - name: Install .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      # Unit tests only: they need no Docker, no cluster and no CamusDB checkout. The scenarios themselves run in
+      # nightly-append.yml.
+      - name: Run Caraxes tests
+        run: dotnet test Caraxes.Tests/Caraxes.Tests.csproj -l "console;verbosity=normal"

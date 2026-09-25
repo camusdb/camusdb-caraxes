@@ -792,6 +792,22 @@ public sealed class ScenarioRunner
         return parts.Count > 0 ? parts : ["no versions reported"];
     }
 
+    /// <summary>
+    /// Records one finding of a recovery rule. It fails the run only when <see cref="ChecksSpec.GradeRecovery"/> is on;
+    /// otherwise it is reported as not graded, so the evidence stays in the verdict. Returns false when the run failed.
+    /// </summary>
+    public static bool GradeRecoveryFinding(ChecksSpec checks, List<string> notes, string finding)
+    {
+        if (!checks.GradeRecovery)
+        {
+            notes.Add($"  NOT GRADED: {finding} (recovery is not graded in this run)");
+            return true;
+        }
+
+        notes.Add($"  CHECK FAILED: {finding}");
+        return false;
+    }
+
     private Verdict.FaultAnalysis? RunFaultCorrelation(string outputDir, List<string> notes, ref bool passed)
     {
         IntervalSeries? series = IntervalSeries.Load(outputDir);
@@ -846,16 +862,11 @@ public sealed class ScenarioRunner
             }
 
             if (checks.RequireRecovery && w.Healed && !w.Recovered)
-            {
-                notes.Add($"  CHECK FAILED: fault {w.Label} never recovered before the run ended");
-                passed = false;
-            }
+                passed = GradeRecoveryFinding(checks, notes, $"fault {w.Label} never recovered before the run ended") && passed;
 
             if (w.Healed && w.Recovered && w.RecoverySeconds > checks.MaxRecoverySeconds)
-            {
-                notes.Add($"  CHECK FAILED: fault {w.Label} recovered in {w.RecoverySeconds:N1}s, over the {checks.MaxRecoverySeconds:N0}s limit");
-                passed = false;
-            }
+                passed = GradeRecoveryFinding(checks, notes,
+                    $"fault {w.Label} recovered in {w.RecoverySeconds:N1}s, over the {checks.MaxRecoverySeconds:N0}s limit") && passed;
 
             if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && checks.RequireRecovery && !w.ThroughputRecovered)
             {
@@ -865,10 +876,7 @@ public sealed class ScenarioRunner
                 if (regimeMoved)
                     notes.Add($"  INADMISSIBLE: {finding} — but the host device left its regime after the heal ({w.Device!.Describe()}); this window does not measure the recovery and is not judged");
                 else
-                {
-                    notes.Add($"  CHECK FAILED: {finding}");
-                    passed = false;
-                }
+                    passed = GradeRecoveryFinding(checks, notes, finding) && passed;
             }
 
             if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && w.ThroughputRecovered && !w.ThroughputHeld)
@@ -880,10 +888,7 @@ public sealed class ScenarioRunner
                 if (w.HeldRuleInadmissible)
                     notes.Add($"  INADMISSIBLE: {finding} — but {w.HeldRuleVoidReason}; the held rule is not judged on this window");
                 else
-                {
-                    notes.Add($"  CHECK FAILED: {finding}");
-                    passed = false;
-                }
+                    passed = GradeRecoveryFinding(checks, notes, finding) && passed;
             }
 
             if (checks.MinRecoveredThroughputFraction > 0 && w.Healed && w.ThroughputRecovered
@@ -895,10 +900,7 @@ public sealed class ScenarioRunner
                 if (w.RegainRuleInadmissible)
                     notes.Add($"  INADMISSIBLE: {finding} — but {w.RegainRuleVoidReason}; the regain-time rule is not judged on this window");
                 else
-                {
-                    notes.Add($"  CHECK FAILED: {finding}");
-                    passed = false;
-                }
+                    passed = GradeRecoveryFinding(checks, notes, finding) && passed;
             }
         }
 

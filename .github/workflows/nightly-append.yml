@@ -1,0 +1,137 @@
+name: nightly-append
+
+# Nightly + manual dispatch: every Elle list-append scenario against CamusDB main, to catch a correctness regression
+# in CamusDB or in the Kahuna/Kommander versions it references. This should NOT become a per-PR gate: the runs are
+# nondeterministic, and some anomalies occur in one run of five (for example the stale-base write at a leader
+# transfer). A red run here means "download the artifact and look", not "the change is broken".
+#
+# The runs use --correctness-only. A hosted runner's speed says nothing about the change, so the recovery-time and
+# throughput-recovery rules are reported as NOT GRADED instead of failing the run. What still fails it: an Elle
+# anomaly, a same-revision divergent apply in any node log, a failed reconciliation, a node that stopped answering,
+# or a total outage during a fault.
+on:
+  schedule:
+    # 05:00 UTC nightly, one hour after the Kommander Jepsen run.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      camusdb_repo:
+        description: 'CamusDB repository'
+        default: 'camusdb/camusdb'
+      camusdb_ref:
+        description: 'CamusDB git ref to test'
+        default: 'main'
+
+concurrency:
+  group: nightly-append-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    # A scenario is about 2 minutes of load plus seeding and teardown. The image build is most of the rest.
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          # Fault-free: write skew, read skew and read-only snapshot anomalies.
+          - append-smoke
+          - append-rw-8keys
+          - append-rw-contended
+          - append-read-committed
+          - append-optimistic
+          # Faults: partition, SIGSTOP, kill, slow network, and graceful leader transfer. Leader transfer is the
+          # scenario that found the same-revision overwrite and the stale-base write.
+          - append-partition
+          - append-pause
+          - append-kill-optimistic
+          - append-slow
+          - append-leader-transfer
+
+    env:
+      CAMUSDB_REPO: ${{ inputs.camusdb_repo || 'camusdb/camusdb' }}
+      CAMUSDB_REF:  ${{ inputs.camusdb_ref  || 'main' }}
+      RUN_TAG: ci
+
+    defaults:
+      run:
+        working-directory: caraxes
+
+    steps:
+      - name: Check out Caraxes
+        uses: actions/checkout@v5
+        with:
+          path: caraxes
+
+      - name: Check out CamusDB
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CAMUSDB_REPO }}
+          ref: ${{ env.CAMUSDB_REF }}
+          path: camusdb
+
+      # Scenarios read the CamusDB checkout from cluster.camusdb_repo, which defaults to ~/camusdb.
+      - name: Link CamusDB checkout to ~/camusdb
+        run: |
+          ln -s "$GITHUB_WORKSPACE/camusdb" "$HOME/camusdb"
+          git -C "$HOME/camusdb" log --oneline -1
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache elle-cli
+        uses: actions/cache@v4
+        with:
+          path: caraxes/tools/elle/*.jar
+          key: elle-cli-${{ hashFiles('caraxes/tools/elle/fetch.sh') }}
+
+      - name: Fetch elle-cli
+        run: bash tools/elle/fetch.sh
+
+      # The slow fault uses tc netem inside the node containers, which needs the host kernel's sch_netem module.
+      - name: Load netem
+        if: matrix.scenario == 'append-slow'
+        run: sudo modprobe sch_netem
+
+      - name: Run ${{ matrix.scenario }}
+        run: |
+          set -o pipefail
+          dotnet run --project Caraxes -c Release -- run \
+            --scenario "scenarios/${{ matrix.scenario }}.yml" \
+            --tag "$RUN_TAG" \
+            --correctness-only \
+            2>&1 | tee caraxes.log
+
+      - name: Write verdict to the job summary
+        if: always()
+        run: |
+          if [ ! -f caraxes.log ]; then
+            echo "The run did not start." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "### ${{ matrix.scenario }}"
+            echo
+            echo "CamusDB \`$CAMUSDB_REPO@$(git -C "$HOME/camusdb" rev-parse --short HEAD)\`"
+            echo
+            echo '```'
+            # The verdict block is the last part of the log.
+            sed -n '/^scenario verdict:/,$p' caraxes.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only the scenario directory: it holds the Elle history and verdict, the node logs, the divergent-apply
+      # matches and the fault timeline. runs/clusters holds the generated certificates and is not uploaded.
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: caraxes-${{ matrix.scenario }}-${{ github.run_attempt }}
+          path: |
+            caraxes/runs/scenarios/${{ matrix.scenario }}-${{ env.RUN_TAG }}/
+            caraxes/caraxes.log
+          retention-days: 14
+          if-no-files-found: warn

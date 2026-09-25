@@ -24,6 +24,18 @@ public sealed class ChecksSpec
     /// a fault whose recovery was not observed (the run ended first) is reported but not failed.</summary>
     public bool RequireRecovery { get; set; } = true;
 
+    /// <summary>
+    /// Fail the run on the recovery rules: recovery not observed, recovery over <see cref="MaxRecoverySeconds"/>, and
+    /// the three throughput-recovery rules. When false, those findings are still reported, marked <c>NOT GRADED</c>,
+    /// but they do not fail the run.
+    ///
+    /// <para>For a correctness gate on a machine whose speed is not known, such as a CI runner: there, a slow recovery
+    /// says more about the machine than about the change, and a red run for that reason hides the red runs that
+    /// matter. The total-outage rule (<see cref="RequireProgressUnderFault"/>), node health, Elle, reconciliation and
+    /// the divergent-apply check are not affected. <c>caraxes run --correctness-only</c> sets this to false.</para>
+    /// </summary>
+    public bool GradeRecovery { get; set; } = true;
+
     /// <summary>The recovery gate on throughput: after each heal, the trailing 5-second mean of
     /// completed operations must regain this share of the pre-fault median (the clean minute before
     /// the injection) within <see cref="MaxRecoverySeconds"/>. The error-rate rule alone passes a
