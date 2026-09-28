@@ -1,0 +1,51 @@
+# A6 CONTROL ARM (2026-09-27; Kommander fc4dabe7 task 3 measured on the CamusDB shape, plan 84b26503 row A6). The tmpfs learned
+# bank shape of ss1 (tmpfs, heap pin, learned routing, 128 workers, 50/50, 6-minute warm-up) on LOCAL PACKS built from the
+# ~/kommander working tree: Kommander 1.9.1-round.1 (a643020 + the uncommitted task 3 code: O(expired) ProposalRegistry prune,
+# the ack-path re-supply gate on in-flight commit broadcasts, FanOutBeforeLocalWrite=true, the follower truncate fast paths,
+# leader.round/resume coverage on the aggregator path) -> Kahuna.Core/Shared 1.10.2-round.1 (Kahuna 9680aaa4 = 1.10.1 with only
+# the Kommander reference changed). CamusDB 8ebedede + the local feed (working tree only; never committed).
+# ONE image (caraxes/camusdb:banka6) for both arms. Compare with ss1 on bankrel1101: 8,523 ops/s, raft_duration 2.31 ms at
+# 144 entries per batch, commit p50 10.38 ms. Acceptance on fc4dabe7: raft_duration <= 1.2 ms at >= 150 items, >= +30% ops/s
+# at unchanged entries per commit, admissible, zero failed writes, exact reconciliation.
+name: bank-a6-tmpfs-learned-off
+cluster:
+  name: banka6off
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:banka6"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

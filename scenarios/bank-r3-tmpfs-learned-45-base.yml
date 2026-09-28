@@ -1,0 +1,49 @@
+# KOMMANDER ROUND-COST ACCEPTANCE PAIR, ARM base (2026-09-27): the 45-minute tmpfs learned bank shape of
+# bank-rebase-cand-p1-w128-routing-learned-tmpfs-45-rel182.yml on CamusDB 8ebedede + Kahuna.Core 1.10.1.
+# base = Kommander 1.9.0 (as shipped, through Kahuna.Core); cand = Kommander 1.9.1-round.2 (local pack of the round-cost
+# fixes: settled-proposal prune, in-flight backfill gate, fan-out before the local write, truncate fast paths, follower
+# apply-drain gate), referenced directly from CamusDB.Core. Both images are built from ONE CamusDB worktree, differing only
+# in that reference. Arms run interleaved base, cand, base, cand (tools/p3c/r3-campaign.sh). Acceptance: raft_duration
+# mean <= 1.2 ms at >= 150 items per batch, >= +30% ops/s, p3c regime admissible, zero failed, exact reconciliation.
+name: bank-r3-tmpfs-learned-45-base
+cluster:
+  name: bankr3base45
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankr3base"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

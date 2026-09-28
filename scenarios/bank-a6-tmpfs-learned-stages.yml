@@ -1,0 +1,50 @@
+# A6 STAGES ARM (2026-09-27). Identical to bank-a6-tmpfs-learned-off.yml (same image caraxes/camusdb:banka6, same shape, same
+# 6-minute warm-up) except KOMMANDER_ROUND_STAGES=1: Kommander's opt-in per-proposal stage histogram raft.round.stage_ms{stage},
+# now with leader.round / leader.resume stamped on the aggregator path too. Compare stage by stage with ss1's stages arm on
+# bankrel1101 (8,304 ops/s; leader.queue 0.21 / propose 0.23 / wal 0.46 / wal_completion 0.08 / replication 1.51 ms;
+# follower.queue 0.55 / wal 0.72 / wal_completion 0.43 / ack 0.31 ms; 3 appends and 6 acks per proposal per follower).
+# Read with tools/p3c/window-metrics.py stages <run>.
+name: bank-a6-tmpfs-learned-stages
+cluster:
+  name: banka6stages
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:banka6"
+  env:
+    KOMMANDER_ROUND_STAGES: "1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

@@ -1,0 +1,50 @@
+# HOLD SWEEP ARM hold=1 ms (2026-09-27; plan 84b26503 row A5/A6 follow-up). Identical to bank-a6-tmpfs-learned-off.yml
+# (image caraxes/camusdb:banka6 = CamusDB 8ebedede + Kommander 1.9.1-round.1 / Kahuna.Core 1.10.2-round.1, tmpfs learned shape,
+# 128 workers, 6-minute warm-up, histogram off) except kahuna.key_value_write_post_completion_hold_ms = 1 (CamusDB default 2,
+# Kahuna default 0). Why: with the round at 1.56 ms, the 2 ms post-completion hold (tuned on fac7be26 when the round was 2.2 ms)
+# plus the 4.5 ms ordinary queue age are 6.5 of the 8.4 ms server commit; the a6 off arm (hold 2) is the baseline: 9,193 ops/s,
+# raft 1.56 ms at 135 entries per batch, 205 batches/s, commit p50 8.52 ms. Read: ops/s, commit p50, raft ms, entries per batch,
+# ordinary queue age, leader CPU-ms per op (thinner batches cost more per entry).
+name: bank-a6-tmpfs-learned-hold1
+cluster:
+  name: banka6hold1
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    key_value_write_post_completion_hold_ms: 1
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:banka6"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

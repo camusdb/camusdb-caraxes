@@ -27,6 +27,12 @@ Modes:
   whose leader read mean grew more than 3x first-to-last, held two regimes and is not admissible for a
   ratio. Feature `80af367a`: all four `bank-rebase` soaks stepped 3-4x mid-run and every whole-run check
   passed them.
+  After the verdict it prints the run's **unit costs** (below), writes them to `<runDir>/unit-costs.json`
+  and compares them with the previous run of the same scenario name.
+- `trend <scenario-prefix> [--since yyyy-MM-dd] [--runs runs/scenarios]` — the unit costs as a markdown table,
+  one row per run whose scenario name starts with the prefix, oldest window first; a cell that moved more than
+  10% from the row above carries a `*`. Each run's `unit-costs.json` is reused when the current schema wrote it
+  and computed and cached otherwise, so the first pass over a runs directory is the backfill.
 
 ## Why comparisons are per replicate
 
@@ -123,3 +129,39 @@ write rate over the same window (`io.csv` from `write-probe.sh`); and, from the 
 the Raft-log database, WAL ingest, flush count (and how many were Write-Buffer-Manager-forced), compactions vs
 trivial moves, stalls, and the shard CF's per-level Write / Moved / W-Amp columns. Compaction "write" in RocksDB's
 table includes the L0 flush (L0 write = flush), so rewrite beyond flush is the L1+ Write column, not the Sum.
+
+### Unit costs (feature `da82959a`, 2026-09-26)
+
+What one unit of work cost, beside the admissibility verdict, so a regression shows in the run that introduces it
+(the fs8 → fs12 soaks lost a fifth of their throughput over five runs that printed only a throughput and a verdict).
+Every figure is a reset-aware counter increase over the measured window of `node-metrics.csv` (a counter that drops
+restarted with its process, and its new value is the increase), divided by the window's span and set against the
+client's completed ops/s from `intervals.csv`:
+
+| figure | numerator ÷ denominator |
+|---|---|
+| Raft entries per commit (and per `class`) | `kahuna_kv_write_entries_total` ÷ (`kahuna_durable_tx_one_phase_commits_total` + `kahuna_durable_tx_finalize_decision_ms_milliseconds_count`), all nodes |
+| Raft proposals per commit | Kahuna write batches (`kahuna_kv_write_raft_duration_milliseconds_count`: one batch is one proposal; the leader's WAL takes two writes per batch, Proposed and Committed) ÷ commits; beside it the batch's items, Raft mean and ordinary queue age |
+| write submissions per commit | `kahuna_kv_write_admitted_total` (all classes) ÷ commits: the scheduler submissions (one-phase bundle, each materialization, each settle) the aggregator coalesces into batches — the quantity "one proposal per transaction" means in Kahuna `3b85d8c1` |
+| executor client ops per op | `raft_executor_operations_total{operation_class=Client}`, every node, every partition but the system partition 0, ÷ ops. Kommander's Client class is proposals and commits **plus** read-index confirmations, local-apply waits and ticket/state reads (`RaftOperationMapper`), so this is mostly a cost of reads, not proposals |
+| CPU-ms per op | `dotnet_process_cpu_time_seconds_total` (user + system) ÷ ops, for the write leader (the node with the most Kahuna Raft batches), each follower (mean) and the cluster |
+| allocation KB per op, GC pause | leader `dotnet_gc_heap_total_allocated_bytes_total` ÷ ops (KB = 1,000 B); leader `dotnet_gc_pause_time_seconds_total` ÷ wall |
+| device KB per op | `host-io.csv` `w_mb_s` mean over the window ÷ ops — every writer on the host device, and blank on a tmpfs run (scenario or cluster name contains `tmpfs`) because the data never reaches it |
+| requests per write txn | (`camus_request_count_total` − the workload's standalone reads, `summary.json` `ReadOpsPerSec`) ÷ `operation=begin` requests (per attempt) and ÷ `WriteTxnsPerSec` (per committed txn, retries included) |
+| server ms by statement | `camus_request_duration_milliseconds` sum ÷ count per `operation`, `outcome=ok` only |
+| one-phase share, fallbacks | one-phase commits ÷ commits; `kahuna_durable_tx_one_phase_fallbacks_total` by `reason` |
+
+The comparison flags any of entries/commit, proposals/commit, executor ops/op, leader CPU-ms/op, leader KB/op, GC pause, device KB/op,
+requests/write txn and the query / non_query / commit means that moved more than 10%. It is a finding, not a rule:
+the verdict says whether the window is one measurement, and a changed cost is still a measurement.
+
+On `p45learned182` this prints 6.04 entries, 0.040 proposals and 4.08 write submissions per commit (163 batches/s of 152 entries), 0.88
+executor client ops per op, 0.93 leader CPU-ms and 108.8 KB per op, 4.0% GC, 5.91 requests per write attempt,
+query 1.09 / non_query 1.48 / commit 11.07 ms. Against the 2026-09-26 assessment: its 6.3 entries divided by one-phase
+commits only (6.31); its "1.76 proposals per commit" was the leader's Client-class executor ops per commit, which are
+mostly read confirmations — the Raft proposals are 0.04 per commit; its 1.47 / 11.03 ms came from the end-of-run
+scrape, which includes warm-up and drain. Once pipelining (`be9c297a`) sends several statements per exchange,
+`camus_request_count_total` counts statements, not client exchanges.
+
+Tests: `dotnet test tools/p3c.Tests` (a synthetic run directory with known counter rates, a restart, and samples
+outside the window).

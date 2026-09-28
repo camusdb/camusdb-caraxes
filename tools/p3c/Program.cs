@@ -12,6 +12,9 @@ using P3c;
 //   soak    <runDir> [runDir ...]        - 45-minute soak windows: average, first five, last five, decay
 //   rebase  <base1> <cand1> <cand2> <base2> - the matched ABBA ratio for the sustained bank re-baseline
 //   regime  <runDir> [runDir ...]        - per-5-minute Raft/read/host-I/O regime check: did one run hold ONE regime?
+//                                          Followed by the run's unit costs (written to <runDir>/unit-costs.json) and
+//                                          their change against the previous run of the same scenario
+//   trend   <scenario-prefix> [--since yyyy-MM-dd] [--runs dir] - unit costs, one row per run, oldest first
 //
 // Why per-replicate and not medians: this host moves the cost of a durable Raft write by up to 4.5x
 // between runs, which is larger than any effect being measured. Arms of one replicate run back to
@@ -23,7 +26,7 @@ if (args.Length == 0)
     Console.Error.WriteLine(
         "usage: p3c extract <runDir> | compare <cell> [arm ...] | queue <runDir> ... "
         + "| hops <runDir> ... | soak <runDir> ... | rebase <base1> <cand1> <cand2> <base2> "
-        + "| regime <runDir> ...");
+        + "| regime <runDir> ... | trend <scenario-prefix> [--since yyyy-MM-dd] [--runs dir]");
     return 1;
 }
 
@@ -61,9 +64,19 @@ switch (args[0])
                 Regime.Print(report);
             else
                 Console.Error.WriteLine($"{dir}: no node-metrics.csv / run-meta.json");
+
+            if (UnitCosts.Compute(dir) is UnitCosts.Costs costs)
+            {
+                UnitCosts.Save(dir, costs);
+                UnitCosts.Costs? previous = UnitCosts.FindPrevious(dir, costs) is string prev ? UnitCosts.LoadOrCompute(prev) : null;
+                UnitCosts.Print(costs, previous);
+            }
             Console.WriteLine();
         }
         return 0;
+
+    case "trend":
+        return Trend.Run(args[1..]);
 
     default:
         Console.Error.WriteLine($"unknown mode '{args[0]}'");
