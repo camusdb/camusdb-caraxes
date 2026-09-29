@@ -115,11 +115,14 @@ public sealed class HttpProbes : IDisposable
         NumberHandling = JsonNumberHandling.AllowReadingFromString,
     };
 
+    /// <summary>How long one probe waits for an answer unless the caller chose otherwise.</summary>
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
+
     private readonly HttpClient client;
 
     public HttpProbes(TimeSpan? timeout = null)
     {
-        client = new HttpClient { Timeout = timeout ?? TimeSpan.FromSeconds(5) };
+        client = new HttpClient { Timeout = timeout ?? DefaultTimeout };
     }
 
     public async Task<bool> PingAsync(string baseUrl, CancellationToken cancellationToken = default)

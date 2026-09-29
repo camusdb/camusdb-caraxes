@@ -18,6 +18,8 @@ public sealed class FaultWindow
 
     public string? Target { get; init; }
 
+    /// <summary>When the nemesis issued the fault, not when its command returned: a <c>docker kill</c>
+    /// on a saturated device has taken seven seconds to return after the node was already dead.</summary>
     public DateTime StartUtc { get; init; }
 
     /// <summary>Heal time, or null if the fault was never healed (crash / permanent change).</summary>
@@ -33,6 +35,11 @@ public sealed class FaultWindow
 /// <c>heal</c> of the same kind+target. An inject with no matching heal (the fault outlived the run,
 /// e.g. crash-then-repair or remove-node) yields an open-ended window the correlator closes at the
 /// end of the observed series.
+///
+/// <para>A window opens at the inject's <c>issuedTs</c>. Timelines written before injects carried
+/// it fall back to the <c>note</c> that resolved a <c>leader</c> target to this node, which the
+/// nemesis writes immediately before issuing the fault, and otherwise to the inject's own
+/// <c>ts</c> (when its command returned).</para>
 /// </summary>
 public static class FaultTimeline
 {
@@ -42,6 +49,7 @@ public static class FaultTimeline
             return [];
 
         var pendingByLabel = new Dictionary<string, (string Kind, string? Target, DateTime Start)>();
+        var resolvedAtByLabel = new Dictionary<string, DateTime>();
         List<FaultWindow> windows = [];
 
         foreach (string line in File.ReadLines(timelinePath))
@@ -57,12 +65,28 @@ public static class FaultTimeline
 
             switch (rec.Phase)
             {
+                case "note":
+                    if (rec.Target is not null)
+                        resolvedAtByLabel[label] = rec.Ts;
+                    break;
+
+                case "error":
+                    resolvedAtByLabel.Remove(label);
+                    break;
+
                 case "inject":
+                    DateTime start = rec.Ts;
+                    if (rec.IssuedTs is DateTime issuedAt)
+                        start = issuedAt;
+                    else if (resolvedAtByLabel.TryGetValue(label, out DateTime resolvedAt) && resolvedAt <= rec.Ts)
+                        start = resolvedAt;
+                    resolvedAtByLabel.Remove(label);
+
                     // A second inject of the same label before a heal (should not happen in a
                     // well-formed run) closes the previous window at this instant to stay well-defined.
                     if (pendingByLabel.TryGetValue(label, out var prev))
-                        windows.Add(new FaultWindow { Kind = prev.Kind, Target = prev.Target, StartUtc = prev.Start, EndUtc = rec.Ts });
-                    pendingByLabel[label] = (rec.Kind, rec.Target, rec.Ts);
+                        windows.Add(new FaultWindow { Kind = prev.Kind, Target = prev.Target, StartUtc = prev.Start, EndUtc = start });
+                    pendingByLabel[label] = (rec.Kind, rec.Target, start);
                     break;
 
                 case "heal":
@@ -87,7 +111,7 @@ public static class FaultTimeline
             JsonElement root = doc.RootElement;
 
             string phase = root.GetProperty("phase").GetString() ?? "";
-            if (phase is not ("inject" or "heal"))
+            if (phase is not ("inject" or "heal" or "note" or "error"))
                 return null;
 
             string kind = root.TryGetProperty("kind", out JsonElement k) ? k.GetString() ?? "" : "";
@@ -99,7 +123,12 @@ public static class FaultTimeline
                 !DateTime.TryParse(tsEl.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime ts))
                 return null;
 
-            return new TimelineRecord(phase, kind, target, ts.ToUniversalTime());
+            DateTime? issuedTs = null;
+            if (root.TryGetProperty("issuedTs", out JsonElement issuedEl) &&
+                DateTime.TryParse(issuedEl.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime issued))
+                issuedTs = issued.ToUniversalTime();
+
+            return new TimelineRecord(phase, kind, target, ts.ToUniversalTime(), issuedTs);
         }
         catch (Exception)
         {
@@ -107,5 +136,5 @@ public static class FaultTimeline
         }
     }
 
-    private sealed record TimelineRecord(string Phase, string Kind, string? Target, DateTime Ts);
+    private sealed record TimelineRecord(string Phase, string Kind, string? Target, DateTime Ts, DateTime? IssuedTs);
 }

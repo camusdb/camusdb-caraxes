@@ -34,17 +34,15 @@ public sealed class TimelineWriter : IDisposable
     }
 
     /// <param name="phase">inject | heal | error | note.</param>
-    public void Write(string phase, string kind, string? target, string detail, DateTime nowUtc)
+    /// <param name="issuedUtc">For an inject, when the nemesis issued it. <c>ts</c> is when the
+    /// command returned, which on a saturated host can be seconds after the fault took effect.</param>
+    public void Write(string phase, string kind, string? target, string detail, DateTime nowUtc, DateTime? issuedUtc = null)
     {
-        var record = new
-        {
-            ts = nowUtc.ToString("o"),
-            offsetSeconds = Math.Round((nowUtc - startUtc).TotalSeconds, 3),
-            phase,
-            kind,
-            target,
-            detail,
-        };
+        string ts = nowUtc.ToString("o");
+        double offsetSeconds = Math.Round((nowUtc - startUtc).TotalSeconds, 3);
+        object record = issuedUtc is null
+            ? new { ts, offsetSeconds, phase, kind, target, detail }
+            : new { ts, offsetSeconds, phase, kind, target, detail, issuedTs = issuedUtc.Value.ToString("o") };
 
         string line = JsonSerializer.Serialize(record, JsonOptions);
         lock (gate)
@@ -52,7 +50,7 @@ public sealed class TimelineWriter : IDisposable
             writer.WriteLine(line);
         }
 
-        Console.WriteLine($"    [nemesis +{record.offsetSeconds,7:0.0}s] {phase} {kind}{(target is null ? "" : $" {target}")}: {detail}");
+        Console.WriteLine($"    [nemesis +{offsetSeconds,7:0.0}s] {phase} {kind}{(target is null ? "" : $" {target}")}: {detail}");
     }
 
     public void Dispose() => writer.Dispose();

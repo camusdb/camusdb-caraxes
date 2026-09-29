@@ -179,6 +179,69 @@ public class NodeHealthTests
         Assert.That(outages[0].Excused, Is.False);
     }
 
+    [Test]
+    public void ProbeIssuedWithinItsTimeoutBeforeTheFaultIsExcused()
+    {
+        // Issued 2 s before the kill, failed because the node died while it waited; the next probe
+        // lands inside the window.
+        string path = WriteSeries(
+            (0, "camus2", true), (28, "camus2", false), (60, "camus2", false), (90, "camus2", true));
+
+        Assert.That(NodeHealthAnalysis.Analyze(path, [Window("camus2", 30, 55)], 45, probeTimeoutSeconds: 5)[0].Excused,
+            Is.True);
+        Assert.That(NodeHealthAnalysis.Analyze(path, [Window("camus2", 30, 55)], 45, probeTimeoutSeconds: 0)[0].Excused,
+            Is.False, "without the timeout allowance the in-flight probe reads as a node that died on its own");
+    }
+
+    [Test]
+    public void ProbeIssuedBeforeItsTimeoutCouldCoverTheFaultIsNotExcused()
+    {
+        // Issued 6 s before the kill: a 5 s probe had already failed before the fault existed.
+        string path = WriteSeries(
+            (0, "camus2", true), (24, "camus2", false), (60, "camus2", false), (90, "camus2", true));
+
+        Assert.That(NodeHealthAnalysis.Analyze(path, [Window("camus2", 30, 55)], 45, probeTimeoutSeconds: 5)[0].Excused,
+            Is.False);
+    }
+
+    /// <summary>
+    /// The two recorded soaks whose verdicts failed on "died on its own": fs13 (a probe issued 0.28 s
+    /// before its kill's SIGKILL) and rl4b-mor (the same race at kill 1, and a <c>docker kill</c> that
+    /// took 6.8 s to return on a saturated device while the node was already dead). Their timelines
+    /// predate <c>issuedTs</c>, so the windows open at the leader-resolution notes.
+    /// </summary>
+    [TestCase("fs13", 11)]
+    [TestCase("rl4b-mor", 12)]
+    public void RecordedSoaksGradeEveryOutageAsExplained(string run, int failedProbes)
+    {
+        string dir = Path.Combine(TestContext.CurrentContext.TestDirectory, "Recordings", run);
+        string health = Path.Combine(dir, "node-health.csv");
+
+        IReadOnlyList<NodeOutage> outages = NodeHealthAnalysis.Analyze(
+            health, FaultTimeline.Parse(Path.Combine(dir, "timeline.jsonl")), 60, HttpProbes.DefaultTimeout.TotalSeconds);
+
+        Assert.That(outages.Sum(o => o.Samples), Is.EqualTo(failedProbes));
+        Assert.That(outages.Where(o => !o.Excused), Is.Empty);
+
+        // The same series against windows opened when each inject returned: the verdict the runs got.
+        string injectReturned = Path.Combine(tempDir, "timeline.jsonl");
+        File.WriteAllLines(injectReturned, File.ReadLines(Path.Combine(dir, "timeline.jsonl"))
+            .Where(line => !line.Contains("\"phase\":\"note\"")));
+        Assert.That(NodeHealthAnalysis.Analyze(health, FaultTimeline.Parse(injectReturned), 60).Where(o => !o.Excused),
+            Is.Not.Empty);
+    }
+
+    [Test]
+    public void RecordedSlowKillOpensItsWindowWhenTheLeaderWasResolved()
+    {
+        string timeline = Path.Combine(TestContext.CurrentContext.TestDirectory, "Recordings", "rl4b-mor", "timeline.jsonl");
+
+        FaultWindow last = FaultTimeline.Parse(timeline).Last();
+
+        Assert.That(last.Label, Is.EqualTo("kill/camus1"));
+        Assert.That(last.StartUtc, Is.EqualTo(DateTime.Parse("2026-09-29T01:40:17.2693730Z").ToUniversalTime()));
+    }
+
     [TestCase("570.9MiB / 1.5GiB", 570.9, 1536.0)]
     [TestCase("1.024GiB / 2GiB", 1048.576, 2048.0)]
     [TestCase("512KiB / 1GiB", 0.5, 1024.0)]

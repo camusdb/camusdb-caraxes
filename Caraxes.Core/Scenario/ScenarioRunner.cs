@@ -925,7 +925,8 @@ public sealed class ScenarioRunner
 
         IReadOnlyList<FaultWindow> windows = FaultTimeline.Parse(Path.Combine(runDir, "timeline.jsonl"));
         IReadOnlyList<NodeOutage> outages =
-            NodeHealthAnalysis.Analyze(healthPath, windows, scenario.Checks.MaxRecoverySeconds);
+            NodeHealthAnalysis.Analyze(
+                healthPath, windows, scenario.Checks.MaxRecoverySeconds, HttpProbes.DefaultTimeout.TotalSeconds);
 
         if (outages.Count == 0)
         {

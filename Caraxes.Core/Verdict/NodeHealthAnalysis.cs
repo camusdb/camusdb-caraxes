@@ -36,11 +36,17 @@ public static class NodeHealthAnalysis
     /// falls between the injection and the heal plus <paramref name="recoveryGraceSeconds"/>, and
     /// the fault targets this node or the whole cluster (null target). An unhealed window (a
     /// crash fault) excuses everything after its injection.
+    ///
+    /// <para>A sample is stamped when its probe was issued, and the probe waits up to
+    /// <paramref name="probeTimeoutSeconds"/> for an answer, so a probe issued shortly before the
+    /// fault lands is still in flight when the node goes dark and fails because of it. The window
+    /// therefore excuses samples issued up to one probe timeout before it opens.</para>
     /// </summary>
     public static IReadOnlyList<NodeOutage> Analyze(
         string healthCsvPath,
         IReadOnlyList<FaultWindow> faultWindows,
         double recoveryGraceSeconds,
+        double probeTimeoutSeconds = 0,
         int minUnexcusedSamples = 2)
     {
         if (!File.Exists(healthCsvPath))
@@ -78,7 +84,7 @@ public static class NodeHealthAnalysis
                 int count = i - start;
                 bool excused = true;
                 for (int j = start; j < start + count; j++)
-                    excused &= IsExcused(node, samples[j].Ts, faultWindows, recoveryGraceSeconds);
+                    excused &= IsExcused(node, samples[j].Ts, faultWindows, recoveryGraceSeconds, probeTimeoutSeconds);
 
                 outages.Add(new NodeOutage(
                     node,
@@ -93,7 +99,7 @@ public static class NodeHealthAnalysis
     }
 
     private static bool IsExcused(
-        string node, DateTime ts, IReadOnlyList<FaultWindow> windows, double graceSeconds)
+        string node, DateTime ts, IReadOnlyList<FaultWindow> windows, double graceSeconds, double probeTimeoutSeconds)
     {
         foreach (FaultWindow w in windows)
         {
@@ -101,7 +107,7 @@ public static class NodeHealthAnalysis
                 continue;
 
             DateTime end = w.EndUtc?.AddSeconds(graceSeconds) ?? DateTime.MaxValue;
-            if (ts >= w.StartUtc && ts <= end)
+            if (ts >= w.StartUtc.AddSeconds(-probeTimeoutSeconds) && ts <= end)
                 return true;
         }
 

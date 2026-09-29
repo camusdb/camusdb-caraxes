@@ -1,0 +1,38 @@
+{"ts":"2026-09-28T23:48:17.2650469Z","offsetSeconds":0,"phase":"note","kind":"start","target":null,"detail":"14 scheduled event(s)"}
+{"ts":"2026-09-28T23:56:17.2671765Z","offsetSeconds":480.002,"phase":"note","kind":"kill","target":"camus1","detail":"target \u0027leader\u0027 resolved to camus1"}
+{"ts":"2026-09-28T23:56:18.2143092Z","offsetSeconds":480.949,"phase":"inject","kind":"kill","target":"camus1","detail":"SIGKILL bankfaultsoakrel1104mor-camus1"}
+{"ts":"2026-09-28T23:56:48.7375644Z","offsetSeconds":511.473,"phase":"heal","kind":"kill","target":"camus1","detail":"healed kill on camus1"}
+{"ts":"2026-09-29T00:04:17.4166930Z","offsetSeconds":960.152,"phase":"inject","kind":"slow-disk","target":"camus1","detail":"throttle /data on bankfaultsoakrel1104mor-camus1: writes 4 KiB/s (cgroup io.max on 259:0)"}
+{"ts":"2026-09-29T00:04:47.4530715Z","offsetSeconds":990.188,"phase":"heal","kind":"slow-disk","target":"camus1","detail":"healed slow-disk on camus1"}
+{"ts":"2026-09-29T00:12:17.2660200Z","offsetSeconds":1440.001,"phase":"note","kind":"kill","target":"camus2","detail":"target \u0027leader\u0027 resolved to camus2"}
+{"ts":"2026-09-29T00:12:17.7571426Z","offsetSeconds":1440.492,"phase":"inject","kind":"kill","target":"camus2","detail":"SIGKILL bankfaultsoakrel1104mor-camus2"}
+{"ts":"2026-09-29T00:12:47.9823835Z","offsetSeconds":1470.718,"phase":"heal","kind":"kill","target":"camus2","detail":"healed kill on camus2"}
+{"ts":"2026-09-29T00:20:17.3063235Z","offsetSeconds":1920.041,"phase":"inject","kind":"pause","target":"camus2","detail":"SIGSTOP (freeze) bankfaultsoakrel1104mor-camus2"}
+{"ts":"2026-09-29T00:20:49.4865904Z","offsetSeconds":1952.222,"phase":"heal","kind":"pause","target":"camus2","detail":"healed pause on camus2"}
+{"ts":"2026-09-29T00:28:17.2968175Z","offsetSeconds":2400.032,"phase":"inject","kind":"slow-disk","target":"camus3","detail":"throttle /data on bankfaultsoakrel1104mor-camus3: writes 4 KiB/s (cgroup io.max on 259:0)"}
+{"ts":"2026-09-29T00:28:47.3406131Z","offsetSeconds":2430.076,"phase":"heal","kind":"slow-disk","target":"camus3","detail":"healed slow-disk on camus3"}
+{"ts":"2026-09-29T00:36:17.2895631Z","offsetSeconds":2880.025,"phase":"note","kind":"kill","target":"camus3","detail":"target \u0027leader\u0027 resolved to camus3"}
+{"ts":"2026-09-29T00:36:17.8027009Z","offsetSeconds":2880.538,"phase":"inject","kind":"kill","target":"camus3","detail":"SIGKILL bankfaultsoakrel1104mor-camus3"}
+{"ts":"2026-09-29T00:36:48.0757046Z","offsetSeconds":2910.811,"phase":"heal","kind":"kill","target":"camus3","detail":"healed kill on camus3"}
+{"ts":"2026-09-29T00:44:17.2592564Z","offsetSeconds":3359.994,"phase":"note","kind":"pause","target":"camus3","detail":"target \u0027leader\u0027 resolved to camus3"}
+{"ts":"2026-09-29T00:44:17.2946645Z","offsetSeconds":3360.03,"phase":"inject","kind":"pause","target":"camus3","detail":"SIGSTOP (freeze) bankfaultsoakrel1104mor-camus3"}
+{"ts":"2026-09-29T00:44:47.3678346Z","offsetSeconds":3390.103,"phase":"heal","kind":"pause","target":"camus3","detail":"healed pause on camus3"}
+{"ts":"2026-09-29T00:52:17.3000790Z","offsetSeconds":3840.035,"phase":"inject","kind":"slow-disk","target":"camus2","detail":"throttle /data on bankfaultsoakrel1104mor-camus2: writes 4 KiB/s (cgroup io.max on 259:0)"}
+{"ts":"2026-09-29T00:52:47.3370420Z","offsetSeconds":3870.072,"phase":"heal","kind":"slow-disk","target":"camus2","detail":"healed slow-disk on camus2"}
+{"ts":"2026-09-29T01:00:17.2626844Z","offsetSeconds":4319.998,"phase":"note","kind":"kill","target":"camus2","detail":"target \u0027leader\u0027 resolved to camus2"}
+{"ts":"2026-09-29T01:00:18.2911750Z","offsetSeconds":4321.026,"phase":"inject","kind":"kill","target":"camus2","detail":"SIGKILL bankfaultsoakrel1104mor-camus2"}
+{"ts":"2026-09-29T01:00:48.5574781Z","offsetSeconds":4351.293,"phase":"heal","kind":"kill","target":"camus2","detail":"healed kill on camus2"}
+{"ts":"2026-09-29T01:08:17.4357499Z","offsetSeconds":4800.171,"phase":"inject","kind":"pause","target":"camus3","detail":"SIGSTOP (freeze) bankfaultsoakrel1104mor-camus3"}
+{"ts":"2026-09-29T01:08:47.4774275Z","offsetSeconds":4830.213,"phase":"heal","kind":"pause","target":"camus3","detail":"healed pause on camus3"}
+{"ts":"2026-09-29T01:16:17.4229756Z","offsetSeconds":5280.158,"phase":"inject","kind":"slow-disk","target":"camus1","detail":"throttle /data on bankfaultsoakrel1104mor-camus1: writes 4 KiB/s (cgroup io.max on 259:0)"}
+{"ts":"2026-09-29T01:16:47.4735487Z","offsetSeconds":5310.209,"phase":"heal","kind":"slow-disk","target":"camus1","detail":"healed slow-disk on camus1"}
+{"ts":"2026-09-29T01:24:17.2648486Z","offsetSeconds":5760,"phase":"note","kind":"kill","target":"camus2","detail":"target \u0027leader\u0027 resolved to camus2"}
+{"ts":"2026-09-29T01:24:18.1748723Z","offsetSeconds":5760.91,"phase":"inject","kind":"kill","target":"camus2","detail":"SIGKILL bankfaultsoakrel1104mor-camus2"}
+{"ts":"2026-09-29T01:24:48.4241368Z","offsetSeconds":5791.159,"phase":"heal","kind":"kill","target":"camus2","detail":"healed kill on camus2"}
+{"ts":"2026-09-29T01:32:17.2591051Z","offsetSeconds":6239.994,"phase":"note","kind":"pause","target":"camus2","detail":"target \u0027leader\u0027 resolved to camus2"}
+{"ts":"2026-09-29T01:32:17.2996306Z","offsetSeconds":6240.035,"phase":"inject","kind":"pause","target":"camus2","detail":"SIGSTOP (freeze) bankfaultsoakrel1104mor-camus2"}
+{"ts":"2026-09-29T01:32:47.3402895Z","offsetSeconds":6270.075,"phase":"heal","kind":"pause","target":"camus2","detail":"healed pause on camus2"}
+{"ts":"2026-09-29T01:40:17.2693730Z","offsetSeconds":6720.005,"phase":"note","kind":"kill","target":"camus1","detail":"target \u0027leader\u0027 resolved to camus1"}
+{"ts":"2026-09-29T01:40:24.0558678Z","offsetSeconds":6726.791,"phase":"inject","kind":"kill","target":"camus1","detail":"SIGKILL bankfaultsoakrel1104mor-camus1"}
+{"ts":"2026-09-29T01:40:58.8429880Z","offsetSeconds":6761.578,"phase":"heal","kind":"kill","target":"camus1","detail":"healed kill on camus1"}
+{"ts":"2026-09-29T01:40:58.8453487Z","offsetSeconds":6761.581,"phase":"note","kind":"stop","target":null,"detail":"nemesis complete"}

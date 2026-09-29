@@ -202,10 +202,11 @@ public sealed class NemesisRunner
         if (healable)
             active[id] = new ActiveFault(id, fault, target);
 
+        DateTime issued = DateTime.UtcNow;
         try
         {
             await fault.InjectAsync(target, plan, stopToken).ConfigureAwait(false);
-            timeline.Write("inject", fault.Kind, target.Name, fault.Describe(target), DateTime.UtcNow);
+            timeline.Write("inject", fault.Kind, target.Name, fault.Describe(target), DateTime.UtcNow, issued);
             return true;
         }
         catch (OperationCanceledException)

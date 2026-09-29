@@ -72,12 +72,15 @@ public sealed class NodeMonitor
     {
         string ts = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
+        // Each probe row carries the instant that probe was issued. The nodes are probed one after
+        // another, so a sample-wide stamp can sit a whole probe timeout before the request it labels.
         List<string> healthRows = new(plan.Nodes.Count);
         foreach (NodePlan node in plan.Nodes)
         {
+            string issued = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
             bool reachable = await probes
                 .PingAsync($"http://localhost:{node.HostRestPort}", stopToken).ConfigureAwait(false);
-            healthRows.Add($"{ts},{node.Name},{(reachable ? "true" : "false")}");
+            healthRows.Add($"{issued},{node.Name},{(reachable ? "true" : "false")}");
         }
 
         TryAppend(healthPath, healthRows);

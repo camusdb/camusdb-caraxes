@@ -98,6 +98,56 @@ public sealed class FaultTimelineTests
         finally { File.Delete(path); }
     }
 
+    [Test]
+    public void IssuedTsOpensTheWindow()
+    {
+        string path = WriteTimeline(
+            """{"ts":"2026-08-19T12:00:27.0000000Z","phase":"inject","kind":"kill","target":"camus1","detail":"x","issuedTs":"2026-08-19T12:00:20.0000000Z"}""",
+            Line("heal", "kill", "camus1", "2026-08-19T12:00:50.0000000Z"));
+        try
+        {
+            var windows = FaultTimeline.Parse(path);
+            Assert.That(windows[0].StartUtc, Is.EqualTo(new DateTime(2026, 8, 19, 12, 0, 20, DateTimeKind.Utc)));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Test]
+    public void LeaderResolutionNoteOpensTheWindowWithoutIssuedTs()
+    {
+        string path = WriteTimeline(
+            Line("note", "kill", "camus1", "2026-08-19T12:00:20.0000000Z"),
+            Line("inject", "kill", "camus1", "2026-08-19T12:00:27.0000000Z"),
+            Line("heal", "kill", "camus1", "2026-08-19T12:00:50.0000000Z"),
+            Line("inject", "kill", "camus1", "2026-08-19T12:01:30.0000000Z"),
+            Line("heal", "kill", "camus1", "2026-08-19T12:02:00.0000000Z"));
+        try
+        {
+            var windows = FaultTimeline.Parse(path);
+            Assert.That(windows[0].StartUtc, Is.EqualTo(new DateTime(2026, 8, 19, 12, 0, 20, DateTimeKind.Utc)));
+            Assert.That(windows[1].StartUtc, Is.EqualTo(new DateTime(2026, 8, 19, 12, 1, 30, DateTimeKind.Utc)),
+                "a note opens only the inject that follows it");
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Test]
+    public void FailedInjectDiscardsItsResolutionNote()
+    {
+        string path = WriteTimeline(
+            Line("note", "kill", "camus1", "2026-08-19T12:00:20.0000000Z"),
+            Line("error", "kill", "camus1", "2026-08-19T12:00:21.0000000Z"),
+            Line("inject", "kill", "camus1", "2026-08-19T12:08:00.0000000Z"),
+            Line("heal", "kill", "camus1", "2026-08-19T12:08:30.0000000Z"));
+        try
+        {
+            var windows = FaultTimeline.Parse(path);
+            Assert.That(windows, Has.Count.EqualTo(1));
+            Assert.That(windows[0].StartUtc, Is.EqualTo(new DateTime(2026, 8, 19, 12, 8, 0, DateTimeKind.Utc)));
+        }
+        finally { File.Delete(path); }
+    }
+
     private static string Line(string phase, string kind, string? target, string ts)
     {
         string tgt = target is null ? "null" : $"\"{target}\"";
