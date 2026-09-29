@@ -49,6 +49,14 @@ jobs:
           - append-kill-optimistic
           - append-slow
           - append-leader-transfer
+          # Clock faults: one node's wall clock jumps (CLOCK_REALTIME only, through the tools/clockskew shim that
+          # Caraxes layers on the node image). Small skews are the control; the jumps cross the 5 s snapshot
+          # clock-fence lead, the 15 s intent lease, and the wall-clock gossip and schema-ack leases. Negative skews
+          # need the node certificate to be valid before the skewed time, which CamusDB's committed certificate is.
+          - append-clock-skew-small
+          - append-clock-jump
+          - append-clock-jump-locks
+          - append-clock-jump-liveness
 
     env:
       CAMUSDB_REPO: ${{ inputs.camusdb_repo || 'camusdb/camusdb' }}

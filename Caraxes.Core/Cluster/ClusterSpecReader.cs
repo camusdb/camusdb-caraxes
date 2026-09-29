@@ -45,6 +45,7 @@ public static class ClusterSpecReader
         "data_tmpfs_mb",
         "memory_limit_mb",
         "gc_heap_hard_limit_mb",
+        "clock_skew",
         "kahuna",
         "camusdb",
         "log_levels",

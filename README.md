@@ -53,7 +53,8 @@ Fault kinds: `kill` (SIGKILL, restart on heal), `stop` (graceful), `pause` (SIGS
 `partition` (iptables-isolate a node from all peers), `slow` / `loss` (tc netem latency / packet
 loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-capped tmpfs data mount, see
 below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
-below), and `remove-node` (drain via `/v1/cluster/leave`, a one-way scale-down). Targets are a node
+below), `clock-skew` (move one node's wall clock forward or back, see below), and `remove-node`
+(drain via `/v1/cluster/leave`, a one-way scale-down). Targets are a node
 name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
 applies to each, so `kill` of a zone kills the whole zone together). Every healable fault still in
 effect when the workload finishes is healed on the way out, so the cluster is never left broken.
@@ -112,6 +113,36 @@ nemesis:
   events:
     - { at: 4m, fault: slow-disk, target: camus1, duration: 30s }              # pause
     - { at: 7m, fault: slow-disk, target: camus2, duration: 60s, write_bps: 2097152 }  # 2 MiB/s
+```
+
+**Clock skew (`clock-skew`).** Moves one node's wall clock by `offset_ms` (positive is ahead, negative
+is behind; default +10 s, limit ±12 h) and moves it back to real time on heal. Containers share the host
+kernel's clock, so a node's clock cannot be set; instead, with `clock_skew: true` on the cluster,
+Caraxes layers a small shim (`tools/clockskew/skew.c`) on the node image as `<image>-clockskew` and
+preloads it (`LD_PRELOAD`) into every node. The shim shifts `CLOCK_REALTIME`, `gettimeofday` and `time`
+by the offset in the node's `/tmp/caraxes-skew` and leaves monotonic time, sleeps and timers alone.
+libfaketime is not used: under .NET 10 it made `Thread.Sleep` and timed waits return at once. Each
+inject measures the node's skew back and fails if the shim is not active; `docker exec <node> date`
+prints the node's skewed time.
+
+Only the wall clock moves, so this fault reaches CamusDB's HLC (Kommander `HybridLogicalClock` reads
+`DateTimeOffset.UtcNow`) and the expiries built on it, and not Raft, whose elections and leases use
+monotonic ticks. The HLC takes the highest clock it hears and persists a floor per partition, so a
+forward jump on one node moves the whole cluster's HLC forward and stays after the heal. What each size
+reaches: more than 5 s ahead skips the snapshot clock fence (`append-clock-jump.yml`); more than 15 s
+expires write intents and locks in flight (`append-clock-jump-locks.yml`); minutes reach the wall-clock
+gossip liveness and the 30 s schema-ack lease (`append-clock-jump-liveness.yml`).
+`append-clock-skew-small.yml` (±2 s) is the control. A node set further back than the development
+certificate's `notBefore` rejects its peers' certificates, which is why CamusDB's
+`docker/certs/generate.sh` backdates it one day.
+
+```yaml
+cluster:
+  clock_skew: true
+nemesis:
+  events:
+    - { at: 15s, fault: clock-skew, target: camus1, duration: 20s, offset_ms: 10000 }   # 10 s ahead
+    - { at: 45s, fault: clock-skew, target: camus2, duration: 20s, offset_ms: -2000 }   # 2 s behind
 ```
 
 Two schedule forms — an explicit `events:` timeline or a seeded `random:` soak:

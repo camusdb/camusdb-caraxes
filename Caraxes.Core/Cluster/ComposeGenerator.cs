@@ -76,7 +76,7 @@ public static class ComposeGenerator
 
             Dictionary<string, object> service = new()
             {
-                ["image"] = spec.EffectiveImage,
+                ["image"] = spec.NodeImage,
                 ["container_name"] = node.ContainerName,
                 ["restart"] = "no",
                 ["cap_add"] = new List<string> { "NET_ADMIN" },
@@ -129,6 +129,12 @@ public static class ComposeGenerator
             if (spec.LogLevels.Count > 0)
                 environment["CAMUS_LOG_FILTERS"] =
                     string.Join(',', spec.LogLevels.Select(kv => $"{kv.Key}={kv.Value}"));
+
+            // The shim must be loaded when the process starts; the clock-skew fault only rewrites the
+            // offset file it reads. See ClockSkewShim.
+            if (spec.ClockSkew)
+                foreach ((string key, string value) in ClockSkewShim.Environment)
+                    environment[key] = value;
 
             // Applied last, so a scenario can deliberately override a variable Caraxes derived
             // (including the GC budget above). See ClusterSpec.Env for why this exists.

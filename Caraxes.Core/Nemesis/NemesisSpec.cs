@@ -34,6 +34,10 @@ public sealed class NemesisSpec
 
         Random?.Validate();
     }
+
+    /// <summary>Whether any event, or the random soak, can inject a fault of this kind.</summary>
+    public bool Uses(string kind)
+        => Events.Any(e => e.Fault == kind) || (Random?.Faults.Contains(kind) ?? false);
 }
 
 /// <summary>
@@ -43,7 +47,8 @@ public sealed class NemesisSpec
 /// </summary>
 public sealed class NemesisEvent
 {
-    /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node.</summary>
+    /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node |
+    /// leader-transfer | clock-skew.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -86,6 +91,17 @@ public sealed class NemesisEvent
     /// up — <c>leader</c> for whoever leads at that moment.</summary>
     public string? To { get; set; }
 
+    /// <summary>Wall-clock offset in milliseconds for the <c>clock-skew</c> fault: positive moves the
+    /// node's clock forward, negative moves it back. The default, +10 s, is above the 5 s lead at which
+    /// a snapshot read skips the serving node's clock fence.</summary>
+    public long OffsetMs { get; set; } = 10_000;
+
+    /// <summary>The largest <see cref="OffsetMs"/> in either direction. The development certificate is
+    /// valid from one day before it was made, so a node set further back than that rejects its peers'
+    /// certificates as not yet valid; half a day keeps a margin and still reaches every wall-clock
+    /// lease and retention window a scenario would target.</summary>
+    public const long MaxOffsetMs = 12 * 60 * 60 * 1000L;
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Fault))
@@ -95,6 +111,10 @@ public sealed class NemesisEvent
 
         if (To is not null && Fault != "leader-transfer")
             throw new NemesisException($"nemesis event '{Fault}': 'to' is only meaningful for leader-transfer");
+
+        if (Fault == "clock-skew" && (OffsetMs == 0 || Math.Abs(OffsetMs) > MaxOffsetMs))
+            throw new NemesisException(
+                $"nemesis event 'clock-skew': offset_ms must be non-zero and within ±{MaxOffsetMs} (12 h), got {OffsetMs}");
 
         if (Fault == "slow-disk")
         {

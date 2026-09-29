@@ -1,0 +1,33 @@
+# Elle list-append while one node's wall clock jumps 3 minutes forward, and later another node's
+# clock jumps 1 minute back. Kommander's gossip decides Suspect and Dead from the local wall clock,
+# evicts a Dead member after 2 minutes, and feeds liveness into pre-vote denial; the schema-ack gate
+# presumes a node silent for 30 s of wall clock dead. A forward jump of 3 minutes makes the jumped
+# node see every peer as silent past all of those bounds at once. PASS needs a serializable history,
+# no total outage, and recovery after each heal.
+name: append-clock-jump-liveness
+cluster:
+  name: append-clock
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+  clock_skew: true
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 150s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  events:
+    - { at: 15s, fault: clock-skew, target: camus1, duration: 45s, offset_ms: 180000 }
+    - { at: 80s, fault: clock-skew, target: camus2, duration: 45s, offset_ms: -60000 }
+checks:
+  max_recovery_seconds: 45
+teardown: true

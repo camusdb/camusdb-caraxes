@@ -1,0 +1,32 @@
+# Elle list-append while one node's wall clock jumps forward past the 15 s write-intent and prepare
+# lease. Intent and lock expiries are stored as HLC + TTL and checked against the HLC of whichever
+# node evaluates them. The HLC merges to the highest clock it hears, so a jump of 30 s on one node
+# moves the whole cluster's HLC forward within a heartbeat, and every intent and lock in flight at that
+# moment is expired at once. A contender can then take the lock of a transaction that is still
+# running. PASS needs a serializable history: the commit-time validation must refuse the transaction
+# whose lock was taken. The second jump leads the first, so it expires a new set of locks.
+name: append-clock-jump-locks
+cluster:
+  name: append-clock
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+  clock_skew: true
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 120s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  events:
+    - { at: 15s, fault: clock-skew, target: camus1, duration: 30s, offset_ms: 30000 }
+    - { at: 60s, fault: clock-skew, target: camus2, duration: 30s, offset_ms: 90000 }
+teardown: true

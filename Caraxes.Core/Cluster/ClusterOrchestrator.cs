@@ -82,6 +82,9 @@ public sealed class ClusterOrchestrator
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
+        if (spec.ClockSkew)
+            await ClockSkewShim.BuildImageAsync(spec, cancellationToken).ConfigureAwait(false);
+
         await ReclaimSubnetAsync(cancellationToken).ConfigureAwait(false);
 
         Console.WriteLine($"==> starting {spec.Nodes} node(s)");

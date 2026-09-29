@@ -1,0 +1,32 @@
+# Elle list-append with small wall-clock skews: three nodes each run up to 2 s ahead of or behind real
+# time, and the skews overlap. 2 s is below every bound a skew can cross in CamusDB (the 5 s snapshot
+# clock-fence lead, the 15 s intent lease, the 30 s schema-ack lease), so this is the control for the
+# clock-jump scenarios: PASS needs a serializable history. Only CLOCK_REALTIME moves; see
+# Caraxes.Core/Nemesis/ClockSkewFault.cs.
+name: append-clock-skew-small
+cluster:
+  name: append-clock
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+  clock_skew: true
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 40
+  write_percent: 60
+  append_keys: 8
+nemesis:
+  events:
+    - { at: 10s, fault: clock-skew, target: camus1, duration: 40s, offset_ms: 2000 }
+    - { at: 20s, fault: clock-skew, target: camus2, duration: 40s, offset_ms: -2000 }
+    - { at: 45s, fault: clock-skew, target: camus3, duration: 30s, offset_ms: 1500 }
+    - { at: 55s, fault: clock-skew, target: camus1, duration: 25s, offset_ms: -1500 }
+teardown: true

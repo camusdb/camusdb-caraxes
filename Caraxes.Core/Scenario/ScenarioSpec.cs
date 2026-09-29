@@ -140,6 +140,12 @@ public sealed class ScenarioSpec
         Checks.Validate();
         Elle.Validate();
 
+        // Cross-block: the shim is loaded when a node starts, so a fault scheduled against a cluster
+        // started without it could only fail at inject time, minutes into the run.
+        if (Nemesis?.Uses("clock-skew") == true && !Cluster.ClockSkew)
+            throw new ScenarioException(
+                "the nemesis schedules 'clock-skew' but the cluster does not load the clock skew shim; set 'cluster.clock_skew: true'");
+
         // Cross-block, so it lives here rather than in WorkloadSpec: the workload names a node and
         // only the cluster block knows how many there are. Caught at read time because the
         // alternative is a container that starts, fails every request against a DNS name that does

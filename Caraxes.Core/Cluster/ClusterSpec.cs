@@ -109,6 +109,14 @@ public sealed class ClusterSpec
     /// scenarios, not for kill/recovery durability tests. 0 (the default) keeps the named volume.</summary>
     public int DataTmpfsMb { get; set; }
 
+    /// <summary>Preloads the clock skew shim (<c>tools/clockskew</c>) into every node, which the
+    /// <c>clock-skew</c> fault needs: the nodes run the <c>-clockskew</c> image layer with
+    /// <c>LD_PRELOAD</c> set, and each node's wall clock follows the offset in its own
+    /// <c>/tmp/caraxes-skew</c> file (zero until a fault writes one). Off by default, so a scenario
+    /// without clock faults runs the node image and process exactly as built. A scenario that
+    /// schedules a <c>clock-skew</c> fault without this is rejected at read time.</summary>
+    public bool ClockSkew { get; set; }
+
     /// <summary>When &gt; 0, each node container gets a hard memory limit of this many MiB
     /// (compose <c>mem_limit</c>). This is the fix for the observed unbounded RSS growth: CamusDB
     /// runs with Server GC, and with no cgroup limit each node sizes its heap against the whole
@@ -273,6 +281,10 @@ public sealed class ClusterSpec
 
     /// <summary>The image tag actually used: explicit, or derived from the cluster name.</summary>
     public string EffectiveImage => string.IsNullOrEmpty(Image) ? $"caraxes/camusdb:{Name}" : Image;
+
+    /// <summary>The image the node containers run: <see cref="EffectiveImage"/>, or with
+    /// <see cref="ClockSkew"/> the <c>-clockskew</c> layer built on top of it.</summary>
+    public string NodeImage => ClockSkew ? EffectiveImage + ClockSkewShim.ImageSuffix : EffectiveImage;
 
     /// <summary>CamusDB repo path with a leading <c>~</c> expanded.</summary>
     public string EffectiveCamusdbRepo => CamusdbRepo.StartsWith("~")

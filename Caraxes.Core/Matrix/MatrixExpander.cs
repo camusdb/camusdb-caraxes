@@ -118,6 +118,7 @@ public static class MatrixExpander
         DistributedQueryExecution = c.DistributedQueryExecution, MaxQueryParallelism = c.MaxQueryParallelism,
         Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts,
         DataTmpfsMb = c.DataTmpfsMb, MemoryLimitMb = c.MemoryLimitMb, GcHeapHardLimitMb = c.GcHeapHardLimitMb,
+        ClockSkew = c.ClockSkew,
         Kahuna = new Dictionary<string, object>(c.Kahuna),
         Camusdb = new Dictionary<string, object>(c.Camusdb),
         LogLevels = new Dictionary<string, string>(c.LogLevels),
