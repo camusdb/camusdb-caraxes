@@ -38,6 +38,7 @@ public static class ScenarioSpecReader
         "require_no_divergent_apply", "grade_recovery",
         "min_recovered_throughput_fraction",
         "require_client_headroom", "require_cluster_facts", "require_quiet_host", "require_spread_leadership",
+        "require_split", "require_replica_move",
     };
 
     private static readonly HashSet<string> AllowedNemesisKeys = new(StringComparer.OrdinalIgnoreCase)

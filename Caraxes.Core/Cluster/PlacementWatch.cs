@@ -130,6 +130,86 @@ public static class PlacementWatch
 
         return new PlacementStability(Watched: true, Stable: false, detail.ToString());
     }
+
+    /// <summary>
+    /// What the samples prove happened to the topology: the splits and the replica moves a run
+    /// exercised. This is the evidence side of the same series <see cref="Grade"/> reads, and it is
+    /// graded over the whole invocation rather than the measured window, because the question is
+    /// whether the run reached the code path at all.
+    ///
+    /// <para>A split is a partition id absent from the first sample and present in a later one: a
+    /// split allocates a new partition for the child range. A partition that existed from the start
+    /// proves nothing, because the seeding <c>init</c> can split before the poller starts.</para>
+    ///
+    /// <para>A move is a rise in a partition's placement generation over the highest generation seen
+    /// before for it. Each sample keeps whichever node answered last, and a lagging node can report an
+    /// older generation after a newer one, so a fall is a stale view and never counts, and returning
+    /// to a generation already seen does not count twice.</para>
+    /// </summary>
+    public static TopologyEvidence Evidence(IReadOnlyList<PlacementSample> samples)
+    {
+        if (samples.Count < 2)
+            return new TopologyEvidence(Watched: false, samples.Count, [], []);
+
+        HashSet<int> initial = samples[0].Partitions.ToHashSet();
+        SortedSet<int> appeared = [];
+        Dictionary<int, long> highest = new(samples[0].GenerationByPartition);
+        List<string> moves = [];
+
+        for (int i = 1; i < samples.Count; i++)
+        {
+            foreach ((int partition, long generation) in samples[i].GenerationByPartition.OrderBy(kv => kv.Key))
+            {
+                if (!initial.Contains(partition))
+                    appeared.Add(partition);
+
+                if (!highest.TryGetValue(partition, out long seen))
+                {
+                    // First sight of a partition born during the run: its creation is the split, not a move.
+                    highest[partition] = generation;
+                    continue;
+                }
+
+                if (generation <= seen)
+                    continue;
+
+                moves.Add($"p{partition} g{seen} -> g{generation}");
+                highest[partition] = generation;
+            }
+        }
+
+        return new TopologyEvidence(Watched: true, samples.Count, appeared.ToList(), moves);
+    }
+}
+
+/// <summary>
+/// The splits and replica moves one run's placement samples prove. <see cref="Watched"/> is false
+/// with fewer than two samples, and then the lists are empty because nothing could be compared, not
+/// because nothing happened.
+/// </summary>
+public sealed record TopologyEvidence(
+    bool Watched,
+    int Samples,
+    IReadOnlyList<int> PartitionsAppeared,
+    IReadOnlyList<string> Moves)
+{
+    public string Format()
+    {
+        if (!Watched)
+            return $"topology evidence: not watched ({Samples} placement sample(s); two are needed to see a change)";
+
+        string splits = PartitionsAppeared.Count == 0
+            ? "no partition appeared (no split)"
+            : $"{PartitionsAppeared.Count} partition(s) appeared ({string.Join(", ", PartitionsAppeared.Take(8))}" +
+              $"{(PartitionsAppeared.Count > 8 ? ", ..." : "")}) (splits)";
+
+        string moved = Moves.Count == 0
+            ? "no placement generation rose (no replica move)"
+            : $"{Moves.Count} placement generation rise(s) ({string.Join("; ", Moves.Take(6))}" +
+              $"{(Moves.Count > 6 ? "; ..." : "")}) (replica moves)";
+
+        return $"topology evidence over {Samples} placement sample(s): {splits}; {moved}";
+    }
 }
 
 /// <summary>

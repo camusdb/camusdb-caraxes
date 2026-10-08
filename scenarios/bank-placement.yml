@@ -1,0 +1,43 @@
+# Bank transfers while replicas move: five nodes at replication factor 3, a kill, then a decommission.
+#
+# Question: is SUM(balance) conserved, through the aggregate and through the full row scan, while replicas
+# move? This is the bank-invariant companion of append-placement, with the same topology and faults. A
+# replica seeded with an incomplete state and then promoted would serve rows that are missing or stale; the
+# scan probe and the reconciliation are the checks that see it.
+#
+# The decommission is one-way: the cluster finishes the run with four nodes.
+#
+# checks.require_replica_move fails the run as VACUOUS when no partition's placement generation rose.
+name: bank-placement
+cluster:
+  name: bank-placement
+  nodes: 5
+  partitions: 8
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 1536
+workload:
+  kind: bank
+  database: caraxes
+  rows: 20000
+  mode: closed
+  workers: 32
+  duration: 150s
+  warmup: 15s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 67
+  events:
+    - { at: 25s, fault: kill, target: random, duration: 30s }
+    - { at: 80s, fault: remove-node, target: random }
+checks:
+  max_recovery_seconds: 60
+  require_replica_move: true
+teardown: true

@@ -244,6 +244,15 @@ a split run as a pass. See `scenarios/split-preflight.yml` (short, fault-free, p
 compares directly against the bank runs). CamusDB's `docs/key-range-sharding.md` documents the
 engine side.
 
+**Vacuity checks.** `checks.require_split: true` fails a run as VACUOUS when no partition appeared in
+the placement samples taken while the workload ran (a split allocates a new partition for its child
+range), and `checks.require_replica_move: true` fails it when no partition's placement generation rose.
+Splits during the seeding `init` do not count. Use them on any scenario whose claim is "correct while
+ranges split" or "correct while replicas move": a three-node cluster at replication factor 3 hosts every
+range on every node and never moves a replica, and a missed split precondition starts anyway. See
+`scenarios/append-split.yml`, `bank-split.yml`, `append-placement.yml` and `bank-placement.yml`, which run
+in the nightly.
+
 ### Elle history checking (`append`)
 
 `workload.kind: append` runs Elle's list-append workload over SQL. Each transaction reads and appends

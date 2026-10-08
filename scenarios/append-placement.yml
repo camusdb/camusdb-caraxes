@@ -1,0 +1,50 @@
+# Elle list-append while replicas move: five nodes at replication factor 3, a kill, then a decommission.
+#
+# Question: does a serializable history survive replica moves? The other append scenarios run three nodes
+# at replication factor 3, so every node hosts every range and the placement planner has nothing to move.
+# Here each partition lives on three of five nodes, so:
+#   - the placement rebalancer spreads replicas from the start (balance moves);
+#   - a node killed for 30 s takes replicas down with it (the planner may start a repair);
+#   - remove-node drains a node through /v1/cluster/leave, which moves every replica it hosts onto the
+#     others before the removal commits. That is the move this scenario counts on.
+# The decommission is one-way: the cluster finishes the run with four nodes.
+#
+# This is the CamusDB-level arm of the Kahuna nightly's placement jobs. A move is seeded from the
+# partition leader by log backfill or by a whole-partition snapshot, which is the path where an acked but
+# not imported snapshot once lost acknowledged writes.
+#
+# checks.require_replica_move fails the run as VACUOUS when no partition's placement generation rose.
+name: append-placement
+cluster:
+  name: append-placement
+  nodes: 5
+  partitions: 8
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: pessimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 1536
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 150s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 61
+  events:
+    - { at: 25s, fault: kill, target: random, duration: 30s }
+    - { at: 80s, fault: remove-node, target: random }
+checks:
+  # A drain moves every replica of the leaving node, so the run may serve slowly for longer than a kill
+  # takes to recover.
+  max_recovery_seconds: 60
+  require_replica_move: true
+teardown: true

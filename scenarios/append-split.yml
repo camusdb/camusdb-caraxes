@@ -1,0 +1,61 @@
+# Elle list-append while key ranges split, under partition, kill and leader transfer.
+#
+# Question: does a serializable history survive range splits, and faults that land while ranges are
+# splitting? Key-range sharding is the one routing mode CamusDB's nightly did not run at all: every other
+# append scenario is hash-routed, so this is the CamusDB-level arm of the Kahuna nightly's
+# `append / partition,placement,range` job.
+#
+# How the splits happen. The list-append table grows during the run: each list takes at most 64 appends,
+# then its slot moves to a new key, so a 2-minute run writes several hundred keys (an append-smoke run
+# wrote about 1,450). The count branch splits a range once it holds range_split_threshold keys, and each
+# child is left alone for the settle window, so splits keep coming for the whole run. The seeded dataset is
+# kept small (rows: 200) so the seeding does few splits before the run starts; those do not count anyway.
+#
+# checks.require_split fails the run as VACUOUS when no partition appeared in the placement samples, so a
+# missed split precondition cannot pass as a green split run.
+name: append-split
+cluster:
+  name: append-split
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: pessimistic
+  isolation: serializable
+  diagnostics: true
+  kahuna:
+    # Count branch. The threshold must be at least 2 x the minimum child size or the node refuses to start.
+    range_split_threshold: 200
+    range_split_min_range_size: 60
+    # Load branch, as in split-preflight. The poll interval must stay below the window.
+    range_split_load_threshold: 200
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    # Must be at least min_leader_stability_ms (5,000 by default) or the node refuses to start.
+    range_split_settle_window_ms: 10000
+    enable_load_reports: true
+workload:
+  kind: append
+  database: caraxes
+  rows: 200
+  mode: closed
+  workers: 16
+  duration: 120s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+nemesis:
+  seed: 53
+  events:
+    - { at: 30s, fault: partition, target: random, duration: 20s }
+    - { at: 65s, fault: kill, target: random, duration: 20s }
+    - { at: 100s, fault: leader-transfer, target: random }
+checks:
+  max_recovery_seconds: 45
+  require_split: true
+teardown: true

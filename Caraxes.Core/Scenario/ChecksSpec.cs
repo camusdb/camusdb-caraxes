@@ -110,6 +110,27 @@ public sealed class ChecksSpec
     /// </summary>
     public bool RequireSpreadLeadership { get; set; }
 
+    /// <summary>
+    /// Fail the run as vacuous when no key range split while the workload ran: no partition appeared in
+    /// the placement samples after the first one.
+    ///
+    /// <para>Default false. Turn it on for a scenario whose claim is "correct while ranges split". Split
+    /// settings that miss a precondition do not stop a node from starting, so a misconfigured split run
+    /// looks the same as a working one, and its pass then says nothing about splits. Splits during the
+    /// seeding <c>init</c> do not count: the poller starts with the measured invocation.</para>
+    /// </summary>
+    public bool RequireSplit { get; set; }
+
+    /// <summary>
+    /// Fail the run as vacuous when no replica set changed while the workload ran: no partition's
+    /// placement generation rose between two samples.
+    ///
+    /// <para>Default false. Turn it on for a scenario whose claim is "correct while replicas move". With
+    /// as many nodes as the replication factor, every node hosts every range and the planner has nothing
+    /// to move, so such a run passes without having moved a replica.</para>
+    /// </summary>
+    public bool RequireReplicaMove { get; set; }
+
     /// <summary>An independent copy, field for field. Memberwise for the reason given on
     /// <see cref="WorkloadSpec.Clone"/>: a hand-written list silently drops the next field added.</summary>
     public ChecksSpec Clone() => (ChecksSpec)MemberwiseClone();

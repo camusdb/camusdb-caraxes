@@ -126,6 +126,93 @@ public sealed class PlacementWatchTests
         Assert.That(stability.Note, Does.Contain("was not watched"));
     }
 
+    /// <summary>A partition born during the run is a split. One that was there at the first sample
+    /// proves nothing: the seeding init can split before the poller starts.</summary>
+    [Test]
+    public void EvidenceCountsOnlyPartitionsBornDuringTheRunAsSplits()
+    {
+        TopologyEvidence evidence = PlacementWatch.Evidence(
+        [
+            Sample(0, (1, "camus1", 1), (5, "camus2", 1)),
+            Sample(10, (1, "camus1", 1), (5, "camus2", 1), (9, "camus3", 1)),
+            Sample(20, (1, "camus1", 1), (5, "camus2", 1), (9, "camus3", 1), (10, "camus1", 1)),
+        ]);
+
+        Assert.That(evidence.Watched, Is.True);
+        Assert.That(evidence.PartitionsAppeared, Is.EqualTo(new[] { 9, 10 }));
+        Assert.That(evidence.Moves, Is.Empty, "the birth of a partition is its split, not a move");
+    }
+
+    /// <summary>A merged-away child still proves its split happened.</summary>
+    [Test]
+    public void ASplitChildThatLaterMergesAwayStillCounts()
+    {
+        TopologyEvidence evidence = PlacementWatch.Evidence(
+        [
+            Sample(0, (1, "camus1", 1)),
+            Sample(10, (1, "camus1", 1), (9, "camus2", 1)),
+            Sample(20, (1, "camus1", 1)),
+        ]);
+
+        Assert.That(evidence.PartitionsAppeared, Is.EqualTo(new[] { 9 }));
+    }
+
+    [Test]
+    public void AGenerationRiseIsAMove()
+    {
+        TopologyEvidence evidence = PlacementWatch.Evidence(
+        [
+            Sample(0, (1, "camus1", 3), (2, "camus2", 7)),
+            Sample(10, (1, "camus1", 4), (2, "camus2", 7)),
+            Sample(20, (1, "camus1", 4), (2, "camus2", 9)),
+        ]);
+
+        Assert.That(evidence.Moves, Is.EqualTo(new[] { "p1 g3 -> g4", "p2 g7 -> g9" }));
+        Assert.That(evidence.PartitionsAppeared, Is.Empty);
+    }
+
+    /// <summary>A sample keeps the last node that answered, so a lagging node can report an older
+    /// generation after a newer one. A fall is a stale view, and coming back to a generation already
+    /// seen is not a second move.</summary>
+    [Test]
+    public void AStaleGenerationIsNeitherAMoveNorASecondMove()
+    {
+        TopologyEvidence evidence = PlacementWatch.Evidence(
+        [
+            Sample(0, (1, "camus1", 3)),
+            Sample(10, (1, "camus1", 5)),
+            Sample(20, (1, "camus1", 4)),
+            Sample(30, (1, "camus1", 5)),
+        ]);
+
+        Assert.That(evidence.Moves, Is.EqualTo(new[] { "p1 g3 -> g5" }));
+    }
+
+    [Test]
+    public void AnUnchangedTopologyHasNoEvidence()
+    {
+        TopologyEvidence evidence = PlacementWatch.Evidence(
+        [
+            Sample(0, (1, "camus1", 2), (2, "camus2", 2)),
+            Sample(10, (1, "camus2", 2), (2, "camus2", 2)),
+        ]);
+
+        Assert.That(evidence.Watched, Is.True);
+        Assert.That(evidence.PartitionsAppeared, Is.Empty);
+        Assert.That(evidence.Moves, Is.Empty, "a leadership change alone moves no replica");
+        Assert.That(evidence.Format(), Does.Contain("no split").And.Contain("no replica move"));
+    }
+
+    /// <summary>One sample cannot show a change, so it must not read as "watched, nothing happened".</summary>
+    [Test]
+    public void OneSampleIsNotWatchedEvidence()
+    {
+        TopologyEvidence evidence = PlacementWatch.Evidence([Sample(0, (1, "camus1", 1))]);
+
+        Assert.That(evidence.Watched, Is.False);
+        Assert.That(evidence.Format(), Does.Contain("not watched"));
+    }
+
     /// <summary>A leader that flaps between two nodes across many samples must not fill the note with
     /// the same sentence repeated; the reader needs the shape, not the transcript.</summary>
     [Test]

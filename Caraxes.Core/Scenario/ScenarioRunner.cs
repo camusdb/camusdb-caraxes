@@ -419,6 +419,45 @@ public sealed class ScenarioRunner
     }
 
     /// <summary>
+    /// Reports the splits and replica moves the run's placement samples prove, and fails the run as
+    /// vacuous when the scenario requires one of them and the samples show none.
+    ///
+    /// <para>A green run that never split, or never moved a replica, is not evidence that splitting or
+    /// moving is safe. It is a pass on the default path under a name that claims more. Graded over the
+    /// whole invocation, not the measured window: the question is whether the path ran, and a split in
+    /// the warm-up still ran under the workload. Too few samples to compare fails a required check too,
+    /// because "not watched" must never read as "watched and present".</para>
+    /// </summary>
+    private void GradeTopologyEvidence(List<string> notes, ref bool passed)
+    {
+        bool requireSplit = scenario.Checks.RequireSplit;
+        bool requireMove = scenario.Checks.RequireReplicaMove;
+
+        TopologyEvidence evidence = PlacementWatch.Evidence(placementSamples);
+        bool anyEvidence = evidence.PartitionsAppeared.Count > 0 || evidence.Moves.Count > 0;
+        if (!requireSplit && !requireMove && !anyEvidence)
+            return;
+
+        notes.Add(evidence.Format());
+
+        if (requireSplit && evidence.PartitionsAppeared.Count == 0)
+        {
+            passed = false;
+            notes.Add(
+                "  CHECK FAILED: VACUOUS — checks.require_split is on and no split was observed while the workload ran. " +
+                "This run did not exercise splits; check the split thresholds and SHOW ENGINE STATS kahuna.range.splits.");
+        }
+
+        if (requireMove && evidence.Moves.Count == 0)
+        {
+            passed = false;
+            notes.Add(
+                "  CHECK FAILED: VACUOUS — checks.require_replica_move is on and no replica set changed while the workload ran. " +
+                "This run did not exercise replica moves; it needs more nodes than the replication factor and a fault that makes the planner move.");
+        }
+    }
+
+    /// <summary>
     /// Fails a run that started with leadership concentrated on one node, when the scenario asked for
     /// it to be spread.
     ///
@@ -512,6 +551,7 @@ public sealed class ScenarioRunner
         GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
         GradePlacementStability(artifactsDir, notes);
+        GradeTopologyEvidence(notes, ref passed);
         GradeLeadershipSpread(notes, ref passed);
         GradeClusterFacts(outputDir, notes, ref passed);
         GradeClientHeadroom(outputDir, notes, ref passed);

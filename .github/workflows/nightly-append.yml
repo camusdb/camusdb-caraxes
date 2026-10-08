@@ -1,14 +1,15 @@
 name: nightly-append
 
-# Nightly + manual dispatch: every Elle list-append scenario against CamusDB main, to catch a correctness regression
-# in CamusDB or in the Kahuna/Kommander versions it references. This should NOT become a per-PR gate: the runs are
+# Nightly + manual dispatch: every Elle list-append scenario, plus the bank-invariant arms of the split and
+# placement scenarios, against CamusDB main, to catch a correctness regression in CamusDB or in the
+# Kahuna/Kommander versions it references. This should NOT become a per-PR gate: the runs are
 # nondeterministic, and some anomalies occur in one run of five (for example the stale-base write at a leader
 # transfer). A red run here means "download the artifact and look", not "the change is broken".
 #
 # The runs use --correctness-only. A hosted runner's speed says nothing about the change, so the recovery-time and
 # throughput-recovery rules are reported as NOT GRADED instead of failing the run. What still fails it: an Elle
 # anomaly, a same-revision divergent apply in any node log, a failed reconciliation, a node that stopped answering,
-# or a total outage during a fault.
+# a total outage during a fault, or a split or placement scenario that never split or moved a replica (VACUOUS).
 on:
   schedule:
     # 05:00 UTC nightly, one hour after the Kommander Jepsen run.
@@ -57,6 +58,15 @@ jobs:
           - append-clock-jump
           - append-clock-jump-locks
           - append-clock-jump-liveness
+          # Key-range sharding: Elle and the bank invariant while ranges split, under partition and kill. Every
+          # scenario above is hash-routed. require_split fails a run as VACUOUS when no range split during it.
+          - append-split
+          - bank-split
+          # Replica placement: five nodes at replication factor 3, so the planner has replicas to move, with a
+          # kill and a one-way decommission. The three-node scenarios above host every range on every node and
+          # never move one. require_replica_move fails a run as VACUOUS when no replica set changed.
+          - append-placement
+          - bank-placement
 
     env:
       CAMUSDB_REPO: ${{ inputs.camusdb_repo || 'camusdb/camusdb' }}
