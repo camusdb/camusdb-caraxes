@@ -23,8 +23,8 @@ public static class FaultFactory
                 $"unknown fault '{kind}'; known faults: {string.Join(", ", KnownKinds)}");
     }
 
-    /// <param name="probes">Shared HTTP probes, needed by faults that call the cluster admin API
-    /// (remove-node). Process and network faults ignore it.</param>
+    /// <param name="probes">Shared HTTP probes, needed by faults that read the cluster's placement
+    /// (leader-transfer). Process and network faults ignore it.</param>
     public static IFault Create(NemesisEvent e, HttpProbes probes) => e.Fault switch
     {
         "kill" => new KillFault(),
@@ -35,7 +35,7 @@ public static class FaultFactory
         "loss" => new NetemFault(delayMs: 0, e.LossPercent, kind: "loss"),
         "fill-disk" => new FillDiskFault(),
         "slow-disk" => new SlowDiskFault(e.WriteBps, e.WriteIops, e.ReadBps, e.Device),
-        "remove-node" => new RemoveNodeFault(probes),
+        "remove-node" => new RemoveNodeFault(),
         "leader-transfer" => new LeaderTransferFault(probes, e.To),
         "clock-skew" => new ClockSkewFault(e.OffsetMs),
         _ => throw new NemesisException($"unknown fault '{e.Fault}'"),

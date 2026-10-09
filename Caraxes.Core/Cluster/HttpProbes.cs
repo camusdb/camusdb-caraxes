@@ -63,7 +63,10 @@ public sealed class PartitionReplica
     public string Role { get; set; } = "";
 }
 
-/// <summary>Answer of CamusDB's <c>POST /v1/cluster/leave</c> graceful-decommission endpoint.</summary>
+/// <summary>Answer of CamusDB's <c>POST /v1/cluster/leave</c> graceful-decommission endpoint. The
+/// endpoint reports a refused outcome with the same shape and a non-2xx code, so a caller inspects
+/// <see cref="Left"/> rather than the status. Sent by <c>RemoveNodeFault</c> from inside the node's
+/// network namespace.</summary>
 /// <summary>Answer of CamusDB's <c>GET /v1/cluster/membership</c>: the committed voter/learner roster.</summary>
 public sealed class ClusterMembership
 {
@@ -184,25 +187,6 @@ public sealed class HttpProbes : IDisposable
                 return null;
             string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             return JsonSerializer.Deserialize<ClusterMembership>(body, JsonOptions);
-        }
-        catch (Exception) when (NotCallerCancellation(cancellationToken))
-        {
-            return null;
-        }
-    }
-
-    /// <summary>Requests graceful decommission of the node at <paramref name="baseUrl"/>. Null =
-    /// no response. The result body is returned on any HTTP status (the endpoint reports a
-    /// non-committed outcome with the same shape and a non-2xx code), so the caller inspects
-    /// <see cref="LeaveResult.Left"/> rather than the status.</summary>
-    public async Task<LeaveResult?> LeaveAsync(string baseUrl, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            using HttpResponseMessage response = await client.PostAsync(
-                $"{baseUrl}/v1/cluster/leave", content: null, cancellationToken).ConfigureAwait(false);
-            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<LeaveResult>(body, JsonOptions);
         }
         catch (Exception) when (NotCallerCancellation(cancellationToken))
         {

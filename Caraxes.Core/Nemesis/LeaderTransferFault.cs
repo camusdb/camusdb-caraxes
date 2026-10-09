@@ -23,15 +23,11 @@ namespace Caraxes.Core.Nemesis;
 /// and held throughput are measured from the heal, i.e. from <c>duration</c> after the handover.</para>
 ///
 /// <para>Where the request is sent from. The mutation is superuser-only with authentication on and
-/// loopback-only with it off, and the harness cluster runs without authentication; a request from
-/// the host arrives through Docker's port proxy with the bridge gateway as its source, not loopback.
-/// So the POST runs inside the target container's network namespace — a throwaway
-/// <c>curlimages/curl</c> container sharing it — where 127.0.0.1:5095 is the node's REST port.</para>
+/// loopback-only with it off, and the harness cluster runs without authentication, so the POST runs
+/// inside the target container's network namespace, see <see cref="InContainerHttp"/>.</para>
 /// </summary>
 public sealed class LeaderTransferFault : IFault
 {
-    private const string CurlImage = "curlimages/curl:latest";
-
     /// <summary>
     /// Attempts while consensus answers ReplicationFailed (target momentarily behind), 250 ms apart.
     /// One since Kommander 1.7.3: the converging handover (Kommander feature 31098233) catches a
@@ -163,21 +159,17 @@ public sealed class LeaderTransferFault : IFault
         NodePlan target, int partitionId, string endpoint, CancellationToken cancellationToken)
     {
         string body = JsonSerializer.Serialize(new { partitionId, targetEndpoint = endpoint });
-        ProcessResult run = await ProcessRunner.RunCheckedAsync("docker",
-        [
-            "run", "--rm", "--network", $"container:{target.ContainerName}", CurlImage,
-            "-sS", "--max-time", "30", "-X", "POST", "-H", "Content-Type: application/json", "-d", body,
-            "http://127.0.0.1:5095/v1/cluster/transfer-leadership",
-        ], cancellationToken: cancellationToken).ConfigureAwait(false);
+        string answer = await InContainerHttp.PostAsync(
+            target, "/v1/cluster/transfer-leadership", body, TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
 
         try
         {
-            return JsonSerializer.Deserialize<TransferLeadershipResult>(run.StdOut, JsonOptions)
+            return JsonSerializer.Deserialize<TransferLeadershipResult>(answer, JsonOptions)
                 ?? throw new InvalidOperationException("empty answer");
         }
         catch (JsonException e)
         {
-            throw new InvalidOperationException($"transfer-leadership on {target.Name} answered something that is not its result: {Truncate(run.StdOut)} ({e.Message})");
+            throw new InvalidOperationException($"transfer-leadership on {target.Name} answered something that is not its result: {Truncate(answer)} ({e.Message})");
         }
     }
 

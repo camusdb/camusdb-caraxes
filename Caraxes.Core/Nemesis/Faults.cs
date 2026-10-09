@@ -5,6 +5,7 @@
  * file that was distributed with this source code.
  */
 
+using System.Text.Json;
 using Caraxes.Core.Cluster;
 
 namespace Caraxes.Core.Nemesis;
@@ -190,13 +191,20 @@ public sealed class FillDiskFault : IFault
 /// Gracefully decommission a node: POST <c>/v1/cluster/leave</c> so its replicas drain onto
 /// survivors and its removal commits, then stop the container. A one-way topology change — it is
 /// never healed — that exercises the drain path and the placement rebalancer's trim, the reverse of
-/// adding a node. The leave is issued over the node's plain-HTTP admin port on the host.
+/// adding a node.
+///
+/// <para>The leave is a topology mutation, which CamusDB serves only from loopback when the cluster
+/// runs without authentication (as the harness cluster does). A request from the host arrives
+/// through Docker's port proxy with the bridge gateway as its source and is refused, so the POST
+/// runs inside the target's network namespace, see <see cref="InContainerHttp"/>. The request is
+/// bounded by <see cref="LeaveTimeout"/>: a drain moves every replica the node hosts, and the node
+/// aborts the drain when the request is aborted.</para>
 /// </summary>
 public sealed class RemoveNodeFault : IFault
 {
-    private readonly HttpProbes probes;
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    public RemoveNodeFault(HttpProbes probes) => this.probes = probes;
+    public static readonly TimeSpan LeaveTimeout = TimeSpan.FromSeconds(180);
 
     public string Kind => "remove-node";
 
@@ -206,8 +214,18 @@ public sealed class RemoveNodeFault : IFault
 
     public async Task InjectAsync(NodePlan target, ClusterPlan plan, CancellationToken cancellationToken)
     {
-        string baseUrl = $"http://localhost:{target.HostRestPort}";
-        LeaveResult? result = await probes.LeaveAsync(baseUrl, cancellationToken).ConfigureAwait(false);
+        string body = await InContainerHttp.PostAsync(target, "/v1/cluster/leave", jsonBody: null, LeaveTimeout, cancellationToken)
+            .ConfigureAwait(false);
+
+        LeaveResult? result;
+        try
+        {
+            result = JsonSerializer.Deserialize<LeaveResult>(body, JsonOptions);
+        }
+        catch (JsonException e)
+        {
+            throw new InvalidOperationException($"leave on {target.Name} answered something that is not its result: {Truncate(body)} ({e.Message})");
+        }
 
         if (result is null)
             throw new InvalidOperationException($"leave request to {target.Name} got no response");
@@ -221,4 +239,6 @@ public sealed class RemoveNodeFault : IFault
 
     public Task HealAsync(NodePlan target, ClusterPlan plan, CancellationToken cancellationToken)
         => throw new NotSupportedException("remove-node is a one-way topology change and is never healed");
+
+    private static string Truncate(string s) => s.Length <= 200 ? s : s[..200] + "…";
 }
