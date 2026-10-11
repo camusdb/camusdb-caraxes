@@ -53,7 +53,7 @@ public static class ScenarioSpecReader
         "connections", "max_in_flight", "locking", "isolation", "no_auto_prepare", "request_timeout",
         "expect_faults", "reconcile_timeout", "scan_probe_interval", "node_metrics", "metrics_interval", "cluster_facts", "gateway",
         "routing_mode",
-        "connection_options",
+        "connection_options", "pipeline",
         "scan_probe_timeout",
         "append_keys", "append_max_writes_per_key", "append_max_txn_length",
     };

@@ -114,6 +114,14 @@ public sealed class WorkloadSpec
     /// not comparable to each other or to earlier runs. Seeding stays on the default client.</summary>
     public string ConnectionOptions { get; set; } = "";
 
+    /// <summary>Send each write transaction as pipelined request frames (<c>--pipeline</c>): on the bank
+    /// shape <c>[BEGIN, reads]</c> then <c>[updates, conditional COMMIT]</c>, two exchanges instead of six.
+    /// Measured run only; seeding stays on the sequential client. The workload records the mode in the run
+    /// manifest and refuses to compare runs that differ here, so a pipelined arm is a different client from
+    /// every earlier measurement. Off (the default) passes nothing, so an image built before the flag
+    /// existed still runs.</summary>
+    public bool Pipeline { get; set; }
+
     /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
     public int RequestTimeout { get; set; }
 

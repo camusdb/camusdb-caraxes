@@ -277,6 +277,15 @@ public sealed class WorkloadRunner
             notes.Add($"client connection options '{scenario.Workload.ConnectionOptions}'");
         }
 
+        // Pipelined write transactions, measured run only and passed only when set: the workload's own
+        // default is sequential, an older image rejects an unknown flag, and the manifest marks the run as
+        // a different client, so the arm must say so in its notes as the routing and option arms do.
+        if (scenario.Workload.Pipeline)
+        {
+            workloadArgs.Add("--pipeline");
+            notes.Add("write transactions sent as pipelined frames (two exchanges per bank transfer); not comparable to sequential runs");
+        }
+
         AppendCommonFlags(workloadArgs, scenario.Workload);
         return new WorkloadRunPlan(workloadArgs, notes);
     }
