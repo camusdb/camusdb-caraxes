@@ -1,0 +1,55 @@
+# PUBLISHED STACK 1.11.7 (2026-10-11): CamusDB HEAD pinned to the published Kahuna.Core 1.11.7 -> Kahuna.Shared 1.11.7 -> Kommander
+# 1.10.7. Kahuna 1.11.7 = 1.11.6 (dedicated timer thread for the write aggregator's wakes + fill-or-time trigger, both OFF) plus
+# 29ff7466: forwarded get-many/exists-many route the keys again on arrival instead of serving a follower's own state. Kommander 1.10.7 =
+# 1.10.6 (backfill progress on every reported frontier + seeded catch-up grace, soaked as ps1) plus the decommission leave-latch release.
+# Workload binary references the published CamusDB.Client 0.15.1 (pipeline statements carry RoutingAcceptVersion; the pipelined
+# transaction learns its route from its replies). This arm does NOT pipeline: sequential client, the rel1102/rel1115 control body.
+# Image caraxes/camusdb:bankrel1117. Plan 84b26503 critical path: 45-MINUTE FIGURE OF RECORD candidate on the published stack,
+# replacing 9,031 ops/s (1.10.2/1.9.1, 2026-09-28). Bar before any GCP work: >10,000 ops/s on this shape. 10-min controls on the
+# previous stacks: rel1115 9,664, a7 seq 9,236 (day band +-4%). KOMMANDER_ROUND_STAGES is left off: the figure of record carries
+# no profiling env.
+name: bank-rel1117-tmpfs-learned-45
+cluster:
+  name: bankrel1117tmpfs45
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # Both arms share ONE image built once from ~/camusdb, so the only difference between them
+  # is the cluster shape. Rebuilding per arm would leave the source identity of each arm resting
+  # on the build being reproducible, which is a weaker guarantee than not rebuilding.
+  image: "caraxes/camusdb:bankrel1117"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
