@@ -114,6 +114,13 @@ public sealed class WorkloadSpec
     /// not comparable to each other or to earlier runs. Seeding stays on the default client.</summary>
     public string ConnectionOptions { get; set; } = "";
 
+    /// <summary>Send each write transaction as pipelined frames (<c>--pipeline</c>): <c>[BEGIN, reads]</c>
+    /// then <c>[updates, conditional COMMIT]</c>, two exchanges instead of one per statement. Measured run
+    /// only, like <see cref="ConnectionOptions"/>, and for the same reason: a client that pipelines is a
+    /// different client, so the arms under test must differ here exactly once and the seed never.
+    /// The workload records it in its manifest and reports the exchanges it actually achieved.</summary>
+    public bool Pipeline { get; set; }
+
     /// <summary>Per-request timeout in seconds; 0 leaves the client default.</summary>
     public int RequestTimeout { get; set; }
 

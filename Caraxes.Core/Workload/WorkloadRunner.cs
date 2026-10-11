@@ -277,6 +277,14 @@ public sealed class WorkloadRunner
             notes.Add($"client connection options '{scenario.Workload.ConnectionOptions}'");
         }
 
+        // Pipelined writes, measured run only, for the same reason: the seed is not measured, and the
+        // client under test must differ between arms exactly once.
+        if (scenario.Workload.Pipeline)
+        {
+            workloadArgs.Add("--pipeline");
+            notes.Add("client pipelines each write transaction into two frames");
+        }
+
         AppendCommonFlags(workloadArgs, scenario.Workload);
         return new WorkloadRunPlan(workloadArgs, notes);
     }

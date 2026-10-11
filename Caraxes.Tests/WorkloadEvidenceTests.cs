@@ -84,6 +84,25 @@ public sealed class WorkloadEvidenceTests
     }
 
     [Test]
+    public void PassesPipelineOnlyWhenTheScenarioAsksForIt()
+    {
+        // A client that pipelines is a different client, so the flag is never implied.
+        Assert.That(Plan(Minimal).Args, Does.Not.Contain("--pipeline"));
+
+        WorkloadRunPlan plan = Plan("""
+            name: s
+            cluster:
+              name: c
+            workload:
+              rows: 5000
+              pipeline: true
+            """);
+
+        Assert.That(plan.Args, Does.Contain("--pipeline"));
+        Assert.That(plan.Notes, Has.Some.Contains("pipelines"));
+    }
+
+    [Test]
     public void PassesTheScanProbeOnlyWhenTheScenarioAsksForIt()
     {
         // The probe is part of the run's verdict (a short COUNT fails validity), so an arm that runs it
