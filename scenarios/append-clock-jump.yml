@@ -4,7 +4,8 @@
 # node's clock fence, and a later commit can then land inside its snapshot. The HLC merges to the
 # highest clock it hears and keeps that lead after the heal, so each jump must lead the previous one
 # by more than 5 s to open a new window: +10 s, then +15 s and +20 s, 30 s apart. Watch
-# kahuna_kv_snapshot_clock_fence_skipped_total on the nodes to confirm the path ran. PASS needs a
+# kahuna_kv_snapshot_clock_fence_refused_total on the nodes to confirm the path ran (it was
+# kahuna_kv_snapshot_clock_fence_skipped_total before Kahuna refused such reads instead of serving them). PASS needs a
 # serializable history.
 name: append-clock-jump
 cluster:
