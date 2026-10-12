@@ -1,0 +1,53 @@
+# WORKER SWEEP (2026-10-11): is the closed loop latency-bound or server-bound? The 45-min control on this stack (rel1117, 8,866 ops/s)
+# shows a write txn at 22 ms client p50 against ~11 ms of server statement execution; where the other ~11 ms sits (client batcher
+# hold, pool, network, server frame dispatch queue, reply path) is unmeasured. Four arms, one variable each: workers 64 / 128 / 256
+# at 64 connections, then 256 workers at 128 connections to separate the connection count from the worker count.
+# If ops/s scales with workers the loop is latency-bound and the slack outside server execution is real; if it is flat a server
+# resource saturates and the latency is queueing on it. Read ops/s, client p50 by stage, server ms by statement, leader CPU/op,
+# and the harness headroom figures (p95 and dwell since 0fc72e89).
+# Body: the rel1115 10-minute control (6-min warm-up, 10-min window, learned routing, sequential client), image bankrel1117
+# (CamusDB de098bdb server, Kahuna.Core 1.11.7 / Kommander 1.10.7), workload from the camusdb tree (CamusDB.Client 0.15.1).
+# No profiling env: this is a throughput reading.
+# THIS ARM: workers 256, connections 64.
+name: bank-rel1117-tmpfs-sweep-w256-c64
+cluster:
+  name: bankrel1117sweepw256c64
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1117"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
