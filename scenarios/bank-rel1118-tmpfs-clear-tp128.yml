@@ -1,0 +1,50 @@
+# THREAD-POOL FLOOR A/B (2026-10-12): the w128 body on the 1.11.8 stack with the leader's thread-pool worker floor at 128 instead of
+# CamusDB's default 1024 (CAMUS_THREADPOOL_MIN_THREADS, CamusDB commit after fbb55c3d; image bankrel1118tp built from it, otherwise the
+# bankrel1118 server). Why: schedstat on the tr2/tr3 windows puts 6.8-6.9 of the leader's 8.3 cores in 233-284 pool workers taking
+# 29-33 time slices per client op at 22-25 us CPU plus 15-18 us run-queue wait each; the 1024 floor is what lets the pool grow that far on
+# 16 hardware threads. Control: bank-rel1118-tmpfs-clear-w128 (9,154 / 9,327 ops/s, 0.89-0.91 leader CPU-ms/op) on the same body.
+name: bank-rel1118-tmpfs-clear-tp128
+cluster:
+  name: bankrel1118cleartp128
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1118tp"
+  env:
+    CAMUS_THREADPOOL_MIN_THREADS: "128"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
