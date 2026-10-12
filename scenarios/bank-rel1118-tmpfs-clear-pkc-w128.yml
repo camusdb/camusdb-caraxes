@@ -1,0 +1,52 @@
+# PRIMARY-KEY ROW-ID CACHE arm (2026-10-12): the w128 cleartext body on the 1.11.8 stack with CamusDB's point_read_row_id_cache_enabled
+# (CamusDB commit after 818e78b4; image bankrel1118pkc = the bankrel1118 server plus the thread-pool variable, unset here, plus the cache).
+# A point SELECT or UPDATE locate by primary key does one Kahuna get instead of two: the ~pk index get (23k of ~50k gets/s on the leader,
+# 42%) is replaced by a remembered key -> row-id mapping that the row read verifies. Control: bank-rel1118-tmpfs-clear-w128 (9,154 / 9,327 ops/s,
+# 0.89-0.91 leader CPU-ms/op, query 0.95 / non_query 1.54 ms, 49k kahuna_kv_read_stage actor records/s). Read: ops/s, leader CPU-ms/op,
+# actor stage count (expect about -40%), camus_point_read_row_id_cache_requests hit share, query/non_query means, TP work items per op.
+name: bank-rel1118-tmpfs-clear-pkc-w128
+cluster:
+  name: bankrel1118clearpkcw128
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1118pkc"
+  camusdb:
+    # The lever under test: a primary-key point lookup remembers its row id and skips the index read.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
