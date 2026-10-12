@@ -1,0 +1,53 @@
+# RELEASED STACK 1.10.5 (2026-09-29): CamusDB HEAD pinned to Kahuna.Core 1.10.5 (40fb26de: a transaction's first latest read
+# records its MVCC pin, so an optimistic loser aborts early at the statement, not at commit validation; a head newer than a
+# lingering committed intent wins reads; 4c5924cd: whole-partition snapshot installs are streamed and verified in two passes
+# instead of materialised, so a node seeded after a kill stays inside its heap) -> Kommander 1.9.3 (91e22b9: abandoned snapshot
+# receive sessions are superseded and staged snapshots spill to disk). Image caraxes/camusdb:bankrel1105.
+# Compare with the rel1104 arms (Kahuna.Core 1.10.4 / Kommander 1.9.2): control 9,389 ops/s, raft 1.47 ms; soak rl4b PASS at
+# 4,235 ops/s (flag off); mor2 (flag on) versions in band, conservation exact, 14/14 recovered.
+# stages arm: KOMMANDER_ROUND_STAGES=1. The question is 024525b: does follower.queue (1.24-1.32 ms on rel1102, the propose append
+# waiting behind the previous commit's applies) shrink now that the ack precedes delivery? Compare stage by stage with rel1102-stages.
+name: bank-rel1105-tmpfs-learned-stages
+cluster:
+  name: bankrel1105stages
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1105"
+  env:
+    KOMMANDER_ROUND_STAGES: "1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

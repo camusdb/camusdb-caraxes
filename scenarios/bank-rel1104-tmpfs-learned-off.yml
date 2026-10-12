@@ -1,0 +1,48 @@
+# RELEASED STACK 1.10.4 (2026-09-28): CamusDB HEAD pinned to Kahuna.Core 1.10.4 (b825b7a9: 1.10.3's "refuse a commit whose staging
+# a leader change dropped" + the Kommander bump) -> Kommander 1.9.2 (f440f63: ddc146a live-replica WAL retention sized in TIME as
+# well as entries; 024525b a follower append is acked before its entries are delivered, and delivered in apply turns of their own).
+# CamusDB HEAD also carries the 1 ms post-completion hold and the kahuna.durable_materialize_on_resolve key. Image
+# caraxes/camusdb:bankrel1104. Plan 84b26503: rows A6 (the follower executor), A13 (the soak on the released stack).
+# control arm: compare with rel1102-off (9,230 ops/s, raft 1.53 ms) and mor-off (9,234; both at hold 1).
+name: bank-rel1104-tmpfs-learned-off
+cluster:
+  name: bankrel1104off
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1104"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

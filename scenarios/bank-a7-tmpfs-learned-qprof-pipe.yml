@@ -1,0 +1,66 @@
+# NEW STACK A7 + FILL-OR-TIME (2026-10-11): CamusDB HEAD 0bd2d0bf (A7 pipelined transactions 40c977cb: frame contract v2, txn_start_ref
+# and COMMIT_IF_OK; Kahuna write switches exposed in config) pinned to the published Kahuna.Core 1.11.6 -> Kahuna.Shared 1.11.6 ->
+# Kommander 1.10.6. Kahuna 1.11.6 = local 8db5321d: dedicated timer thread for the write aggregator's wakes (precise wake) and the
+# fill-or-time dispatch trigger, both OFF by default. Kommander 1.10.6 = local 6227eda: backfill progress judged on every reported
+# frontier + seeded catch-up grace (the paused-follower re-seed fix soaked as ps1), load-report incarnation from the HLC.
+# Image caraxes/camusdb:banka7. Workload binary from the same image references CamusDB.Client 0.15.0 (CamusPipeline, DeferBegin).
+# Bar: >10,000 ops/s on the 45-minute tmpfs shape before any GCP work. Figures to beat: rel1115 10-min control 9,664 ops/s
+# (raft 1.34 ms, 4.00 entries/commit), 45-min figure of record 9,031 (1.10.2/1.9.1).
+# ARM 2 (pipe): same body with workload.pipeline: true. Each transfer is two exchanges ([BEGIN, SELECT, SELECT] then
+# [UPDATE, UPDATE, COMMIT_IF_OK]) instead of six; the server does the same work per transfer. Measures A7 alone; the manifest marks
+# the run as a different client, so compare throughput and server-side costs, not client latency stages.
+# CLIENT FIX (2026-10-11, tag a7e onward): the a7c pipe arm measured 5,029 ops/s because a pipelined statement carried no routing
+# negotiation and the pipeline never fed advice to the router, so the first frame of every transaction began on the pool's rotation
+# (two thirds on a follower; follower CPU per op x4, executor ops per op x3). camusdb-dotnet 8a0c9bf fixes it; the workload is
+# published against the local pack CamusDB.Client 0.15.1-route.1 (working-tree pin, not committed) until 0.15.1 is on nuget.org.
+# STAGE PROFILE PAIR (2026-10-11): the routed pipelined client (a7e) still measured 5,737 ops/s against 9,236 sequential, with the
+# leader at 1.41 CPU-ms/op (0.90 sequential), the first frame [BEGIN, SELECT, SELECT] at 6.85 ms p50 (two sequential reads: 6.20) and
+# the second frame [UPDATE, UPDATE, COMMIT_IF_OK] at 27.9 ms (sequential updates + commit: 13.6). Same body as the stages arm plus
+# CAMUS_QUERY_STAGE_PROFILE=1 on every node, so the per-stage query profile (slot wait, parse, plan, kv, materialize) is exported
+# for the pipe client. Compare the two arms stage by stage.
+name: bank-a7-tmpfs-learned-qprof-pipe
+cluster:
+  name: banka7qprofpipe
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:banka7"
+  env:
+    KOMMANDER_ROUND_STAGES: "1"
+    CAMUS_QUERY_STAGE_PROFILE: "1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  pipeline: true
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
