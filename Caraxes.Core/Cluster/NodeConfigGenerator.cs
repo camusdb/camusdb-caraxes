@@ -69,6 +69,11 @@ public static class NodeConfigGenerator
             root = ordered;
         }
 
+        // Only when the spec turns it off, so configs from specs that predate the option stay identical.
+        // The Raft port keeps its certificate either way; see ClusterSpec.Tls.
+        if (!spec.Tls)
+            root["grpc_tls_enabled"] = false;
+
         // Root-level passthrough last, so an explicit CamusDB key in the spec wins over the modeled
         // fields; the spec validator has already refused the keys that would replace a whole section.
         foreach ((string key, object value) in spec.Camusdb)

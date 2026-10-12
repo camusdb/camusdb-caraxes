@@ -72,14 +72,19 @@ public sealed class ClusterPlan
     /// (the raft cert is reused), so a host client must trust the dev CA; the harness instead
     /// runs the workload inside the network (see <see cref="InternalWorkloadEndpointPool"/>).</summary>
     public string WorkloadEndpointPool =>
-        string.Join(',', Nodes.Select(n => $"https://localhost:{n.HostGrpcPort}"));
+        string.Join(',', Nodes.Select(n => $"{GrpcScheme}://localhost:{n.HostGrpcPort}"));
+
+    /// <summary>The URL scheme of the client gRPC port: <c>https</c> unless the spec turned
+    /// <see cref="ClusterSpec.Tls"/> off, in which case the port serves cleartext HTTP/2 and every
+    /// client-facing URL below says <c>http</c> so the workload dials it that way.</summary>
+    public string GrpcScheme => Spec.Tls ? "https" : "http";
 
     /// <summary>Every node's in-cluster gRPC endpoint by container DNS name, comma-separated. Used
     /// by a workload container attached to the cluster network: the node image already trusts the
     /// baked dev CA, and each node's cert SAN covers its <c>camusN</c> DNS name, so TLS validates
     /// with no host-side trust changes. The container gRPC port is the fixed 5096.</summary>
     public string InternalWorkloadEndpointPool =>
-        string.Join(',', Nodes.Select(n => $"https://{n.Name}:5096"));
+        string.Join(',', Nodes.Select(n => $"{GrpcScheme}://{n.Name}:5096"));
 
     /// <summary>
     /// The in-cluster gRPC endpoint of one node, for a run that drives all of its load through a
@@ -89,7 +94,7 @@ public sealed class ClusterPlan
     /// </summary>
     public string InternalWorkloadEndpoint(string nodeName)
         => Nodes.Any(n => n.Name == nodeName)
-            ? $"https://{nodeName}:5096"
+            ? $"{GrpcScheme}://{nodeName}:5096"
             : throw new ArgumentException(
                 $"no node named '{nodeName}' in cluster '{Spec.Name}' ({string.Join(", ", Nodes.Select(n => n.Name))})",
                 nameof(nodeName));
@@ -132,7 +137,7 @@ public sealed class ClusterPlan
     /// copy of the control arm with nothing to show that it did.</para>
     /// </summary>
     public string RoutingTrustMap =>
-        string.Join(',', Nodes.Select(n => $"{n.Ip}:{n.RaftPort}=https://{n.Name}:5096"));
+        string.Join(',', Nodes.Select(n => $"{n.Ip}:{n.RaftPort}={GrpcScheme}://{n.Name}:5096"));
 }
 
 /// <summary>One node's derived identity: docker names, addresses, ports, and zone.</summary>

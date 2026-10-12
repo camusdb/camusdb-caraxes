@@ -209,6 +209,28 @@ public sealed class ScenarioSpecTests
 public sealed class WorkloadEndpointTests
 {
     [Test]
+    public void TlsOffMakesEveryClientFacingUrlCleartext()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: clear\nnodes: 3\ntls: false"));
+
+        Assert.That(plan.InternalWorkloadEndpointPool,
+            Is.EqualTo("http://camus1:5096,http://camus2:5096,http://camus3:5096"));
+        Assert.That(plan.InternalWorkloadEndpoint("camus2"), Is.EqualTo("http://camus2:5096"));
+        Assert.That(plan.WorkloadEndpointPool, Does.StartWith("http://localhost:"));
+        Assert.That(plan.RoutingTrustMap, Does.Contain("=http://camus1:5096").And.Not.Contain("https"));
+        // The node must serve what the client dials: the generated config turns the port's TLS off.
+        Assert.That(NodeConfigGenerator.Generate(plan, plan.Nodes[0]), Does.Contain("grpc_tls_enabled: false"));
+    }
+
+    [Test]
+    public void TlsStaysOnByDefaultAndWritesNothing()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: pool\nnodes: 3"));
+        Assert.That(plan.Spec.Tls, Is.True);
+        Assert.That(NodeConfigGenerator.Generate(plan, plan.Nodes[0]), Does.Not.Contain("grpc_tls_enabled"));
+    }
+
+    [Test]
     public void InternalPoolUsesContainerDnsAndTls()
     {
         ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: pool\nnodes: 3"));

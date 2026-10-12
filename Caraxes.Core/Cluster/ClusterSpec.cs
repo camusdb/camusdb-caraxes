@@ -103,6 +103,15 @@ public sealed class ClusterSpec
     /// later (join-existing) are covered without regenerating certs and rebuilding the image.</summary>
     public int SpareCerts { get; set; } = 5;
 
+    /// <summary>Whether the client-facing gRPC port serves TLS. On by default, which is how every
+    /// retained figure was taken. <c>false</c> writes <c>grpc_tls_enabled: false</c> into each node's
+    /// config and gives the workload <c>http://</c> endpoints and trust map, so the client path runs
+    /// cleartext HTTP/2 while the Raft port keeps the baked certificate: Kommander and Kahuna dial
+    /// peers with the scheme the embedded options carry, which CamusDB does not expose, and the
+    /// image's entrypoint passes the Raft certificate unconditionally. A cleartext run therefore
+    /// measures the client-side TLS cost only, and its notes and analysis must say so.</summary>
+    public bool Tls { get; set; } = true;
+
     /// <summary>When &gt; 0, each node's <c>/data</c> is a size-capped tmpfs of this many MiB instead of
     /// a named volume. This is what makes a <c>disk-full</c> fault meaningful — the cap lets the harness
     /// exhaust free space on demand. It is RAM-backed and lost on restart, so use it for disk-pressure

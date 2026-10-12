@@ -42,6 +42,7 @@ public static class ClusterSpecReader
         "camusdb_repo",
         "image",
         "spare_certs",
+        "tls",
         "data_tmpfs_mb",
         "memory_limit_mb",
         "gc_heap_hard_limit_mb",

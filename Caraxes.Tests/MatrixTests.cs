@@ -126,6 +126,7 @@ public sealed class MatrixExpanderTests
             [nameof(ClusterSpec.CamusdbRepo)] = "/tmp/camusdb-src",
             [nameof(ClusterSpec.Image)] = "caraxes/test:pinned",
             [nameof(ClusterSpec.SpareCerts)] = 2,
+            [nameof(ClusterSpec.Tls)] = false,
             [nameof(ClusterSpec.DataTmpfsMb)] = 256,
             [nameof(ClusterSpec.MemoryLimitMb)] = 1536,
             [nameof(ClusterSpec.GcHeapHardLimitMb)] = 1024,

@@ -116,7 +116,7 @@ public static class MatrixExpander
         BaseRaftPort = c.BaseRaftPort, Locking = c.Locking, Isolation = c.Isolation,
         ReadValidation = c.ReadValidation, KeyRangeSharding = c.KeyRangeSharding,
         DistributedQueryExecution = c.DistributedQueryExecution, MaxQueryParallelism = c.MaxQueryParallelism,
-        Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts,
+        Diagnostics = c.Diagnostics, CamusdbRepo = c.CamusdbRepo, Image = c.Image, SpareCerts = c.SpareCerts, Tls = c.Tls,
         DataTmpfsMb = c.DataTmpfsMb, MemoryLimitMb = c.MemoryLimitMb, GcHeapHardLimitMb = c.GcHeapHardLimitMb,
         ClockSkew = c.ClockSkew,
         Kahuna = new Dictionary<string, object>(c.Kahuna),

@@ -1,0 +1,50 @@
+# CPU ATTRIBUTION PAIR on the 1.11.7 stack (2026-10-12). Image caraxes/camusdb:bankrel1117c = CamusDB ea485b0d (the 0d129a9b
+# pin of the published Kahuna.Core 1.11.7 / Kommander 1.10.7 plus grpc_tls_enabled), one image for both arms. CLEARTEXT client path (tls: false => grpc_tls_enabled: false on every node, http:// endpoints and trust map). The Raft port keeps its certificate, so this arm removes the client-side TLS cost only.
+# Body = the rel1117 sweep w128-c64 arm (10 min after a 6-minute warm-up, 128 workers, 64 connections, learned routing), so the
+# 10-min figure compares with sweep1's 9,004 ops/s. The warm-up is 6 minutes because the trace driver (tools/p3c/cpu-trace-arms.sh)
+# takes a 10 s smoke + 60 s leader + 60 s follower EventPipe trace inside it; the measured window carries no trace. Phase 4
+# attribution of record (rel182, 2026-09-26): transport 293 us/op of which TLS 83; this pair re-ranks the components on the
+# current stack and prices the client-side TLS directly. No profiling env (KOMMANDER_ROUND_STAGES, CAMUS_QUERY_STAGE_PROFILE off).
+name: bank-rel1117c-tmpfs-clear-trace
+cluster:
+  name: bankrel1117cclear
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1117c"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
