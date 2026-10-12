@@ -173,7 +173,21 @@ public sealed class ClientResourcesSummary
 
     public double GcPauseFraction { get; set; }
 
+    /// <summary>The highest one-second reading of the generator's thread-pool queue. Informational:
+    /// one spike is the normal shape of a burst of continuations and does not fail a run.</summary>
     public long PeakThreadPoolQueue { get; set; }
+
+    /// <summary>The queue depth 95% of the samples stayed at or under. Null when the workload build
+    /// that wrote the artifact predates the sustained-backlog rule.</summary>
+    public double? ThreadPoolQueueP95 { get; set; }
+
+    /// <summary>The longest unbroken stretch, in seconds, the queue spent above the workload's bar.
+    /// Null when the artifact predates the rule.</summary>
+    public double? ThreadPoolBacklogSeconds { get; set; }
+
+    public int? ThreadPoolBacklogSamples { get; set; }
+
+    public int? ThreadPoolQueueSamples { get; set; }
 
     public double RequiredInFlight { get; set; }
 

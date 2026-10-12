@@ -205,6 +205,72 @@ public sealed class TargetSelectorTests
     }
 
     [Test]
+    public async Task ResolveLeader_RetriesWhileNobodyLeads()
+    {
+        // rl7 (2026-10-11): one placement sweep taken mid-election saw nobody leading and the pause
+        // was skipped on both arms. The runner now keeps asking until the election settles.
+        ClusterPlan plan = Plan();
+        int sweeps = 0;
+        Task<IReadOnlyList<(NodePlan, int)>> Observe(CancellationToken _) =>
+            Task.FromResult<IReadOnlyList<(NodePlan, int)>>(++sweeps < 3
+                ? [(plan.Nodes[0], 0), (plan.Nodes[1], 0), (plan.Nodes[2], 0)]
+                : [(plan.Nodes[0], 0), (plan.Nodes[1], 4), (plan.Nodes[2], 1)]);
+
+        TargetSelector.LeaderResolution resolved = await TargetSelector.ResolveLeaderAsync(
+            Observe, window: TimeSpan.FromSeconds(5), interval: TimeSpan.FromMilliseconds(10), CancellationToken.None);
+
+        Assert.That(resolved.Leader.Name, Is.EqualTo("camus2"));
+        Assert.That(resolved.Attempts, Is.EqualTo(3));
+        Assert.That(resolved.Waited, Is.GreaterThanOrEqualTo(TimeSpan.FromMilliseconds(20)));
+    }
+
+    [Test]
+    public async Task ResolveLeader_ReturnsAtOnceWhenSomeoneLeads()
+    {
+        ClusterPlan plan = Plan();
+        TargetSelector.LeaderResolution resolved = await TargetSelector.ResolveLeaderAsync(
+            _ => Task.FromResult<IReadOnlyList<(NodePlan, int)>>([(plan.Nodes[0], 2), (plan.Nodes[1], 0), (plan.Nodes[2], 0)]),
+            window: TimeSpan.FromSeconds(5), interval: TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        Assert.That(resolved.Leader.Name, Is.EqualTo("camus1"));
+        Assert.That(resolved.Attempts, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void ResolveLeader_GivesUpWhenTheWindowClosesWithNoLeader()
+    {
+        ClusterPlan plan = Plan();
+        int sweeps = 0;
+        Task<IReadOnlyList<(NodePlan, int)>> Observe(CancellationToken _)
+        {
+            sweeps++;
+            return Task.FromResult<IReadOnlyList<(NodePlan, int)>>([(plan.Nodes[0], 0), (plan.Nodes[1], 0), (plan.Nodes[2], 0)]);
+        }
+
+        NemesisException ex = Assert.ThrowsAsync<NemesisException>(() => TargetSelector.ResolveLeaderAsync(
+            Observe, window: TimeSpan.FromMilliseconds(100), interval: TimeSpan.FromMilliseconds(20), CancellationToken.None))!;
+
+        Assert.That(sweeps, Is.GreaterThan(1), "it must have asked more than once before giving up");
+        Assert.That(ex.Message, Does.Contain($"{sweeps} sweep(s)"));
+        Assert.That(ex.Message, Does.Contain("no node reported leading"));
+    }
+
+    [Test]
+    public void ResolveLeader_PropagatesCancellationInsteadOfSkipping()
+    {
+        ClusterPlan plan = Plan();
+        using CancellationTokenSource cts = new();
+        Task<IReadOnlyList<(NodePlan, int)>> Observe(CancellationToken _)
+        {
+            cts.Cancel();
+            return Task.FromResult<IReadOnlyList<(NodePlan, int)>>([(plan.Nodes[0], 0), (plan.Nodes[1], 0), (plan.Nodes[2], 0)]);
+        }
+
+        Assert.ThrowsAsync<TaskCanceledException>(() => TargetSelector.ResolveLeaderAsync(
+            Observe, window: TimeSpan.FromSeconds(5), interval: TimeSpan.FromMilliseconds(10), cts.Token));
+    }
+
+    [Test]
     public void EmptyZone_IsRejected()
     {
         TargetSelector selector = new(ZonedPlan(), new Random(1));

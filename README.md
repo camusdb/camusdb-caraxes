@@ -154,6 +154,12 @@ nemesis:
     - { at: 20s, fault: kill, target: random, duration: 20s }
 ```
 
+`target: leader` is resolved when the event fires, from the `LeaderLocal` flags each node reports on
+its placement: the node leading the most partitions is hit. If no node leads anything at that moment
+(an election is in progress, which is common right after a WAL-stall step-down on a saturated
+device), the runner keeps sweeping every 0.5 s for up to 10 s before it gives up on the fault, and
+the timeline note records how many sweeps it took.
+
 See `scenarios/kill-follower.yml`, `partition-and-slow.yml`, `soak-random.yml`. The verdict grades
 internal errors by context: with no fault injected any internal error fails the run, but under a
 fault a few client-side disposal races are tolerated as long as reconciliation (the real consistency
@@ -316,7 +322,11 @@ whose fingerprints differ were not on the same build or durability settings and 
 
 **Load-generator headroom.** `client-resources.json` records the generator's own CPU, allocation, GC
 pauses, thread-pool backlog and in-flight requirement. A generator that ran out of CPU produces a flat
-curve that reads exactly like a saturated cluster.
+curve that reads exactly like a saturated cluster. The thread-pool backlog is judged on how long it
+lasted, not on its highest single one-second reading: the workload warns when the queue stayed above
+100 pending items for 5 s without a break, or sat above 100 in more than 5% of samples (p95). The
+peak is still reported, marked as a single sample. One spike in a two-hour soak is the normal shape of
+a burst of continuations after a fault heals, and it no longer fails `require_client_headroom`.
 
 ```yaml
 workload:

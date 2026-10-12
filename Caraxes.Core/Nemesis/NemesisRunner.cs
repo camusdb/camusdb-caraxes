@@ -109,8 +109,12 @@ public sealed class NemesisRunner
         {
             try
             {
-                NodePlan leader = await ResolveLeaderAsync(stopToken).ConfigureAwait(false);
-                timeline.Write("note", fault.Kind, leader.Name, $"target 'leader' resolved to {leader.Name}", DateTime.UtcNow);
+                TargetSelector.LeaderResolution resolved = await ResolveLeaderAsync(stopToken).ConfigureAwait(false);
+                NodePlan leader = resolved.Leader;
+                string waited = resolved.Attempts == 1
+                    ? ""
+                    : $" after {resolved.Attempts} sweeps over {resolved.Waited.TotalSeconds:F1} s (nobody led at first)";
+                timeline.Write("note", fault.Kind, leader.Name, $"target 'leader' resolved to {leader.Name}{waited}", DateTime.UtcNow);
                 targets = [leader];
             }
             catch (OperationCanceledException)
@@ -267,8 +271,14 @@ public sealed class NemesisRunner
 
     /// <summary>Asks every node which partitions it leads (the <c>LeaderLocal</c> flag on its
     /// placement) and picks the one leading the most. A node that does not answer counts as leading
-    /// nothing, so a paused or dead node is never chosen by default.</summary>
-    private async Task<NodePlan> ResolveLeaderAsync(CancellationToken cancellationToken)
+    /// nothing, so a paused or dead node is never chosen by default. When nobody leads (an election
+    /// in progress) the sweep repeats for <see cref="TargetSelector.LeaderResolveWindow"/> before the
+    /// fault is given up.</summary>
+    private Task<TargetSelector.LeaderResolution> ResolveLeaderAsync(CancellationToken cancellationToken) =>
+        TargetSelector.ResolveLeaderAsync(ObserveLeadersAsync,
+            TargetSelector.LeaderResolveWindow, TargetSelector.LeaderResolveInterval, cancellationToken);
+
+    private async Task<IReadOnlyList<(NodePlan Node, int Led)>> ObserveLeadersAsync(CancellationToken cancellationToken)
     {
         List<(NodePlan Node, int Led)> observations = [];
         foreach (NodePlan node in plan.Nodes)
@@ -291,7 +301,7 @@ public sealed class NemesisRunner
             observations.Add((node, led));
         }
 
-        return TargetSelector.PickLeader(observations);
+        return observations;
     }
 
     private static async Task DelayUntilAsync(TimeSpan at, Stopwatch clock, CancellationToken token)

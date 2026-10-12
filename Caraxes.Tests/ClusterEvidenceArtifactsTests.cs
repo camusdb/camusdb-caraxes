@@ -123,6 +123,45 @@ public sealed class ClusterEvidenceArtifactsTests
     }
 
     [Test]
+    public void ReadsTheSustainedBacklogFiguresWhenTheWorkloadWroteThem()
+    {
+        Write("client-resources.json", """
+            {
+              "ProcessorCount": 4,
+              "CpuUtilization": 0.06,
+              "PeakThreadPoolQueue": 103,
+              "ThreadPoolQueueP95": 2,
+              "ThreadPoolBacklogSeconds": 1,
+              "ThreadPoolBacklogSamples": 1,
+              "ThreadPoolQueueSamples": 7200,
+              "Warnings": []
+            }
+            """);
+
+        ClientResourcesSummary client = WorkloadArtifacts.ReadClientResources(dir)!;
+
+        Assert.That(client.PeakThreadPoolQueue, Is.EqualTo(103));
+        Assert.That(client.ThreadPoolQueueP95, Is.EqualTo(2));
+        Assert.That(client.ThreadPoolBacklogSeconds, Is.EqualTo(1));
+        Assert.That(client.ThreadPoolBacklogSamples, Is.EqualTo(1));
+        Assert.That(client.ThreadPoolQueueSamples, Is.EqualTo(7200));
+        Assert.That(client.HeadroomAvailable, Is.True, "one sample over the bar is the workload's call, and it no longer warns");
+    }
+
+    [Test]
+    public void LeavesTheSustainedBacklogFiguresNullForAnOlderArtifact()
+    {
+        Write("client-resources.json", """
+            { "ProcessorCount": 4, "PeakThreadPoolQueue": 103, "Warnings": [] }
+            """);
+
+        ClientResourcesSummary client = WorkloadArtifacts.ReadClientResources(dir)!;
+
+        Assert.That(client.ThreadPoolQueueP95, Is.Null);
+        Assert.That(client.ThreadPoolBacklogSeconds, Is.Null);
+    }
+
+    [Test]
     public void TreatsAWarnedGeneratorAsHavingNoHeadroom()
     {
         Write("client-resources.json", """

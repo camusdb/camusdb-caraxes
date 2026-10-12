@@ -801,7 +801,7 @@ public sealed class ScenarioRunner
 
         notes.Add($"client headroom: {(client.HeadroomAvailable ? "OK" : "SUSPECT")} " +
                   $"(CPU {client.CpuUtilization:P0} of {client.ProcessorCount} core(s), " +
-                  $"{client.AllocatedMbPerSecond:N0} MB/s allocated, peak pool queue {client.PeakThreadPoolQueue})");
+                  $"{client.AllocatedMbPerSecond:N0} MB/s allocated, {DescribePoolQueue(client)})");
 
         foreach (string warning in client.Warnings)
             notes.Add($"  generator warning: {warning}");
@@ -811,6 +811,16 @@ public sealed class ScenarioRunner
             notes.Add("  CHECK FAILED: checks.require_client_headroom is on and the generator may have been the limiter");
             passed = false;
         }
+    }
+
+    /// <summary>The thread-pool backlog as the rule judges it: the sustained figures when the workload
+    /// build measured them, and the single-sample peak alone (so marked) when it did not.</summary>
+    private static string DescribePoolQueue(ClientResourcesSummary client)
+    {
+        if (client.ThreadPoolQueueP95 is double p95 && client.ThreadPoolBacklogSeconds is double longest)
+            return $"pool queue p95 {p95:N0}, longest backlog {longest:N0} s, peak {client.PeakThreadPoolQueue}";
+
+        return $"peak pool queue {client.PeakThreadPoolQueue} (single sample; workload build predates the sustained-backlog rule)";
     }
 
     /// <summary>The engine versions worth naming in a one-line note: the storage and consensus
