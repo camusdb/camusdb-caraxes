@@ -1,0 +1,52 @@
+# 1.11.9 STACK at 256 WORKERS with the primary-key row-id cache (2026-10-12): CamusDB pins the published Kahuna.Core 1.11.9 -> Kahuna.Shared
+# 1.11.9 -> Kommander 1.10.9, which carry the two remaining hop-removal changes (Kahuna: a resident latest get served from a published head
+# snapshot without the actor round trip; Kommander: frontier waiters keyed by required index instead of one pulse per applied entry). Same
+# body as bank-rel1118-tmpfs-clear-pkc-w256 (pkc4: 10,463 ops/s, leader 0.83 CPU-ms/op at 8.70 cores, query 0.86 / non_query 2.11 /
+# commit 9.18 ms, read p50 3.8 ms, write p50 34.7 ms, actor stage 348 us with a 30% lease-miss share on the 45-min pkc3). Image bankrel1119pkc.
+# Read: ops/s, leader CPU-ms/op, kahuna_kv_read_stage actor mean and path split, lease-miss share and mean, TP work items per op, allocation.
+name: bank-rel1119-tmpfs-clear-pkc-w256
+cluster:
+  name: bankrel1119clearpkcw256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1119pkc"
+  camusdb:
+    # The lever under test: a primary-key point lookup remembers its row id and skips the index read.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

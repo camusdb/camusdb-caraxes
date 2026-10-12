@@ -1,0 +1,51 @@
+# 45-MINUTE FIGURE CANDIDATE (2026-10-12): the 1.11.9 stack (Kahuna 1.11.9 / Kommander 1.10.9) with CamusDB's primary-key row-id cache at
+# 256 workers, cleartext client path. Why 256: with the cache the leader ran 8.0-8.1 cores at 128 workers (pkc3 45-min 9,903 ops/s, 1% under
+# the bar) and 8.70 at 256 (pkc4 10-min 10,463), so the extra concurrency converts the freed CPU. Bar: >10,000 over 45 minutes. Compare with
+# pkc3 (9,903 at 128 workers, 1.11.8) and with the 10-min w256 arms on both stacks. Image bankrel1119pkc. Memory note: the 45-minute tmpfs
+# shape ends with the nodes at 87-90% of 9,728 MiB (~25 GB of 31 on this host); keep the host otherwise idle.
+name: bank-rel1119-tmpfs-clear-pkc-w256-45
+cluster:
+  name: bankrel1119clearpkcw25645
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1119pkc"
+  camusdb:
+    # The lever under test: a primary-key point lookup remembers its row id and skips the index read.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
