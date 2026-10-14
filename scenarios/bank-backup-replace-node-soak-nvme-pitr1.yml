@@ -1,0 +1,102 @@
+# REPLACE A NODE LATE IN THE INCREMENTAL BACKUP SOAK (2026-10-14). The incremental arm's body and schedule
+# (bank-backup-soak-nvme-rel1119pkc.yml: the bankpitr1 image, a backup on camus1 every four minutes from 3m to 43m,
+# the 2 h PITR window with a 20 s horizon tick) plus the operator's recovery, placed late so the replacement carries
+# the run's history: camus3 is killed at 30m and never restarted, and at 36m a replacement is seeded from camus1's
+# chain and joins (add-node: a closing incremental on camus1, its chain restored there, the restored root copied
+# into camus4's data directory, camus4 booted with --join-existing and the live nodes as seeds; the injection
+# returns when the roster says Voter). Why late: the join with thirty minutes of history behind it, under full
+# load, is the number — how long until camus4 is a Voter, and what the foreground pays while the leader seeds it.
+#
+# WHAT TO EXPECT, from the preflight (bank-backup-replace-node-preflight.yml, r3). (1) The seed buys nothing yet:
+# the restore leaves an empty Raft log, camus4 presents at index 0 and the leader seeds it by snapshot and backfill
+# (CamusDB vorpal acc0aa1b: expose Kahuna's PITR bootstrap). This run is the baseline that fix should beat.
+# (2) The eviction of camus3 takes minutes, and the first incremental taken after it is published with a chain the
+# engine then refuses (Kahuna vorpal 7c8dc622); the harness resolves the chain after every incremental and starts a
+# new full when that happens, in capitals in the timeline. require_unbroken_chain is off for that reason: the
+# chain restarting after the membership change is the correct outcome, and the catalog count still goes to the
+# verdict. (3) The join window will not hold the 80% floor while the snapshot transfers; that is the cost, and the
+# device regime decides whether the window is judged or inadmissible, as on the incremental arm.
+#
+# The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
+# roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
+# the restore, and the rehearsal of the original three slots from it.
+name: bank-backup-replace-node-soak-nvme-pitr1
+cluster:
+  name: bankbackupreplacesoakpitr1
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  backups: true
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    rocksdb_shared_memory: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    # Longer than the run: an incremental whose parent aged past the WAL floor is taken as a full, and this
+    # run exists to test incrementals. The window is the retained WAL (~ window x write rate).
+    pitr_window_seconds: 7200
+    base_snapshot_interval_seconds: 20    # the start-up tick protects nothing; see THE STACK above
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr1"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 3m,  fault: backup, target: camus1, duration: 5s }   # empty catalog: the chain starts with a full
+    - { at: 7m,  fault: backup, target: camus1, duration: 5s }
+    - { at: 11m, fault: backup, target: camus1, duration: 5s }
+    - { at: 15m, fault: backup, target: camus1, duration: 5s }
+    - { at: 19m, fault: backup, target: camus1, duration: 5s }
+    - { at: 23m, fault: backup, target: camus1, duration: 5s }
+    - { at: 27m, fault: backup, target: camus1, duration: 5s }
+    - { at: 30m, fault: kill,     target: camus3, heal: false }   # permanent loss; the cluster evicts it on its own
+    - { at: 31m, fault: backup, target: camus1, duration: 5s }
+    - { at: 35m, fault: backup, target: camus1, duration: 5s }
+    - { at: 36m, fault: add-node, target: camus1, duration: 5s, seed_from_backup: true }   # camus4 joins the survivors
+    - { at: 39m, fault: backup, target: camus1, duration: 5s }
+    - { at: 43m, fault: backup, target: camus1, duration: 5s }
+backup_verify:
+  node: camus1
+  final_incremental: true
+  restore: true
+  boot: true
+  require_unbroken_chain: false   # the chain restarts after the eviction; see WHAT TO EXPECT (2)
+  restore_timeout_seconds: 3600
+checks:
+  max_recovery_seconds: 30
+  min_recovered_throughput_fraction: 0.9
+  min_throughput_under_fault_fraction: 0.8
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
