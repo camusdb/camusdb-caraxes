@@ -30,6 +30,11 @@
 # being overwritten). Until then the kill window's throughput cost is read, not graded: the floor applies to healed
 # windows only.
 #
+# RUN n2 (2026-10-14) is the acceptance run on bankpitr2 (CamusDB 367fde77, Kahuna.Core 1.12.1, Kommander 1.10.11):
+# the join ceiling is now progress-bounded (d7eda742 fixed) and the joiner starts with --pitr-bootstrap-from. The
+# preflight (r4) showed the seed is written but not honoured (kahuna c2ffa0eb: the node still presents at index 0), so
+# the expected shape is a join that survives the backfill rather than a short one.
+#
 # The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
 # roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
 # the restore, and the rehearsal of the original three slots from it.
@@ -59,7 +64,7 @@ cluster:
   env:
     MALLOC_ARENA_MAX: "2"
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr1"
+  image: "caraxes/camusdb:bankpitr2"
   camusdb:
     point_read_row_id_cache_enabled: true
 workload:

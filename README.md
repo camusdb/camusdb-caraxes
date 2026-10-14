@@ -258,8 +258,12 @@ to `backup-verify.json`; a step that could not run fails the run rather than bei
 5 s suspicion plus 30 s grace by default — and an `add-node` scheduled after it boots a replacement that joins
 the survivors through CamusDB's `--join-existing`. With `seed_from_backup: true` (the default) the fault takes a
 closing incremental on the target node, restores that chain on the target into its restore root, copies the
-restored data root into the joiner's data directory and boots the joiner from it, so the leader ships only the
-delta since the backup; with it off the joiner starts empty and is seeded by snapshot. The joiner takes the next
+restored data root into the joiner's data directory and the target's catalog into the joiner's backup mount, and
+boots the joiner with `--pitr-bootstrap-from` naming the closing backup: the node replays the chain and writes the
+restored index into its empty WAL before Raft starts, so it presents at that index and the leader ships only the
+delta since the backup. The injection's outcome says whether the seed was honoured (CamusDB's "Seeded the node"
+line present, no "presence frontier 0" line in the joiner's log). With it off the joiner starts empty and is
+seeded by snapshot. The joiner takes the next
 free `camusN` slot (`node_name` picks one; it must be within `spare_certs`, which the certificate's SANs cover),
 runs the same image, config, environment and mounts as the fleet, and is removed at teardown. The injection
 returns when the node reports ready, which CamusDB does only once Kommander has promoted it to Voter; its seeds

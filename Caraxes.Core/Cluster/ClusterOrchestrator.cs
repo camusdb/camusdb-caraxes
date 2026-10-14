@@ -15,6 +15,11 @@ namespace Caraxes.Core.Cluster;
 /// truth and the run directory is disposable output, so <c>down</c> works even after the run
 /// directory was deleted.
 /// </summary>
+/// <summary>What a runtime joiner bootstraps from: the leaf backup its data root was restored from,
+/// and the host directory of the catalog that holds that chain (the target node's), which is copied
+/// into the joiner's own backup mount. See <see cref="ClusterOrchestrator.LaunchJoinerAsync"/>.</summary>
+public sealed record JoinerSeed(string LeafBackupId, string CatalogHostDir);
+
 public sealed class ClusterOrchestrator
 {
     private readonly ClusterPlan plan;
@@ -234,8 +239,15 @@ public sealed class ClusterOrchestrator
     /// on <paramref name="joiner"/>. Labelled as a service of the compose project so <see cref="DownAsync"/>
     /// removes it with the fleet. <paramref name="dataHostDir"/> is bound at <c>/data</c>: a restored
     /// data root, or an empty directory for a node the leader seeds.
+    ///
+    /// <para>With a <paramref name="seed"/>, the node is told to bootstrap from the chain the data root
+    /// was restored from (<c>--pitr-bootstrap-from</c>, CamusDB 367fde77): before Raft starts it replays
+    /// the chain and writes one committed checkpoint per partition into its empty WAL, so it presents
+    /// to the leader at the restored index and receives the entries after it instead of a snapshot.
+    /// The seed reads the chain from the node's own catalog (<c>kahuna.backup_dir</c>), so the catalog
+    /// that holds it is copied into the joiner's backup mount first.</para>
     /// </summary>
-    public async Task LaunchJoinerAsync(NodePlan joiner, string dataHostDir, CancellationToken cancellationToken = default)
+    public async Task LaunchJoinerAsync(NodePlan joiner, string dataHostDir, JoinerSeed? seed = null, CancellationToken cancellationToken = default)
     {
         ClusterSpec spec = plan.Spec;
 
@@ -245,6 +257,14 @@ public sealed class ClusterOrchestrator
         if (spec.Backups)
             foreach (string sub in new[] { "catalog", "restore" })
                 CreatePrivateDirectory(Path.Combine(BackupsDirOf(joiner), sub));
+
+        if (seed is not null)
+        {
+            if (!spec.Backups)
+                throw new InvalidOperationException($"{joiner.Name} cannot bootstrap from a backup: the cluster runs without backups");
+            Console.WriteLine($"==> copying the backup catalog under {seed.CatalogHostDir} into {joiner.Name}'s backup mount for the bootstrap");
+            await CopyTreeAsRootAsync(seed.CatalogHostDir, Path.Combine(BackupsDirOf(joiner), "catalog"), cancellationToken).ConfigureAwait(false);
+        }
 
         List<string> args =
         [
@@ -272,13 +292,23 @@ public sealed class ClusterOrchestrator
 
         foreach ((string key, object value) in ComposeGenerator.NodeEnvironment(spec, joiner))
             args.AddRange(["-e", $"{key}={value}"]);
-        args.AddRange(["-e", "CAMUS_EXTRA_ARGS=--join-existing true"]);
+        args.AddRange(["-e", $"CAMUS_EXTRA_ARGS={JoinerExtraArgs(seed?.LeafBackupId)}"]);
 
         args.Add(spec.NodeImage);
 
-        Console.WriteLine($"==> starting {joiner.Name} ({joiner.Ip}) to join the cluster through {joiner.InitialCluster}");
+        Console.WriteLine($"==> starting {joiner.Name} ({joiner.Ip}) to join the cluster through {joiner.InitialCluster}"
+            + (seed is null ? "" : $", bootstrapping from backup {seed.LeafBackupId}"));
         await ProcessRunner.RunCheckedAsync("docker", args, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>The command-line tail a joiner gets through <c>CAMUS_EXTRA_ARGS</c>: the join, plus the
+    /// bootstrap when the data root was restored from <paramref name="bootstrapLeafBackupId"/>. The
+    /// target time is left at CamusDB's default 0 (the latest point), which is what every restore the
+    /// harness takes asks for; the two must agree or the store and the log describe different points.</summary>
+    public static string JoinerExtraArgs(string? bootstrapLeafBackupId)
+        => bootstrapLeafBackupId is null
+            ? "--join-existing true"
+            : $"--join-existing true --pitr-bootstrap-from {bootstrapLeafBackupId}";
 
     /// <summary>Containers of this compose project that the compose file does not name: the nodes
     /// <see cref="LaunchJoinerAsync"/> started. Their names, from docker.</summary>

@@ -1,12 +1,14 @@
-# REPLACE A NODE FROM THE BACKUP CHAIN, PREFLIGHT (2026-10-14). The operator's recovery in one short run on the
-# bankpitr1 image (Kahuna.Core 1.11.11-pitr.1, the tree that fixes incremental backups; see bank-backup-preflight-pitr1):
+# REPLACE A NODE FROM THE BACKUP CHAIN, PREFLIGHT (2026-10-14). The operator's recovery in one short run. Runs r1-r3
+# were on the bankpitr1 image (Kahuna.Core 1.11.11-pitr.1, the tree that fixes incremental backups; see
+# bank-backup-preflight-pitr1); r4 onward on bankpitr2 (CamusDB 367fde77 with Kahuna.Core 1.12.1 and Kommander 1.10.11:
+# the seeded join exposed, the join ceiling made progress-bounded):
 #   20s  backup on camus1          -> the chain starts with a full
 #   40s  kill camus3, never healed -> a permanent loss; SWIM evicts it from the roster ~35 s later (5 s suspicion + 30 s grace)
 #   50s  backup on camus1          -> an incremental on the full
 #   100s add-node seeded from camus1 -> a closing incremental on camus1, its chain restored on camus1, the restored root
-#        copied into camus4's data directory, camus4 booted on the fleet's network with --join-existing and the live
-#        nodes as seeds; the injection returns when camus4 is ready, which CamusDB reports only once Kommander has
-#        promoted it to Voter
+#        copied into camus4's data directory with camus1's catalog, camus4 booted on the fleet's network with
+#        --join-existing, --pitr-bootstrap-from naming the closing incremental, and the live nodes as seeds; the
+#        injection returns when the roster says Voter
 # After the workload, backup_verify closes camus1's chain, reads the live ledger, and reads camus4: it must be a Voter
 # in camus1's roster, ready, hosting the cluster's partitions, and read the live ledger exactly. Then the usual chain
 # check, restore and rehearsal (the rehearsal boots the ORIGINAL three slots from the restore, which is the whole-
@@ -32,6 +34,16 @@
 # which writes the checkpoint entries that make a joiner present at the restored index) is not exposed by CamusDB;
 # filed on the CamusDB project. r2 found that CamusDB reports ready while Kommander still has the joiner as a
 # Learner (ready at 115 s, Voter later), which is why the fault waits for the roster and not for readiness.
+#
+# RUN r4 (2026-10-14, PASS, first run on bankpitr2 with the bootstrap flag). camus4 joined as Voter in 65.0 s (ready at
+# 24.4 s), hosted the partition and read the live ledger exactly; the restarted chain restored and the rehearsal matched
+# on every node. The seed ran ("Seeded the node from backup ff8a8090 ... it joins at the restored index") and bought
+# nothing: Kommander withheld the seeded checkpoint ("checkpoint 612122 landed over a gap (floor -1, first missing
+# id 1)"), camus4 presented at presence frontier 0 (25 lines) and the leader backfilled from id 1, the same timings as
+# r3 without the flag. Kahuna's BootstrapHelper writes the checkpoint through IWAL.Write, which certifies a prefix only
+# when it is present; the snapshot-boundary path is the one that stamps it (vorpal kahuna c2ffa0eb). The add-node
+# outcome now says which of the two happened, from the joiner's log. The membership-change chain refusal (7c8dc622)
+# still reproduces on Kahuna 1.12.1.
 name: bank-backup-replace-node-preflight
 cluster:
   name: bank-backup-replace-node-preflight
@@ -42,7 +54,7 @@ cluster:
   isolation: read_committed
   backups: true
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr1"
+  image: "caraxes/camusdb:bankpitr2"
   kahuna:
     pitr_window_seconds: 3600
     base_snapshot_interval_seconds: 20    # the start-up horizon tick protects nothing (vorpal kahuna f3cff51a, residual)

@@ -21,10 +21,14 @@ namespace Caraxes.Core.Nemesis;
 ///
 /// <para>Seeding. With <c>seed_from_backup: true</c> (the default) the fault takes one closing
 /// incremental on the target node, restores that chain on the target into its restore root, copies
-/// the restored data root into the joiner's data directory, and boots the joiner from it: the join
-/// then starts from the backup's point and the leader ships only the delta since. The target is the
-/// node whose catalog holds the chain, usually the one the run's <c>backup</c> events name. With it
-/// off the joiner starts empty and the leader seeds it by snapshot.</para>
+/// the restored data root into the joiner's data directory and the target's catalog into the joiner's
+/// backup mount, and boots the joiner with <c>--pitr-bootstrap-from</c> naming the closing backup:
+/// CamusDB replays the chain into the store and writes the restored index into the empty WAL before
+/// Raft starts, so the node presents at that index and the leader ships only the delta since. The
+/// target is the node whose catalog holds the chain, usually the one the run's <c>backup</c> events
+/// name. With it off the joiner starts empty and the leader seeds it by snapshot. The outcome says
+/// whether the seed was honoured: the joiner's log must carry CamusDB's "Seeded the node" line and
+/// none of Kommander's "presence frontier 0" lines, which are a node presenting at index 0.</para>
 ///
 /// <para>The joiner. <c>node_name</c> names it (<c>camusN</c> beyond the fleet; default the next free
 /// index); it takes the address, Raft port and host ports that index has in the plan, which the
@@ -110,7 +114,8 @@ public sealed class AddNodeFault : IFault
             seededFrom = $"{target.Name}'s chain at {closing.Backup.ShortId} ({closing.Describe()}; restore of {response.Chain.Count} link(s) replayed {response.EntriesApplied:N0} entries in {restoreClock.Elapsed.TotalSeconds:0.0} s)";
         }
 
-        await orchestrator.LaunchJoinerAsync(joiner, dataDir, cancellationToken).ConfigureAwait(false);
+        JoinerSeed? seed = leaf is null ? null : new JoinerSeed(leaf, Path.Combine(orchestrator.BackupsDirOf(target), "catalog"));
+        await orchestrator.LaunchJoinerAsync(joiner, dataDir, seed, cancellationToken).ConfigureAwait(false);
         context.LaunchedNodes.Add(joiner);
 
         // CamusDB reports ready while Kommander still has the node as a Learner (run replace-node r2,
@@ -122,12 +127,37 @@ public sealed class AddNodeFault : IFault
         (string role, ClusterMembership? membership) = await WaitForVoterAsync(joiner, alive[0], deadline, cancellationToken).ConfigureAwait(false);
         health = await context.Probes.GetHealthAsync($"http://localhost:{joiner.HostRestPort}", cancellationToken).ConfigureAwait(false) ?? health;
 
+        if (seed is not null)
+            seededFrom += "; " + await DescribeBootstrapAsync(joiner, cancellationToken).ConfigureAwait(false);
+
         JoinedNode joined = new(joiner, seededFrom, leaf, restore, alive.Select(n => n.Name).ToList(), clock.Elapsed.TotalSeconds, health.HostedPartitions);
         context.JoinedNodes.Add(joined);
         lastOutcome =
             $"{joiner.Name} ({joiner.Ip}) joined as {role} in {clock.Elapsed.TotalSeconds:0.0} s (ready at {readySeconds:0.0} s), hosting {health.HostedPartitions} partition(s), " +
             $"seeds {string.Join(",", joined.Seeds)}, roster of {membership?.Members.Count ?? 0} at version {membership?.MembershipVersion ?? 0} " +
             $"({string.Join(", ", membership?.Members.Select(m => $"{m.Endpoint}={m.Role}") ?? [])}); seeded from {seededFrom}";
+    }
+
+    /// <summary>CamusDB logs one line when the bootstrap seeded the store and the WAL; Kommander logs
+    /// "presence frontier 0" for every batch a node that presented at index 0 withholds (77 lines in
+    /// preflight r3, where the restore was overwritten by a snapshot). The two together say whether
+    /// the seed bought the catch-up anything, read from the container's log once the node is a Voter.</summary>
+    private static async Task<string> DescribeBootstrapAsync(NodePlan joiner, CancellationToken cancellationToken)
+    {
+        ProcessResult logs = await ProcessRunner.RunAsync("docker", ["logs", joiner.ContainerName], cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!logs.Success)
+            return "bootstrap: the joiner's log could not be read";
+
+        string all = logs.StdOut + "\n" + logs.StdErr;
+        bool seeded = all.Contains("Seeded the node from backup", StringComparison.Ordinal);
+        int frontierZero = all.Split('\n').Count(line => line.Contains("presence frontier 0", StringComparison.Ordinal));
+        return (seeded, frontierZero) switch
+        {
+            (true, 0) => "bootstrap: SEEDED at the restored index (no index-0 presentation in the log)",
+            (true, _) => $"bootstrap: seeded, BUT THE NODE STILL PRESENTED AT INDEX 0 ({frontierZero} 'presence frontier 0' lines)",
+            (false, 0) => "bootstrap: NO 'Seeded the node' LINE in the log",
+            (false, _) => $"bootstrap: NO 'Seeded the node' LINE in the log and {frontierZero} 'presence frontier 0' lines",
+        };
     }
 
     /// <summary>Polls the roster until the joiner is a Voter in both its own view and a seed's.</summary>
@@ -204,7 +234,17 @@ public sealed class AddNodeFault : IFault
             "docker", ["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", joiner.ContainerName], cancellationToken: cancellationToken)
             .ConfigureAwait(false);
         if (state.Success && !state.StdOut.StartsWith("running", StringComparison.Ordinal))
+        {
+            // A refused bootstrap (CADB0710) or a timed-out join names its cause in the last lines;
+            // quote them so the timeline says why without a trip to the node log.
+            ProcessResult logs = await ProcessRunner.RunAsync("docker", ["logs", "--tail", "60", joiner.ContainerName], cancellationToken: cancellationToken).ConfigureAwait(false);
+            string[] reasons = (logs.StdOut + "\n" + logs.StdErr).Split('\n')
+                .Where(line => line.Contains("CADB0710", StringComparison.Ordinal) || line.Contains("bootstrap", StringComparison.OrdinalIgnoreCase)
+                            || line.Contains("timed out", StringComparison.OrdinalIgnoreCase) || line.Contains("JoinCluster", StringComparison.Ordinal))
+                .Select(line => line.Trim()).Take(3).ToArray();
             throw new InvalidOperationException(
-                $"{joiner.Name} stopped before it joined (container {state.StdOut.Trim()}); see node-log-{joiner.Name}.txt and the dumps directory");
+                $"{joiner.Name} stopped before it joined (container {state.StdOut.Trim()}); see node-log-{joiner.Name}.txt and the dumps directory" +
+                (reasons.Length == 0 ? "" : $"; the log says: {string.Join(" | ", reasons)}"));
+        }
     }
 }

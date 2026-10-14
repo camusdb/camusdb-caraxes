@@ -524,6 +524,14 @@ public sealed class AddNodeSpecTests
     }
 
     [Test]
+    public void JoinerCommandLine_CarriesTheBootstrapOnlyWhenSeeded()
+    {
+        Assert.That(ClusterOrchestrator.JoinerExtraArgs(null), Is.EqualTo("--join-existing true"));
+        Assert.That(ClusterOrchestrator.JoinerExtraArgs("0f4c2a1e-6d2b-4b3a-9c1d-2e3f4a5b6c7d"),
+            Is.EqualTo("--join-existing true --pitr-bootstrap-from 0f4c2a1e-6d2b-4b3a-9c1d-2e3f4a5b6c7d"));
+    }
+
+    [Test]
     public void SeededJoinNeedsBackups_UnseededDoesNot()
     {
         Assert.That(Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read("""
