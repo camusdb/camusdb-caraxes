@@ -153,6 +153,21 @@ public sealed class ClusterSpec
     /// 0 (the default) keeps the derived 60%.</summary>
     public int GcHeapHardLimitMb { get; set; }
 
+    /// <summary>Enables CamusDB's backup and point-in-time-recovery admin API on every node. Each node
+    /// gets a host bind mount at <c>/backups</c> (under the run directory, one sub-directory per node, so
+    /// the artifacts survive teardown and can be inspected) and its config names
+    /// <c>kahuna.backup_dir: /backups/catalog</c>, <c>kahuna.restore_root: /backups/restore</c> and
+    /// <c>kahuna.backup_cluster_id</c> (the cluster name). Everything else about backups — the PITR
+    /// window, the base-snapshot cadence, retention — goes through the <c>kahuna:</c> passthrough.
+    ///
+    /// <para>The mount is a bind mount rather than a directory under <c>/data</c> on purpose: a backup
+    /// that lives on the node's own data device (or tmpfs) is lost with the container, and the
+    /// question a backup scenario asks is whether what was written can be read back after the cluster is
+    /// gone. The cost is that the base image is a copy, not a hard link (RocksDB hard-links a checkpoint
+    /// only within one filesystem), which is also what a production backup to a separate volume pays.
+    /// The <c>backup</c> nemesis fault and the <c>backup_verify</c> stage both need this on.</para></summary>
+    public bool Backups { get; set; }
+
     /// <summary>Raw passthrough into the generated config's <c>kahuna:</c> section, for knobs the
     /// spec does not model (election timing, pacing, WAL settings). Keys are written verbatim, so
     /// they must be valid CamusDB <c>kahuna.*</c> option names.</summary>
@@ -286,6 +301,20 @@ public sealed class ClusterSpec
         foreach (int port in (int[])[BaseRestPort, BaseGrpcPort, BaseRaftPort])
             if (port is < 1 or > 65535)
                 throw new ClusterSpecException($"port bases must be in 1..65535, got {port}");
+    }
+
+    /// <summary>An independent copy: memberwise, with the collections duplicated so editing the copy's
+    /// passthrough maps never reaches the original. The disaster-recovery rehearsal boots a second
+    /// fleet from a copy with <see cref="Backups"/> off.</summary>
+    public ClusterSpec Clone()
+    {
+        ClusterSpec copy = (ClusterSpec)MemberwiseClone();
+        copy.Zones = [.. Zones];
+        copy.Kahuna = new Dictionary<string, object>(Kahuna);
+        copy.Camusdb = new Dictionary<string, object>(Camusdb);
+        copy.LogLevels = new Dictionary<string, string>(LogLevels);
+        copy.Env = new Dictionary<string, string>(Env);
+        return copy;
     }
 
     /// <summary>The image tag actually used: explicit, or derived from the cluster name.</summary>

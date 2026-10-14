@@ -19,6 +19,16 @@ namespace Caraxes.Core.Cluster;
 /// </summary>
 public static class NodeConfigGenerator
 {
+    /// <summary>In-container mount point of the per-node backup bind mount (see <see cref="ClusterSpec.Backups"/>).</summary>
+    public const string BackupMount = "/backups";
+
+    /// <summary>Where the node's backup catalog and artifacts live: <c>kahuna.backup_dir</c>.</summary>
+    public const string BackupCatalogDir = BackupMount + "/catalog";
+
+    /// <summary>The server-owned root every restore target must sit under: <c>kahuna.restore_root</c>.
+    /// A sibling of the catalog, never inside it: a restore under the backup directory is refused.</summary>
+    public const string BackupRestoreRoot = BackupMount + "/restore";
+
     public static string Generate(ClusterPlan plan, NodePlan node)
     {
         ClusterSpec spec = plan.Spec;
@@ -33,6 +43,16 @@ public static class NodeConfigGenerator
 
         if (node.Zone is not null)
             kahuna["zone"] = node.Zone;
+
+        // Backups are off unless a directory is named. The three keys are the ones every node must
+        // agree on; the PITR window and the retention knobs come through the passthrough below, so a
+        // scenario states them next to the schedule that depends on them. See ClusterSpec.Backups.
+        if (spec.Backups)
+        {
+            kahuna["backup_dir"] = BackupCatalogDir;
+            kahuna["restore_root"] = BackupRestoreRoot;
+            kahuna["backup_cluster_id"] = spec.Name;
+        }
 
         // Spec-level passthrough last, so an explicit kahuna key in the spec wins over the
         // modeled fields if both name the same option.

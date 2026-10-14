@@ -44,6 +44,19 @@ public sealed class ChecksSpec
     /// the default is the plan's 90%.</summary>
     public double MinRecoveredThroughputFraction { get; set; } = 0.9;
 
+    /// <summary>
+    /// The floor on throughput <b>inside</b> a fault window: the mean completed operations per second
+    /// over the window must be at least this share of the pre-fault median (the clean minute before
+    /// the injection). 0 (the default) turns it off.
+    ///
+    /// <para>The recovery rules judge the tail after a heal; nothing else judges the window itself,
+    /// and for an operation that is not an outage — a backup, a leader transfer — the window is the
+    /// whole cost. A backup scenario sets this to say how much a backup may take from the foreground
+    /// while it runs. A window whose bar was set on the host device's slow regime is reported as
+    /// inadmissible rather than failed, like the held rule.</para>
+    /// </summary>
+    public double MinThroughputUnderFaultFraction { get; set; }
+
     /// <summary>The workload must keep completing at least some operations during every fault window
     /// (availability under fault). A window with zero completed ops means a total outage.</summary>
     public bool RequireProgressUnderFault { get; set; } = true;
@@ -142,5 +155,8 @@ public sealed class ChecksSpec
         if (MinRecoveredThroughputFraction is < 0 or > 1)
             throw new ScenarioException(
                 $"'checks.min_recovered_throughput_fraction' must be between 0 (off) and 1, got {MinRecoveredThroughputFraction}");
+        if (MinThroughputUnderFaultFraction is < 0 or > 1)
+            throw new ScenarioException(
+                $"'checks.min_throughput_under_fault_fraction' must be between 0 (off) and 1, got {MinThroughputUnderFaultFraction}");
     }
 }

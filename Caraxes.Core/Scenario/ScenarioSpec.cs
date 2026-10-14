@@ -32,6 +32,10 @@ public sealed class ScenarioSpec
     /// <summary>Pass/fail rules for the resilience the fault correlation measures. Defaulted when omitted.</summary>
     public ChecksSpec Checks { get; set; } = new();
 
+    /// <summary>The post-run proof that the backups taken during the run hold the data: close the chain,
+    /// restore it, boot the cluster from the restore and read the ledger back. Absent = not verified.</summary>
+    public BackupVerifySpec? BackupVerify { get; set; }
+
     /// <summary>The Elle check of an append run's history. Defaulted when omitted; ignored for the
     /// other workload shapes, which write no history.</summary>
     public ElleSpec Elle { get; set; } = new();
@@ -145,6 +149,14 @@ public sealed class ScenarioSpec
         if (Nemesis?.Uses("clock-skew") == true && !Cluster.ClockSkew)
             throw new ScenarioException(
                 "the nemesis schedules 'clock-skew' but the cluster does not load the clock skew shim; set 'cluster.clock_skew: true'");
+
+        // Same shape: a backup directory is a node start-up setting, and a node without one answers
+        // every backup request with BackupNotConfigured.
+        if (Nemesis?.Uses("backup") == true && !Cluster.Backups)
+            throw new ScenarioException(
+                "the nemesis schedules 'backup' but the cluster has no backup directory; set 'cluster.backups: true'");
+
+        BackupVerify?.Validate(this);
 
         // Cross-block, so it lives here rather than in WorkloadSpec: the workload names a node and
         // only the cluster block knows how many there are. Caught at read time because the

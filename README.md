@@ -49,7 +49,8 @@ A scenario may add a `nemesis:` block that drives faults concurrently with the w
 `timeline.jsonl` of every injection and heal (each stamped with an offset from the workload's start,
 so a later verdict stage can correlate faults with the workload's per-second `intervals.csv`).
 
-Fault kinds: `kill` (SIGKILL, restart on heal), `stop` (graceful), `pause` (SIGSTOP freeze),
+Fault kinds: `kill` (SIGKILL, restart on heal), `stop` (graceful), `pause` (SIGSTOP freeze), `backup` (an online
+backup on the node, see below),
 `partition` (iptables-isolate a node from all peers), `slow` / `loss` (tc netem latency / packet
 loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-capped tmpfs data mount, see
 below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
@@ -199,6 +200,71 @@ checks:
 The check needs the node logs (`capture_node_logs`, on by default). Without them the verdict says the check did
 not run; it does not pass silently. It was first seen in an Elle run under a pause fault, where the history held
 an acknowledged append that no later read contained.
+
+### Backups under load (`backup` fault and `backup_verify`)
+
+`cluster.backups: true` turns CamusDB's backup and point-in-time-recovery API on for every node: a host bind
+mount at `/backups` (one per node under the scenario's run directory, so the artifacts outlive the container
+and a tagged run keeps its own), `kahuna.backup_dir: /backups/catalog`, `kahuna.restore_root: /backups/restore`
+and `kahuna.backup_cluster_id` set to the cluster name. The PITR window, the base-snapshot cadence and retention
+go through the `kahuna:` passthrough. A bind mount rather than a directory under `/data` on purpose: the question
+a backup scenario asks is whether what was written can be read back after the cluster is gone. The cost is that
+the base image is a copy, not a hard link (RocksDB hard-links a checkpoint only within one filesystem), which is
+what a production backup to a separate volume pays too.
+
+The `backup` nemesis fault is the operator's cron job scheduled as a fault, so the correlator grades what it cost.
+`backup_kind` is `incremental` (the default: it chains on the newest backup in the target node's own catalog, and
+starts the chain with a full when the catalog is empty), `full`, or `coordinated` (the cluster-wide consistent cut,
+accepted only by the meta-partition leader; the fault retries on the other nodes when the target is not it). The
+window runs from the request to `duration` after it returns, so keep `duration` short. Each backup's id, kind,
+parent, partitions and elapsed time go to the timeline, and a substitution (an incremental the engine turned into
+a full) is written there in capitals. Backups are node-local, so a chain lives on the node that took it. The
+request runs from the node's loopback like the topology mutations (the endpoints are loopback-only without
+authentication). A failed request is a nemesis error with no window, and the verification below counts it.
+
+```yaml
+cluster:
+  backups: true
+  kahuna: { pitr_window_seconds: 7200, base_snapshot_interval_seconds: 1800 }
+nemesis:
+  events:
+    - { at: 3m, fault: backup, target: camus1, duration: 5s }                     # empty catalog: a full
+    - { at: 7m, fault: backup, target: camus1, duration: 5s }                     # incremental on it
+    - { at: 11m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+backup_verify:
+  node: camus1                   # default: the node the schedule names most, else camus1
+  final_incremental: true        # one closing incremental once the load has stopped
+  restore: true                  # POST /v1/restore into the node's restore root
+  boot: true                     # the rehearsal: needs teardown: true and every node hosting every range
+  require_unbroken_chain: true   # every backup the run took must still be in the leaf's chain
+checks:
+  min_throughput_under_fault_fraction: 0.8   # in-window mean ops/s must stay above this share of the pre-fault median
+```
+
+`backup_verify` is the no-data-loss proof, run after the workload: one closing incremental on the node; the live
+ledger fingerprint (rows, `SUM(balance)`, `SUM(version)`, `MAX(version)` over the dataset) read from the live
+cluster; the chain ending at the newest backup resolved and checked (a full at the root, every link readable, no
+substitution, and — with `require_unbroken_chain` — every backup the run took on the node still in it); the chain
+restored on the node; then, after teardown, the **disaster-recovery rehearsal**: the same fleet is brought back up
+with every node's data root copied from the restore, and the fingerprint read from every node and compared with
+the live one. Equal on every node, with the run's own reconciliation passed, is the claim. `SUM(balance)` alone
+cannot carry it — every transfer conserves it, so a restore that dropped the last ten minutes conserves it too;
+`SUM(version)` rises with every transfer and is what a lost tail shows up in. Every finding goes to the verdict and
+to `backup-verify.json`; a step that could not run fails the run rather than being skipped.
+
+`checks.min_throughput_under_fault_fraction` (default 0 = off) is the floor on throughput *inside* a window: the
+recovery rules judge the tail after a heal, and for an operation that is not an outage the window is the whole
+cost. A window whose bar was set on the host device's slow regime is reported as inadmissible, like the held rule.
+
+See `scenarios/bank-backup-preflight.yml` (short, proves the whole path), `bank-backup-soak-nvme-rel1119pkc.yml`
+(the incremental arm) and `bank-backup-soak-nvme-rel1119pkc-full.yml` (the full arm). **On Kahuna 1.11.9 the
+incremental arm fails, and that is its finding** (preflight v1-v3, 2026-10-14): Kahuna's `BackupDriver` reads the
+partition's last *application checkpoint* (`IWAL.GetLastCheckpoint`, advanced on every flush cycle) as the WAL
+compaction floor and refuses any incremental that starts below it, so on a node that has written since its parent
+every incremental is taken as a full — with compaction switched off entirely the refusal still names the
+checkpoint. Behind it, the PITR retention floor never engages on a loaded node: the horizon tick's binary search
+reads the compacted prefix as "no entry before the boundary", returns -1, and clears the floor in Kommander. The
+full arm asks for what the engine can deliver so the data-loss and cost questions are answered today.
 
 ### Bank-transfer invariant workload
 

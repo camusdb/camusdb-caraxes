@@ -1,0 +1,117 @@
+# FULL BACKUPS UNDER THE BANK SOAK, the arm that passes on Kahuna 1.11.9 (2026-10-14). The 1.11.9 stack with the row-id cache on, the image the
+# fault-soak pair pk1 passed on (caraxes/camusdb:bankrel1119pkc: CamusDB HEAD 693c61bb pinned to the published
+# Kahuna.Core 1.11.9 -> Kahuna.Shared 1.11.9 -> Kommander 1.10.9; workload on CamusDB.Client 0.15.1).
+#
+# TWO QUESTIONS. (1) Does a backup chain taken while the ledger is under full-rate contended load hold every
+# committed transfer? (2) What does taking it cost the foreground while it runs?
+#
+# THE SCHEDULE. One operator cron job on camus1: a full backup every four minutes from 3m to 43m, eleven in all,
+# each a complete base image (a copy of the RocksDB store into the bind mount: a hard-link checkpoint needs one
+# filesystem) with its manifest and intent frontier. Backups are node-local, so the catalog lives on camus1's
+# /backups mount (runs/scenarios/<run>/backups/camus1, a host bind mount so it outlives the container).
+#
+# WHY FULLS. The incremental arm, bank-backup-soak-nvme-rel1119pkc.yml, cannot chain on this stack: Kahuna 1.11.9's
+# BackupDriver reads the last application checkpoint as the WAL compaction floor and refuses every incremental
+# taken on a node that has written since its parent (bank-backup-preflight.yml has the evidence). This arm asks
+# for what the engine can deliver, so that the data-loss question and the cost question are answered today; the
+# incremental arm is the one to re-run on the Kahuna that fixes it.
+#
+# THE NO-DATA-LOSS PROOF (backup_verify). After the load stops: one closing incremental, so the chain ends at the
+# final ledger; the live ledger fingerprint — rows, SUM(balance), SUM(version), MAX(version) — read from camus1;
+# the chain resolved and checked (the final backup is asked for as an incremental on purpose: a substitution of
+# it is the defect's witness in this arm, not a failure); the leaf restored on camus1 into /backups/restore/<leaf>;
+# then, after teardown, the same three
+# nodes brought back up with their data roots copied from that restore, and the fingerprint read from each.
+# Equal on all three, with the live run's own reconciliation exact, is the claim. SUM(balance) alone cannot carry
+# it — every transfer conserves it, so a restore that dropped the last ten minutes conserves it too; SUM(version)
+# rises with every transfer and is what a lost tail shows up in. The leaf is the closing full, so the rehearsal
+# reads that image; the eleven in-run fulls are proven restorable by the same chain rules on their manifests.
+#
+# THE COST (checks). Each backup opens a window from the request to five seconds after it returns. In-window
+# throughput must stay above 80% of the clean minute before it (min_throughput_under_fault_fraction), the tail
+# must regain 90% within 30 s and hold it (the ordinary recovery rules). Every window is a base-image copy into
+# the bind mount competing with the nodes' own writes for the NVMe, plus the apply barrier and the flush before
+# the checkpoint; the per-window table in analysis.md is the cost figure of record for a full under load.
+# Read analysis.md for the per-window table and node-metrics.csv for the leader's fsync cost over each window.
+#
+# BODY. The fault-soak body (volume-backed NVMe, 4,096 MiB nodes, 128 workers, rocksdb shared memory bundle,
+# MALLOC_ARENA_MAX=2) rather than the tmpfs figure shape: a backup on a tmpfs rig copies RAM to the NVMe while the
+# nodes write RAM, which understates the cost against a production node whose data and backups share a device.
+# Fault-free apart from the backups themselves, so every window is a backup's.
+name: bank-backup-soak-nvme-rel1119pkc-full
+cluster:
+  name: bankbackupsoakrel1119pkcfull
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  backups: true
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    rocksdb_shared_memory: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    # Longer than the run: an incremental whose parent aged past the WAL floor is taken as a full, and this
+    # run exists to test incrementals. The window is the retained WAL (~ window x write rate).
+    pitr_window_seconds: 7200
+    base_snapshot_interval_seconds: 1800
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1119pkc"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 45m
+  warmup: 2m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 3m,  fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 7m,  fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 11m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 15m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 19m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 23m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 27m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 31m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 35m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 39m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 43m, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+backup_verify:
+  node: camus1
+  final_incremental: true        # asked for as an incremental on purpose: its substitution is the defect's witness
+  restore: true
+  boot: true
+  require_unbroken_chain: false  # a chain of fulls is one link long by construction
+checks:
+  max_recovery_seconds: 30
+  min_recovered_throughput_fraction: 0.9
+  min_throughput_under_fault_fraction: 0.8
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

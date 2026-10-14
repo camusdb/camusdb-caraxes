@@ -35,9 +35,23 @@ public static class ComposeGenerator
     /// A bind mount, not a named volume, so a dump survives <c>compose down -v</c> and lands beside
     /// the run's other artifacts; and never under <c>/data</c>, which on a tmpfs-backed rig vanishes
     /// with the container (Kahuna 51311414 item 2: the 1.7.7 OOM dumps were lost that way).</param>
-    public static string Generate(ClusterPlan plan, string configDirInCompose, string dumpsDirInCompose = "./dumps")
+    /// <param name="backupsDirInCompose">Host directory (as referenced from the compose file) holding one
+    /// sub-directory per node that is bind-mounted at <c>/backups</c> when the spec enables
+    /// <see cref="ClusterSpec.Backups"/>; ignored otherwise. A bind mount for the same reason as the
+    /// dumps: the backup must outlive the container it was taken from.</param>
+    /// <param name="restoredDataDirInCompose">When set, every node's <c>/data</c> is a bind mount of
+    /// <c>{restoredDataDirInCompose}/{node}</c> instead of its named volume or tmpfs: the disaster-recovery
+    /// rehearsal boots the cluster from restored data roots the harness copied there. The spec's
+    /// <c>data_tmpfs_mb</c> is ignored for that compose file, because a tmpfs cannot be seeded before the
+    /// container starts.</param>
+    public static string Generate(
+        ClusterPlan plan, string configDirInCompose, string dumpsDirInCompose = "./dumps",
+        string? backupsDirInCompose = null, string? restoredDataDirInCompose = null)
     {
         ClusterSpec spec = plan.Spec;
+
+        if (spec.Backups && backupsDirInCompose is null)
+            throw new ArgumentException("the spec enables backups, so the compose file needs a backups directory to mount", nameof(backupsDirInCompose));
 
         Dictionary<string, object> services = [];
         Dictionary<string, object> volumes = [];
@@ -89,7 +103,7 @@ public static class ComposeGenerator
                 // The config is a DIRECTORY mount on purpose: a single-file bind mount pins the
                 // file's content across host-side regeneration (same failure mode as the cert
                 // mount described above), silently booting nodes with a previous run's config.
-                ["volumes"] = BuildVolumeMounts(spec, node, configDirInCompose, dumpsDirInCompose),
+                ["volumes"] = BuildVolumeMounts(spec, node, configDirInCompose, dumpsDirInCompose, backupsDirInCompose, restoredDataDirInCompose),
                 ["networks"] = new Dictionary<string, object>
                 {
                     ["caraxes"] = new Dictionary<string, object> { ["ipv4_address"] = node.Ip },
@@ -143,8 +157,9 @@ public static class ComposeGenerator
 
             services[node.Name] = service;
 
-            // Only a named-volume data mount needs a top-level volume entry; a tmpfs mount does not.
-            if (spec.DataTmpfsMb <= 0)
+            // Only a named-volume data mount needs a top-level volume entry; a tmpfs or a restored bind
+            // mount does not.
+            if (spec.DataTmpfsMb <= 0 && restoredDataDirInCompose is null)
                 volumes[node.VolumeName] = new Dictionary<string, object>();
         }
 
@@ -182,11 +197,17 @@ public static class ComposeGenerator
     /// mixed entries (string short-form and mapping long-form) is valid compose. The crash-dump
     /// directory is a per-node host bind mount in both cases (see <see cref="Generate"/>).
     /// </summary>
-    private static List<object> BuildVolumeMounts(ClusterSpec spec, NodePlan node, string configDirInCompose, string dumpsDirInCompose)
+    private static List<object> BuildVolumeMounts(
+        ClusterSpec spec, NodePlan node, string configDirInCompose, string dumpsDirInCompose,
+        string? backupsDirInCompose, string? restoredDataDirInCompose)
     {
         List<object> mounts = [];
 
-        if (spec.DataTmpfsMb > 0)
+        if (restoredDataDirInCompose is not null)
+        {
+            mounts.Add($"{restoredDataDirInCompose}/{node.Name}:/data");
+        }
+        else if (spec.DataTmpfsMb > 0)
         {
             mounts.Add(new Dictionary<string, object>
             {
@@ -202,6 +223,8 @@ public static class ComposeGenerator
 
         mounts.Add($"{configDirInCompose}:/app/caraxes-config:ro");
         mounts.Add($"{dumpsDirInCompose}/{node.Name}:/dumps");
+        if (spec.Backups && backupsDirInCompose is not null)
+            mounts.Add($"{backupsDirInCompose}/{node.Name}:{NodeConfigGenerator.BackupMount}");
         return mounts;
     }
 }

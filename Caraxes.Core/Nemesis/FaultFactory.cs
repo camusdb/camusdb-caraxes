@@ -14,7 +14,7 @@ namespace Caraxes.Core.Nemesis;
 public static class FaultFactory
 {
     public static readonly IReadOnlyList<string> KnownKinds =
-        ["kill", "stop", "pause", "partition", "slow", "loss", "fill-disk", "slow-disk", "remove-node", "leader-transfer", "clock-skew"];
+        ["kill", "stop", "pause", "partition", "slow", "loss", "fill-disk", "slow-disk", "remove-node", "leader-transfer", "clock-skew", "backup"];
 
     public static void EnsureKnownKind(string kind)
     {
@@ -38,6 +38,7 @@ public static class FaultFactory
         "remove-node" => new RemoveNodeFault(),
         "leader-transfer" => new LeaderTransferFault(probes, e.To),
         "clock-skew" => new ClockSkewFault(e.OffsetMs),
+        "backup" => new BackupFault(e.BackupKind),
         _ => throw new NemesisException($"unknown fault '{e.Fault}'"),
     };
 

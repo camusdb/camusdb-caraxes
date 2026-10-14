@@ -24,7 +24,12 @@ public static class ScenarioSpecReader
     {
         "name", "cluster", "workload", "nemesis", "checks", "teardown", "settle_seconds",
         "capture_node_logs", "node_log_tail", "drain_observation_seconds", "drain_observation_interval_seconds",
-        "precondition_device_gb", "elle",
+        "precondition_device_gb", "elle", "backup_verify",
+    };
+
+    private static readonly HashSet<string> AllowedBackupVerifyKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "node", "final_incremental", "restore", "boot", "require_unbroken_chain",
     };
 
     private static readonly HashSet<string> AllowedElleKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -36,7 +41,7 @@ public static class ScenarioSpecReader
     {
         "max_recovery_seconds", "require_recovery", "require_progress_under_fault", "require_node_health",
         "require_no_divergent_apply", "grade_recovery",
-        "min_recovered_throughput_fraction",
+        "min_recovered_throughput_fraction", "min_throughput_under_fault_fraction",
         "require_client_headroom", "require_cluster_facts", "require_quiet_host", "require_spread_leadership",
         "require_split", "require_replica_move",
     };
@@ -116,6 +121,7 @@ public static class ScenarioSpecReader
         RejectNested(root, "nemesis", AllowedNemesisKeys);
         RejectNested(root, "checks", AllowedChecksKeys);
         RejectNested(root, "elle", AllowedElleKeys);
+        RejectNested(root, "backup_verify", AllowedBackupVerifyKeys);
     }
 
     private static void RejectNested(Dictionary<string, object> root, string section, HashSet<string> allowed)

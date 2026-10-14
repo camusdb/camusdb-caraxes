@@ -33,13 +33,23 @@ public static class InContainerHttp
     /// <paramref name="maxTime"/>; the node aborts the operation when the request is aborted, so
     /// the bound must cover the operation, not only the round trip.
     /// </summary>
-    public static async Task<string> PostAsync(
+    public static Task<string> PostAsync(
         NodePlan target, string path, string? jsonBody, TimeSpan maxTime, CancellationToken cancellationToken)
+        => SendAsync(target, "POST", path, jsonBody, maxTime, cancellationToken);
+
+    /// <summary>GETs <paramref name="path"/> on <paramref name="target"/> from its loopback and returns the
+    /// body, with the same contract as <see cref="PostAsync"/>. The backup catalog endpoints are
+    /// loopback-only without authentication, like the topology mutations.</summary>
+    public static Task<string> GetAsync(NodePlan target, string path, TimeSpan maxTime, CancellationToken cancellationToken)
+        => SendAsync(target, "GET", path, jsonBody: null, maxTime, cancellationToken);
+
+    private static async Task<string> SendAsync(
+        NodePlan target, string method, string path, string? jsonBody, TimeSpan maxTime, CancellationToken cancellationToken)
     {
         List<string> args =
         [
             "run", "--rm", "--network", $"container:{target.ContainerName}", CurlImage,
-            "-sS", "--max-time", ((int)Math.Ceiling(maxTime.TotalSeconds)).ToString(), "-X", "POST",
+            "-sS", "--max-time", ((int)Math.Ceiling(maxTime.TotalSeconds)).ToString(), "-X", method,
         ];
 
         if (jsonBody is not null)

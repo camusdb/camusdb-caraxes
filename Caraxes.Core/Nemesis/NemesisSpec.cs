@@ -48,7 +48,7 @@ public sealed class NemesisSpec
 public sealed class NemesisEvent
 {
     /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node |
-    /// leader-transfer | clock-skew.</summary>
+    /// leader-transfer | clock-skew | backup.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -102,6 +102,12 @@ public sealed class NemesisEvent
     /// lease and retention window a scenario would target.</summary>
     public const long MaxOffsetMs = 12 * 60 * 60 * 1000L;
 
+    /// <summary>What the <c>backup</c> fault takes: <c>incremental</c> (the default; chains on the target
+    /// node's newest backup, and starts the chain with a full when there is none), <c>full</c>, or
+    /// <c>coordinated</c> (the cluster-wide consistent cut, accepted only by the meta-partition leader;
+    /// the fault retries on the other nodes when the target is not it).</summary>
+    public string BackupKind { get; set; } = "incremental";
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Fault))
@@ -111,6 +117,10 @@ public sealed class NemesisEvent
 
         if (To is not null && Fault != "leader-transfer")
             throw new NemesisException($"nemesis event '{Fault}': 'to' is only meaningful for leader-transfer");
+
+        if (!BackupFault.Kinds.Contains(BackupKind.ToLowerInvariant()))
+            throw new NemesisException(
+                $"nemesis event '{Fault}': backup_kind must be one of {string.Join(", ", BackupFault.Kinds)}, got '{BackupKind}'");
 
         if (Fault == "clock-skew" && (OffsetMs == 0 || Math.Abs(OffsetMs) > MaxOffsetMs))
             throw new NemesisException(

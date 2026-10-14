@@ -1,0 +1,62 @@
+# PREFLIGHT for bank-backup-soak-nvme-rel1119pkc: the same cluster and workload shape, tiny and short. Its job is
+# to prove the whole backup path before a 45-minute run commits to it: the backup mount and its 0700 roots, the
+# first incremental starting the chain with a full, the incrementals chaining on it, the closing incremental after
+# the load stops, chain resolution, the restore into the node's restore root, and the disaster-recovery rehearsal
+# (the same three nodes brought back up from the restore and the ledger read from each). Not a measurement: the
+# windows are too short and the dataset too small for the throughput floor to mean anything, so it is left off.
+#
+# FULL BACKUPS, NOT INCREMENTALS, AND WHY (preflight v1-v3, 2026-10-14). Every incremental this stack is asked for
+# comes back "taken as Full" (SUBSTITUTED in the timeline; "WAL compaction floor advanced past parent range" in
+# the node log) because Kahuna's BackupDriver reads the partition's last APPLICATION CHECKPOINT (IWAL.GetLastCheckpoint,
+# which Kahuna advances on every flush cycle) as if it were the WAL compaction floor, and refuses an incremental whose
+# start lies below it. v3 proved the WAL itself is not the problem: with compact_every_operations set so that no
+# compaction pass ran at all (0 "Compaction process started" lines), the refusal still named the checkpoint as the
+# floor (parent end 102,516; "floor" 117,196). So on any node with writes since its parent, an incremental is
+# impossible; the real floor is IWAL.GetCompactionFloor. A second defect stands behind it: the PITR retention floor
+# (BackgroundWriterActor.UpdatePitrHorizon, every base_snapshot_interval_seconds) binary-searches the log from index 1
+# for the last entry before now - pitr_window - interval, reads the compacted prefix as "no such entry", returns -1,
+# and CLEARS the floor in Kommander (Kahuna Debug: "PITR horizon: protectedIndex=-1" every tick for the whole run),
+# so on a loaded node the WAL an incremental would need is never protected either. Both are Kahuna 1.11.9 findings;
+# bank-backup-soak-nvme-rel1119pkc.yml is the incremental arm that FAILS on them until they are fixed, and this
+# preflight, like the -full arm, asks for fulls so the rest of the path can be proven to pass today.
+name: bank-backup-preflight
+cluster:
+  name: bank-backup-preflight
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  backups: true
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankrel1119pkc"
+  kahuna:
+    pitr_window_seconds: 3600
+    base_snapshot_interval_seconds: 600
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 100s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 20s, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 50s, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+    - { at: 80s, fault: backup, target: camus1, duration: 5s, backup_kind: full }
+backup_verify:
+  node: camus1
+  final_incremental: true        # asked for as an incremental on purpose: its substitution is the defect's witness
+  require_unbroken_chain: false  # a chain of fulls is one link long by construction; see the note above
+checks:
+  max_recovery_seconds: 30
+teardown: true

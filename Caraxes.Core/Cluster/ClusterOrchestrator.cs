@@ -21,15 +21,33 @@ public sealed class ClusterOrchestrator
 
     private readonly string runDir;
 
-    public ClusterOrchestrator(ClusterSpec spec, string? runRoot = null)
+    /// <param name="backupsRoot">Where the nodes' <c>/backups</c> bind mounts live when the spec enables
+    /// backups: one sub-directory per node under it. Null puts them under the cluster's run directory;
+    /// a scenario passes its own run directory so a tagged run keeps its backups beside its other
+    /// artifacts instead of sharing one catalog across runs.</param>
+    public ClusterOrchestrator(ClusterSpec spec, string? runRoot = null, string? backupsRoot = null)
     {
         plan = ClusterPlan.FromSpec(spec);
         runDir = Path.Combine(runRoot ?? Path.Combine(Environment.CurrentDirectory, "runs"), spec.Name);
+        BackupsRoot = Path.GetFullPath(backupsRoot ?? Path.Combine(runDir, "backups"));
     }
 
     public ClusterPlan Plan => plan;
 
     public string ComposeFilePath => Path.Combine(runDir, "compose.yml");
+
+    /// <summary>The compose file of the disaster-recovery rehearsal fleet (<see cref="UpRestoredAsync"/>):
+    /// the same project, nodes and addresses, with every <c>/data</c> bind-mounted from a restored root.</summary>
+    public string RestoredComposeFilePath => Path.Combine(runDir, "compose-restored.yml");
+
+    /// <summary>Host directory holding each node's <c>/backups</c> mount (<c>{BackupsRoot}/{node}</c>).
+    /// Meaningful only when the spec enables backups.</summary>
+    public string BackupsRoot { get; }
+
+    /// <summary>Host path of a node's backup mount: its catalog sits under <c>catalog/</c> and its
+    /// restores under <c>restore/</c>, matching <see cref="NodeConfigGenerator.BackupCatalogDir"/> and
+    /// <see cref="NodeConfigGenerator.BackupRestoreRoot"/> inside the container.</summary>
+    public string BackupsDirOf(NodePlan node) => Path.Combine(BackupsRoot, node.Name);
 
     /// <summary>Writes compose.yml and config/camusN.yml into the run directory.</summary>
     public void WriteArtifacts()
@@ -43,10 +61,29 @@ public sealed class ClusterOrchestrator
             // Created here, before `up`, so the crash-dump bind mount is owned by the harness user
             // rather than by the docker daemon creating a missing source directory as root.
             Directory.CreateDirectory(Path.Combine(runDir, "dumps", node.Name));
+
+            // Same for the backup mount, plus the mode Kahuna insists on: a backup or restore root that
+            // is group- or world-writable fails with BackupInsecureRoot, and the node would only find
+            // out at the first backup, minutes into the run.
+            if (plan.Spec.Backups)
+            {
+                foreach (string sub in new[] { "catalog", "restore" })
+                    CreatePrivateDirectory(Path.Combine(BackupsDirOf(node), sub));
+            }
         }
 
-        // The config mount is relative so the run directory stays relocatable.
-        File.WriteAllText(ComposeFilePath, ComposeGenerator.Generate(plan, configDirInCompose: "./config"));
+        // The config mount is relative so the run directory stays relocatable; the backups root is
+        // absolute because a scenario places it outside the cluster directory.
+        File.WriteAllText(ComposeFilePath, ComposeGenerator.Generate(
+            plan, configDirInCompose: "./config", backupsDirInCompose: plan.Spec.Backups ? BackupsRoot : null));
+    }
+
+    /// <summary>Creates a directory the harness user owns with owner-only (0700) permissions.</summary>
+    private static void CreatePrivateDirectory(string path)
+    {
+        Directory.CreateDirectory(path);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
     /// <summary>
@@ -85,6 +122,13 @@ public sealed class ClusterOrchestrator
         if (spec.ClockSkew)
             await ClockSkewShim.BuildImageAsync(spec, cancellationToken).ConfigureAwait(false);
 
+        // A previous run of this cluster left its catalog behind (the mount outlives teardown by
+        // design). Left in place, the next run's first incremental would chain on a backup whose WAL
+        // range this fresh cluster never had, and the fallback-to-full would read as a finding. The
+        // node wrote those files as root, so the harness user cannot remove them directly.
+        if (spec.Backups)
+            await ClearBackupsAsync(cancellationToken).ConfigureAwait(false);
+
         await ReclaimSubnetAsync(cancellationToken).ConfigureAwait(false);
 
         Console.WriteLine($"==> starting {spec.Nodes} node(s)");
@@ -98,6 +142,97 @@ public sealed class ClusterOrchestrator
         await WaitForReadyAsync(readyTimeout ?? TimeSpan.FromSeconds(180), cancellationToken).ConfigureAwait(false);
 
         await PrintStatusAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Empties every node's backup mount, through a container because the nodes write there as
+    /// root, then recreates the two roots with the harness user's ownership and mode.</summary>
+    private async Task ClearBackupsAsync(CancellationToken cancellationToken)
+    {
+        bool anything = plan.Nodes.Any(n => Directory.Exists(BackupsDirOf(n)) && Directory.EnumerateFileSystemEntries(BackupsDirOf(n)).Any());
+        if (!anything)
+            return;
+
+        Console.WriteLine($"==> clearing backups left under {BackupsRoot} by a previous run");
+        await RemoveContentsAsRootAsync(BackupsRoot, cancellationToken).ConfigureAwait(false);
+        foreach (NodePlan node in plan.Nodes)
+            foreach (string sub in new[] { "catalog", "restore" })
+                CreatePrivateDirectory(Path.Combine(BackupsDirOf(node), sub));
+    }
+
+    /// <summary>Removes everything under <paramref name="hostDir"/> (not the directory itself) from a
+    /// throwaway container on the node image, for trees the nodes wrote as root.</summary>
+    public Task RemoveContentsAsRootAsync(string hostDir, CancellationToken cancellationToken = default)
+        => ProcessRunner.RunCheckedAsync(
+            "docker",
+            ["run", "--rm", "--entrypoint", "sh", "-v", $"{Path.GetFullPath(hostDir)}:/caraxes-target", plan.Spec.NodeImage,
+             "-c", "find /caraxes-target -mindepth 1 -delete"],
+            cancellationToken: cancellationToken);
+
+    /// <summary>Copies the tree under <paramref name="sourceHostDir"/> into <paramref name="targetHostDir"/>
+    /// (which must exist), preserving ownership and modes, from a throwaway container on the node image —
+    /// the source is a restore the node wrote as root, unreadable to the harness user.</summary>
+    public Task CopyTreeAsRootAsync(string sourceHostDir, string targetHostDir, CancellationToken cancellationToken = default)
+        => ProcessRunner.RunCheckedAsync(
+            "docker",
+            ["run", "--rm", "--entrypoint", "sh",
+             "-v", $"{Path.GetFullPath(sourceHostDir)}:/caraxes-source:ro",
+             "-v", $"{Path.GetFullPath(targetHostDir)}:/caraxes-target",
+             plan.Spec.NodeImage, "-c", "cp -a /caraxes-source/. /caraxes-target/"],
+            cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Disaster-recovery rehearsal: brings the same fleet up again with every node's <c>/data</c> taken
+    /// from <c>{restoredRoot}/{node}</c>, a copy of a restored data root. Same project, names, addresses
+    /// and ports as the live cluster, so the placement the restored meta partition carries names the
+    /// endpoints that come up. Must run after <see cref="DownAsync"/>: the two fleets share a subnet.
+    /// Backups are off in this fleet's config — it exists to be read, not to extend the catalog.
+    /// </summary>
+    public async Task UpRestoredAsync(string restoredRoot, TimeSpan? readyTimeout = null, CancellationToken cancellationToken = default)
+    {
+        ClusterSpec spec = plan.Spec.Clone();
+        spec.Backups = false;
+        ClusterPlan restoredPlan = ClusterPlan.FromSpec(spec);
+
+        string configDir = Path.Combine(runDir, "config-restored");
+        Directory.CreateDirectory(configDir);
+        foreach (NodePlan node in restoredPlan.Nodes)
+        {
+            File.WriteAllText(Path.Combine(configDir, $"{node.Name}.yml"), NodeConfigGenerator.Generate(restoredPlan, node));
+            Directory.CreateDirectory(Path.Combine(runDir, "dumps", node.Name));
+            if (!Directory.Exists(Path.Combine(restoredRoot, node.Name)))
+                throw new InvalidOperationException($"no restored data root for {node.Name} under {restoredRoot}");
+        }
+
+        File.WriteAllText(RestoredComposeFilePath, ComposeGenerator.Generate(
+            restoredPlan, configDirInCompose: "./config-restored", restoredDataDirInCompose: Path.GetFullPath(restoredRoot)));
+
+        await ReclaimSubnetAsync(cancellationToken).ConfigureAwait(false);
+
+        Console.WriteLine($"==> starting {spec.Nodes} node(s) from the restored data roots under {restoredRoot}");
+        await ProcessRunner.RunCheckedAsync(
+            "docker",
+            ["compose", "-f", RestoredComposeFilePath, "up", "-d"],
+            workingDirectory: runDir,
+            streamOutput: true,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        await WaitForReadyAsync(readyTimeout ?? TimeSpan.FromSeconds(180), cancellationToken).ConfigureAwait(false);
+        await PrintStatusAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Tears the rehearsal fleet down. Its compose file names the same project as the live
+    /// cluster's, so this is the ordinary teardown pointed at the restored compose file.</summary>
+    public async Task DownRestoredAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(RestoredComposeFilePath))
+            return;
+
+        await ProcessRunner.RunCheckedAsync(
+            "docker", ["compose", "-f", RestoredComposeFilePath, "down", "--remove-orphans", "-v"],
+            workingDirectory: runDir, streamOutput: true, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        foreach (string note in await RemoveOwnNetworkAsync(cancellationToken).ConfigureAwait(false))
+            Console.WriteLine($"==> {note}");
     }
 
     public async Task DownAsync(bool keepVolumes = false, CancellationToken cancellationToken = default)

@@ -65,7 +65,11 @@ public sealed class ScenarioRunner
         string root = runRoot ?? Path.Combine(Environment.CurrentDirectory, "runs");
         string directoryName = string.IsNullOrWhiteSpace(runTag) ? scenario.Name : $"{scenario.Name}-{Sanitize(runTag)}";
         runDir = Path.Combine(root, "scenarios", directoryName);
-        orchestrator = new ClusterOrchestrator(scenario.Cluster, Path.Combine(root, "clusters"));
+        // A scenario's backups live beside its other artifacts, so a tagged repetition keeps its own
+        // catalog and restore instead of sharing (and clearing) one under the cluster directory.
+        orchestrator = new ClusterOrchestrator(
+            scenario.Cluster, Path.Combine(root, "clusters"),
+            scenario.Cluster.Backups ? Path.Combine(runDir, "backups") : null);
     }
 
     /// <summary>Keeps a tag usable as a directory name; anything else becomes a hyphen.</summary>
@@ -140,6 +144,16 @@ public sealed class ScenarioRunner
                     TimeSpan.FromSeconds(scenario.DrainObservationSeconds),
                     TimeSpan.FromSeconds(scenario.DrainObservationIntervalSeconds),
                     cancellationToken).ConfigureAwait(false));
+
+            // Still up, and quiescent: the chain is closed over the final ledger and the live
+            // fingerprint is read now, so the rehearsal after teardown has something exact to match.
+            if (scenario.BackupVerify is not null)
+            {
+                Console.WriteLine("==> verifying the backup chain on the live cluster");
+                backupVerifier = new Caraxes.Core.Backup.BackupVerifier(scenario, plan, orchestrator, runDir);
+                backupVerify = await backupVerifier.VerifyLiveAsync(Path.Combine(runDir, "timeline.jsonl"), cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -180,6 +194,14 @@ public sealed class ScenarioRunner
             }
         }
 
+        // After teardown, because the rehearsal fleet takes the live fleet's addresses: boot the
+        // cluster from the restore and read it back.
+        if (backupVerifier is not null && backupVerify is not null && scenario.Teardown)
+        {
+            Console.WriteLine("==> backup verify: disaster-recovery rehearsal from the restore");
+            backupVerify = await backupVerifier.RehearseAsync(backupVerify, cancellationToken).ConfigureAwait(false);
+        }
+
         // After teardown: Elle needs only the history, and a long check should not hold a fleet up.
         if (scenario.Workload.Kind == "append" && scenario.Elle.Enabled && run is not null)
         {
@@ -194,6 +216,11 @@ public sealed class ScenarioRunner
 
     /// <summary>Elle's verdict on an append run's history; null when no check ran.</summary>
     private ElleResult? elleResult;
+
+    /// <summary>The backup verification, when the scenario asked for one.</summary>
+    private Caraxes.Core.Backup.BackupVerifier? backupVerifier;
+
+    private Caraxes.Core.Backup.BackupVerifyResult? backupVerify;
 
     /// <summary>
     /// Waits for partition leadership to settle before the measured window opens, and records where it
@@ -547,6 +574,7 @@ public sealed class ScenarioRunner
         }
 
         GradeElle(notes, ref passed);
+        GradeBackupVerify(notes, ref passed);
         GradeDivergentApply(outputDir, notes, ref passed);
         GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
@@ -604,6 +632,37 @@ public sealed class ScenarioRunner
 
     private static int CountLogs(string outputDir) =>
         Directory.Exists(outputDir) ? Directory.GetFiles(outputDir, "node-log-*.txt").Length : 0;
+
+    /// <summary>
+    /// Fails a run whose <c>backup_verify</c> stage found anything, or could not run. Every finding is
+    /// a note; the restore and the rehearsal ledgers are in <c>backup-verify.json</c>.
+    /// </summary>
+    private void GradeBackupVerify(List<string> notes, ref bool passed)
+    {
+        if (scenario.BackupVerify is null)
+            return;
+
+        if (backupVerify is null)
+        {
+            notes.Add("  CHECK FAILED: backup verify: the stage did not run (the workload or seeding failed before it)");
+            passed = false;
+            return;
+        }
+
+        notes.Add(
+            $"backup verify on {backupVerify.Node}: {(backupVerify.Passed ? "PASS" : "FAIL")} — {backupVerify.BackupsDuringRun} backup(s) taken during the run, " +
+            $"{backupVerify.BackupErrorsDuringRun} failed, chain of {backupVerify.Chain.Count}, " +
+            (backupVerify.Restore is null ? "not restored" : $"restored {backupVerify.Restore.EntriesApplied:N0} replayed entries") + ", " +
+            (backupVerify.Booted ? $"rehearsal booted and {backupVerify.RestoredLedgers.Count} node(s) read back" : "no rehearsal") +
+            " (backup-verify.json)");
+        foreach (string note in backupVerify.Notes)
+            notes.Add($"  {note}");
+        foreach (string failure in backupVerify.Failures)
+            notes.Add($"  CHECK FAILED: backup verify: {failure}");
+
+        if (!backupVerify.Passed)
+            passed = false;
+    }
 
     /// <summary>
     /// Fails an append run unless Elle called its history valid. Reconciliation only proves the seeded
@@ -903,7 +962,20 @@ public sealed class ScenarioRunner
             if (w.Device?.PreFaultSlow == true)
                 device += " — SLOW REGIME before the fault";
             bool regimeMoved = w.Device?.Moved == true;
-            notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}; {throughput}{device}");
+            string share = w.PreFaultThroughput > 0 ? $" ({w.InWindowThroughput / w.PreFaultThroughput:P0} of pre-fault)" : "";
+            notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}; {throughput}{share}{device}");
+
+            if (checks.MinThroughputUnderFaultFraction > 0 && w.PreFaultThroughput > 0
+                && w.InWindowThroughput < checks.MinThroughputUnderFaultFraction * w.PreFaultThroughput)
+            {
+                string finding =
+                    $"fault {w.Label} cut throughput to {w.InWindowThroughput:N0} ops/s inside its window, " +
+                    $"{w.InWindowThroughput / w.PreFaultThroughput:P0} of the pre-fault {w.PreFaultThroughput:N0}, under the {checks.MinThroughputUnderFaultFraction:P0} floor";
+                if (w.Device?.PreFaultSlow == true)
+                    notes.Add($"  INADMISSIBLE: {finding} — but the bar was set on the host device's slow regime ({w.Device.DescribePre()}); the window is not judged");
+                else
+                    passed = GradeRecoveryFinding(checks, notes, finding) && passed;
+            }
 
             if (checks.RequireProgressUnderFault && !w.WorkloadProgressed)
             {
