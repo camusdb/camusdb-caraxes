@@ -250,11 +250,32 @@ public static class BackupClient
 
             case "incremental":
             {
-                BackupInfo? parent = NewestValid(await ListAsync(node, cancellationToken).ConfigureAwait(false));
+                // The parent is the newest backup whose chain resolves. A catalog can hold a link the
+                // engine published and then refuses (an incremental across a membership change, vorpal
+                // kahuna 7c8dc622); chaining on it would only extend the dead chain.
+                IReadOnlyList<BackupInfo> catalog = await ListAsync(node, cancellationToken).ConfigureAwait(false);
+                BackupInfo? parent = null;
+                List<string> skipped = [];
+                foreach (BackupInfo candidate in catalog.Where(b => !b.IsInvalid).OrderByDescending(b => b.CreatedAtUtc))
+                {
+                    try
+                    {
+                        await ChainAsync(node, candidate.BackupId, cancellationToken).ConfigureAwait(false);
+                        parent = candidate;
+                        break;
+                    }
+                    catch (BackupRequestException e) when (e.Code == ChainInvalidCode)
+                    {
+                        skipped.Add(candidate.ShortId);
+                    }
+                }
+
+                string skippedNote = skipped.Count == 0 ? "" : $"; skipped {skipped.Count} catalog entr{(skipped.Count == 1 ? "y" : "ies")} whose chain does not resolve ({string.Join(",", skipped)})";
                 if (parent is null)
                 {
                     BackupInfo full = await TakeOneAsync(node, "/v1/backups/full", null, cancellationToken).ConfigureAwait(false);
-                    return new BackupTaken(node, requested, full, TimeSpan.Zero, "no backup to chain on in this node's catalog, so the chain starts here with a full");
+                    return new BackupTaken(node, requested, full, TimeSpan.Zero,
+                        (skipped.Count == 0 ? "no backup to chain on in this node's catalog, so the chain starts here with a full" : "CHAIN BROKEN BY THE ENGINE: no resolvable chain to continue, so the chain restarts here with a full") + skippedNote);
                 }
 
                 string body = JsonSerializer.Serialize(new { parentBackupId = parent.BackupId });
@@ -273,10 +294,10 @@ public static class BackupClient
                 {
                     BackupInfo full = await TakeOneAsync(node, "/v1/backups/full", null, cancellationToken).ConfigureAwait(false);
                     return new BackupTaken(node, requested, full, TimeSpan.Zero,
-                        $"CHAIN BROKEN BY THE ENGINE: incremental {incremental.ShortId} was published but its chain does not resolve ({e.Message}); the harness started a new chain with this full");
+                        $"CHAIN BROKEN BY THE ENGINE: incremental {incremental.ShortId} was published but its chain does not resolve ({e.Message}); the harness started a new chain with this full{skippedNote}");
                 }
 
-                return new BackupTaken(node, requested, incremental, TimeSpan.Zero, "");
+                return new BackupTaken(node, requested, incremental, TimeSpan.Zero, skippedNote.TrimStart(';', ' '));
             }
 
             case "coordinated":

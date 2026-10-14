@@ -222,7 +222,13 @@ public sealed class NemesisRunner
         }
         catch (OperationCanceledException)
         {
+            // The workload ended (or the user interrupted) while the injection was still in progress.
+            // Said in the timeline: an add-node whose seed restore outlived the window (replace-node soak
+            // n1, 2026-10-14) left no trace and read as "never fired" rather than "fired and cut off".
             active.TryRemove(id, out _);
+            timeline.Write("error", fault.Kind, target.Name,
+                $"inject cancelled after {(DateTime.UtcNow - issued).TotalSeconds:0} s: the run ended while {fault.Describe(target)} was in progress",
+                DateTime.UtcNow);
             throw;
         }
         catch (Exception ex)

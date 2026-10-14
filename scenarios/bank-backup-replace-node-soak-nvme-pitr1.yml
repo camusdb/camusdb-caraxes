@@ -17,6 +17,19 @@
 # verdict. (3) The join window will not hold the 80% floor while the snapshot transfers; that is the cost, and the
 # device regime decides whether the window is judged or inadmissible, as on the incremental arm.
 #
+# RUN n1 (2026-10-14, FAIL on the replacement; the rest held). Seven incrementals chained before the kill; the
+# 31m one still chained (the eviction had not committed), the 35m one was published and refused (the engine finding
+# above) and the harness restarted the chain with a full. The replacement did not join: its closing incremental and
+# the restore of the 35-minute chain queued behind the 35m backup on camus1's gate (restore + copy ~10 min), camus4
+# started at +36 min of the kill... and died 60 s later with "RaftManager.JoinCluster(seeds) timed out after 60 s
+# waiting for Voter promotion" (exit 139, crash dump captured): Kommander's join ceiling is a 60 s constant and the
+# learner was still being seeded by snapshot and backfill (Kommander vorpal d7eda742). The 39m and 43m backups never
+# ran, blocked behind the seed restore. Everything else passed: reconciliation exact, the restarted chain restored and
+# the rehearsal matched on every node. The seeded join cannot pass on Kommander 1.10.10 under this load; this arm is
+# the acceptance run for d7eda742 (and for CamusDB acc0aa1b, after which the seed shortens the catch-up instead of
+# being overwritten). Until then the kill window's throughput cost is read, not graded: the floor applies to healed
+# windows only.
+#
 # The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
 # roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
 # the restore, and the rehearsal of the original three slots from it.

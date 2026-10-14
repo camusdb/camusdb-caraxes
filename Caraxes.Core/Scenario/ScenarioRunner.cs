@@ -995,7 +995,10 @@ public sealed class ScenarioRunner
             string share = w.PreFaultThroughput > 0 ? $" ({w.InWindowThroughput / w.PreFaultThroughput:P0} of pre-fault)" : "";
             notes.Add($"  fault {w.Label}: peak error {w.PeakErrorRate:P0}, {w.FailedDuringWindow:N0} failed, {recovery}; {throughput}{share}{device}");
 
-            if (checks.MinThroughputUnderFaultFraction > 0 && w.PreFaultThroughput > 0
+            // Healed windows only: an unhealed fault's window runs to the end of the series, and a node
+            // lost for good is allowed to cost capacity for the rest of the run; the floor is for an
+            // operation that ends (a backup, a transfer, a join), not for a smaller cluster.
+            if (checks.MinThroughputUnderFaultFraction > 0 && w.Healed && w.PreFaultThroughput > 0
                 && w.InWindowThroughput < checks.MinThroughputUnderFaultFraction * w.PreFaultThroughput)
             {
                 string finding =

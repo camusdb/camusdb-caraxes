@@ -53,7 +53,8 @@ public sealed class ChecksSpec
     /// and for an operation that is not an outage — a backup, a leader transfer — the window is the
     /// whole cost. A backup scenario sets this to say how much a backup may take from the foreground
     /// while it runs. A window whose bar was set on the host device's slow regime is reported as
-    /// inadmissible rather than failed, like the held rule.</para>
+    /// inadmissible rather than failed, like the held rule. Healed windows only: a fault never healed
+    /// (a permanent kill) runs to the end of the series and may cost capacity for the rest of the run.</para>
     /// </summary>
     public double MinThroughputUnderFaultFraction { get; set; }
 

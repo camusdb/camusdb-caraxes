@@ -138,6 +138,11 @@ public sealed class AddNodeFault : IFault
         string lastRole = "absent";
         while (DateTime.UtcNow < deadline)
         {
+            // Readiness came before promotion, so the node can still die here: run n1 (2026-10-14)
+            // aborted on Kommander's 60 s join ceiling while this loop kept asking a container that
+            // had exited 139 for its roster.
+            await EnsureRunningAsync(joiner, cancellationToken).ConfigureAwait(false);
+
             ClusterMembership? own = await context.Probes.GetMembershipAsync($"http://localhost:{joiner.HostRestPort}", cancellationToken).ConfigureAwait(false);
             ClusterMembership? seen = await context.Probes.GetMembershipAsync($"http://localhost:{seed.HostRestPort}", cancellationToken).ConfigureAwait(false);
             string ownRole = own?.Members.FirstOrDefault(m => m.Endpoint == endpoint)?.Role ?? own?.LocalRole ?? "absent";
@@ -184,17 +189,22 @@ public sealed class AddNodeFault : IFault
             if (health is { Ready: true })
                 return health;
 
-            // A joiner that exited (a refused join fails CamusDB's startup loudly) must not be waited on.
-            ProcessResult state = await ProcessRunner.RunAsync(
-                "docker", ["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", joiner.ContainerName], cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-            if (state.Success && !state.StdOut.StartsWith("running", StringComparison.Ordinal))
-                throw new InvalidOperationException(
-                    $"{joiner.Name} stopped before it became ready (container {state.StdOut.Trim()}); see its log in the run artifacts");
-
+            await EnsureRunningAsync(joiner, cancellationToken).ConfigureAwait(false);
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
         }
 
         throw new TimeoutException($"{joiner.Name} did not report ready within {JoinTimeout.TotalMinutes:0} minutes");
+    }
+
+    /// <summary>A joiner that exited (a refused or timed-out join fails CamusDB's startup loudly, exit
+    /// 139 with a crash dump) must not be waited on; the failure names the container state.</summary>
+    private static async Task EnsureRunningAsync(NodePlan joiner, CancellationToken cancellationToken)
+    {
+        ProcessResult state = await ProcessRunner.RunAsync(
+            "docker", ["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", joiner.ContainerName], cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        if (state.Success && !state.StdOut.StartsWith("running", StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"{joiner.Name} stopped before it joined (container {state.StdOut.Trim()}); see node-log-{joiner.Name}.txt and the dumps directory");
     }
 }
