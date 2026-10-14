@@ -29,16 +29,23 @@ public sealed class NemesisRunner
 
     private readonly HttpProbes probes;
 
+    private readonly NemesisContext context;
+
     // Faults currently in effect, keyed by a unique id. Heal claims an entry with TryRemove, so a
     // fault is healed by exactly one of {its own hold-then-heal, the stop-time sweep} — never twice.
     private readonly ConcurrentDictionary<long, ActiveFault> active = new();
 
     private long nextId;
 
-    public NemesisRunner(ClusterPlan plan, HttpProbes probes)
+    public NemesisRunner(ClusterPlan plan, HttpProbes probes) : this(plan, new NemesisContext(probes))
+    {
+    }
+
+    public NemesisRunner(ClusterPlan plan, NemesisContext context)
     {
         this.plan = plan;
-        this.probes = probes;
+        this.context = context;
+        probes = context.Probes;
     }
 
     public async Task RunAsync(NemesisSpec spec, string timelinePath, CancellationToken stopToken)
@@ -93,7 +100,7 @@ public sealed class NemesisRunner
     {
         // One stateless fault instance serves every node in the group; the fault operates on the node
         // passed to inject/heal, so the (fault, node) pair stays unique per node in the active set.
-        IFault fault = FaultFactory.Create(e, probes);
+        IFault fault = FaultFactory.Create(e, context);
         bool healable = fault.Healable && (e.Heal ?? true);
 
         try
@@ -175,7 +182,7 @@ public sealed class NemesisRunner
             string kind = spec.Faults[rng.Next(spec.Faults.Count)];
             NodePlan target = selector.Resolve("random");
             NemesisEvent e = new() { Fault = kind, Duration = spec.Duration };
-            IFault fault = FaultFactory.Create(e, probes);
+            IFault fault = FaultFactory.Create(e, context);
             bool healable = fault.Healable;
 
             injected++;

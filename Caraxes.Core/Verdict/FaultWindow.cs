@@ -103,6 +103,29 @@ public static class FaultTimeline
         return windows.OrderBy(w => w.StartUtc).ToList();
     }
 
+    /// <summary>How many injects and errors the timeline holds for one fault kind: for a fault whose
+    /// failure means the scenario did not do what it claims (a node that never joined).</summary>
+    public static (int Injects, int Errors) Count(string timelinePath, string kind)
+    {
+        if (!File.Exists(timelinePath))
+            return (0, 0);
+
+        int injects = 0;
+        int errors = 0;
+        foreach (string line in File.ReadLines(timelinePath))
+        {
+            TimelineRecord? rec = string.IsNullOrWhiteSpace(line) ? null : TryParse(line);
+            if (rec is null || rec.Kind != kind)
+                continue;
+            if (rec.Phase == "inject")
+                injects++;
+            else if (rec.Phase == "error")
+                errors++;
+        }
+
+        return (injects, errors);
+    }
+
     private static TimelineRecord? TryParse(string line)
     {
         try

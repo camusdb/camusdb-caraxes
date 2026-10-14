@@ -253,10 +253,12 @@ public sealed class ClusterSpec
             throw new ClusterSpecException(
                 $"'subnet' must be the first three octets of a /24 (e.g. '10.101.0'), got '{Subnet}'");
 
-        if (FirstIp < 2 || FirstIp + Nodes + SpareCerts - 1 > 254)
+        // The static slots stay in the lower half of the /24: docker hands dynamic containers (the
+        // workload) addresses from the upper half, so a runtime joiner's slot is never taken.
+        if (FirstIp < 2 || FirstIp + Nodes + SpareCerts - 1 > 127)
             throw new ClusterSpecException(
                 $"'first_ip' ({FirstIp}) must be >= 2 (gateway owns .1) and leave room for " +
-                $"{Nodes} nodes + {SpareCerts} spares within the /24");
+                $"{Nodes} nodes + {SpareCerts} spares below .128 (the upper half of the /24 is for dynamic addresses)");
 
         if (Locking is not ("optimistic" or "pessimistic"))
             throw new ClusterSpecException($"'locking' must be 'optimistic' or 'pessimistic', got '{Locking}'");

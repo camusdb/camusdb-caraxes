@@ -492,3 +492,132 @@ public sealed class ShippedScenariosTests
         Assert.That(full.Cluster.Name, Is.Not.EqualTo(incremental.Cluster.Name), "the two arms must not share a cluster directory");
     }
 }
+
+[TestFixture]
+public sealed class AddNodeSpecTests
+{
+    private const string Base = """
+        name: j
+        cluster:
+          name: jc
+          backups: true
+        workload:
+          kind: bank
+          rows: 100
+
+        """;
+
+    [Test]
+    public void ParsesDefaultsAndCreatesTheFault()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read(Base + """
+            nemesis:
+              events:
+                - { at: 40s, fault: kill, target: camus3, heal: false }
+                - { at: 90s, fault: add-node, target: camus1, duration: 5s }
+            """);
+        NemesisEvent e = spec.Nemesis!.Events[1];
+        Assert.That(e.SeedFromBackup, Is.True);
+        Assert.That(e.NodeName, Is.Empty);
+        Assert.That(FaultFactory.Create(e, new NemesisContext(new HttpProbes())), Is.InstanceOf<AddNodeFault>());
+        Assert.That(FaultFactory.Create(e, new HttpProbes()).Healable, Is.True);
+    }
+
+    [Test]
+    public void SeededJoinNeedsBackups_UnseededDoesNot()
+    {
+        Assert.That(Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read("""
+            name: j
+            cluster:
+              name: jc
+            nemesis:
+              events:
+                - { at: 90s, fault: add-node, target: camus1 }
+            """))!.Message, Does.Contain("seed_from_backup"));
+        Assert.DoesNotThrow(() => ScenarioSpecReader.Read("""
+            name: j
+            cluster:
+              name: jc
+            nemesis:
+              events:
+                - { at: 90s, fault: add-node, target: camus1, seed_from_backup: false }
+            """));
+    }
+
+    [Test]
+    public void NodeName_MustBeBeyondTheFleetAndWithinTheSpares()
+    {
+        Assert.That(Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(Base + "nemesis:\n  events:\n    - { at: 1s, fault: add-node, target: camus1, node_name: camus2 }\n"))!.Message,
+            Does.Contain("already part of the fleet"));
+        Assert.That(Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(Base + "nemesis:\n  events:\n    - { at: 1s, fault: add-node, target: camus1, node_name: camus9 }\n"))!.Message,
+            Does.Contain("spare_certs"));
+        Assert.That(Assert.Throws<NemesisException>(() => ScenarioSpecReader.Read(Base + "nemesis:\n  events:\n    - { at: 1s, fault: add-node, target: camus1, node_name: node4 }\n"))!.Message,
+            Does.Contain("camusN"));
+        Assert.That(Assert.Throws<NemesisException>(() => ScenarioSpecReader.Read(Base + "nemesis:\n  events:\n    - { at: 1s, fault: kill, target: camus1, node_name: camus4 }\n"))!.Message,
+            Does.Contain("only meaningful for add-node"));
+        Assert.DoesNotThrow(() => ScenarioSpecReader.Read(Base + "nemesis:\n  events:\n    - { at: 1s, fault: add-node, target: camus1, node_name: camus4 }\n"));
+        Assert.That(NemesisEvent.ParseNodeIndex("camus12"), Is.EqualTo(12));
+        Assert.That(NemesisEvent.ParseNodeIndex("camus0"), Is.Null);
+    }
+
+    [Test]
+    public void TimelineCountsInjectsAndErrorsPerKind()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"caraxes-tl-{Guid.NewGuid():N}.jsonl");
+        File.WriteAllLines(path,
+        [
+            """{"ts":"2026-10-14T10:01:00Z","offsetSeconds":60,"phase":"error","kind":"add-node","target":"camus1","detail":"inject failed: Learner"}""",
+            """{"ts":"2026-10-14T10:02:00Z","offsetSeconds":120,"phase":"inject","kind":"add-node","target":"camus1","detail":"camus4 joined"}""",
+            """{"ts":"2026-10-14T10:02:05Z","offsetSeconds":125,"phase":"heal","kind":"add-node","target":"camus1","detail":"healed"}""",
+            """{"ts":"2026-10-14T10:03:00Z","offsetSeconds":180,"phase":"inject","kind":"kill","target":"camus3","detail":"SIGKILL"}""",
+        ]);
+        try
+        {
+            Assert.That(Caraxes.Core.Verdict.FaultTimeline.Count(path, "add-node"), Is.EqualTo((1, 1)));
+            Assert.That(Caraxes.Core.Verdict.FaultTimeline.Count(path, "kill"), Is.EqualTo((1, 0)));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public void JoinerSlotFollowsThePlanArithmeticAndTheSpares()
+    {
+        ClusterSpec spec = ClusterSpecReader.Read("name: jc\nnodes: 3");
+        NodePlan joiner = ClusterPlan.NodeAt(spec, 4);
+        Assert.That(joiner.Name, Is.EqualTo("camus4"));
+        Assert.That(joiner.Ip, Is.EqualTo("10.101.0.5"));
+        Assert.That(joiner.RaftPort, Is.EqualTo(7076));
+        Assert.That(joiner.HostRestPort, Is.EqualTo(15098));
+        Assert.That(joiner.ContainerName, Is.EqualTo("jc-camus4"));
+        Assert.That(ClusterPlan.RaftEndpoint(joiner), Is.EqualTo("10.101.0.5:7076"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ClusterPlan.NodeAt(spec, 9), "3 nodes + 5 spares");
+        Assert.That(ClusterPlan.FromSpec(spec).Nodes[2], Is.EqualTo(ClusterPlan.NodeAt(spec, 3)).Using<NodePlan>((a, b) => a.Ip == b.Ip && a.RaftPort == b.RaftPort && a.Name == b.Name ? 0 : 1));
+    }
+
+    [Test]
+    public void DynamicAddressesComeFromTheUpperHalfOfTheSubnet()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: jc"));
+        Assert.That(plan.DynamicIpRangeCidr, Is.EqualTo("10.101.0.128/25"));
+        Assert.That(ComposeGenerator.Generate(plan, "./config"), Does.Contain("ip_range: 10.101.0.128/25"));
+        Assert.That(Assert.Throws<ClusterSpecException>(() => ClusterSpecReader.Read("name: jc\nnodes: 3\nfirst_ip: 123"))!.Message, Does.Contain(".128"));
+    }
+
+    [Test]
+    public void TheComposeEnvironmentIsTheJoinerEnvironment()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: jc\nmemory_limit_mb: 1024\nlog_levels: { Kahuna: Debug }\nenv: { MALLOC_ARENA_MAX: \"2\" }"));
+        Dictionary<string, object> env = ComposeGenerator.NodeEnvironment(plan.Spec, plan.Nodes[0]);
+        string yml = ComposeGenerator.Generate(plan, "./config");
+
+        Assert.That(env["CAMUS_RAFT_NODENAME"], Is.EqualTo("camus1"));
+        Assert.That(env["DOTNET_GCHeapHardLimitPercent"], Is.EqualTo("3C"));
+        Assert.That(env["CAMUS_LOG_FILTERS"], Is.EqualTo("Kahuna=Debug"));
+        Assert.That(env["MALLOC_ARENA_MAX"], Is.EqualTo("2"));
+        foreach ((string key, object value) in env)
+            Assert.That(yml, Does.Contain($"{key}: {value}"), $"compose must carry {key}");
+    }
+}

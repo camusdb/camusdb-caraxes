@@ -1,0 +1,76 @@
+# REPLACE A NODE FROM THE BACKUP CHAIN, PREFLIGHT (2026-10-14). The operator's recovery in one short run on the
+# bankpitr1 image (Kahuna.Core 1.11.11-pitr.1, the tree that fixes incremental backups; see bank-backup-preflight-pitr1):
+#   20s  backup on camus1          -> the chain starts with a full
+#   40s  kill camus3, never healed -> a permanent loss; SWIM evicts it from the roster ~35 s later (5 s suspicion + 30 s grace)
+#   50s  backup on camus1          -> an incremental on the full
+#   100s add-node seeded from camus1 -> a closing incremental on camus1, its chain restored on camus1, the restored root
+#        copied into camus4's data directory, camus4 booted on the fleet's network with --join-existing and the live
+#        nodes as seeds; the injection returns when camus4 is ready, which CamusDB reports only once Kommander has
+#        promoted it to Voter
+# After the workload, backup_verify closes camus1's chain, reads the live ledger, and reads camus4: it must be a Voter
+# in camus1's roster, ready, hosting the cluster's partitions, and read the live ledger exactly. Then the usual chain
+# check, restore and rehearsal (the rehearsal boots the ORIGINAL three slots from the restore, which is the whole-
+# cluster disaster recovery, independent of the join).
+# Not a measurement: the windows are short and the dataset small. The two throughput rules stay at their defaults.
+#
+# THE CHAIN RESTARTS ACROSS THE MEMBERSHIP CHANGE (run r1, 2026-10-14). Every manifest carries a topology generation
+# (partition map generations plus the membership version) and the chain validator refuses a chain that spans two
+# values: "a new full backup is required across such a change". The eviction of camus3 changes it. Kahuna 1.11.11
+# still PUBLISHES an incremental across the change (c7adb287 restored fine before the eviction committed; b8adb6fd,
+# taken after it, was accepted and then its chain was refused with CADB0701), so the harness resolves the chain right
+# after every incremental and, when the engine will not, takes the full the engine's own rule asks for, in capitals
+# in the timeline (vorpal kahuna: the incremental should be substituted at take time). require_unbroken_chain is off
+# here because that restart is the correct outcome of this schedule; the chain count still goes to the verdict.
+#
+# RUN r3 (2026-10-14, PASS). camus4 booted from the restore (3 links, 285,060 entries replayed in 9.5 s), was ready
+# at 19 s and a Voter at 65 s; after the workload it was a Voter in a roster of three (camus1, camus2, camus4), hosting
+# the partition, and read the live ledger exactly; the rehearsal from the restarted chain matched on every node too.
+# Two things to know when reading it: (1) the eviction of camus3 took over two minutes, not the 35 s the defaults
+# add up to — at 18:34:25 the roster still listed it as a Voter; (2) the seeded data root did not shorten the
+# catch-up: the restore leaves an empty Raft log, so camus4 presented at index 0 ("presence frontier 0 does not
+# cover it") and the leader seeded it by snapshot and backfill anyway. Kahuna's bootstrap path (--pitr-bootstrap-from,
+# which writes the checkpoint entries that make a joiner present at the restored index) is not exposed by CamusDB;
+# filed on the CamusDB project. r2 found that CamusDB reports ready while Kommander still has the joiner as a
+# Learner (ready at 115 s, Voter later), which is why the fault waits for the roster and not for readiness.
+name: bank-backup-replace-node-preflight
+cluster:
+  name: bank-backup-replace-node-preflight
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  backups: true
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr1"
+  kahuna:
+    pitr_window_seconds: 3600
+    base_snapshot_interval_seconds: 20    # the start-up horizon tick protects nothing (vorpal kahuna f3cff51a, residual)
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 200s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 20s,  fault: backup,   target: camus1, duration: 5s }
+    - { at: 40s,  fault: kill,     target: camus3, heal: false }
+    - { at: 50s,  fault: backup,   target: camus1, duration: 5s }
+    - { at: 100s, fault: add-node, target: camus1, duration: 5s, seed_from_backup: true }
+backup_verify:
+  node: camus1
+  final_incremental: true
+  require_unbroken_chain: false   # the eviction restarts the chain; see the note above
+checks:
+  max_recovery_seconds: 60
+teardown: true

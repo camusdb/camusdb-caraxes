@@ -50,7 +50,7 @@ A scenario may add a `nemesis:` block that drives faults concurrently with the w
 so a later verdict stage can correlate faults with the workload's per-second `intervals.csv`).
 
 Fault kinds: `kill` (SIGKILL, restart on heal), `stop` (graceful), `pause` (SIGSTOP freeze), `backup` (an online
-backup on the node, see below),
+backup on the node, see below), `add-node` (boot a replacement that joins the cluster, seeded from a backup, see below),
 `partition` (iptables-isolate a node from all peers), `slow` / `loss` (tc netem latency / packet
 loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-capped tmpfs data mount, see
 below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
@@ -252,6 +252,28 @@ the live one. Equal on every node, with the run's own reconciliation passed, is 
 cannot carry it — every transfer conserves it, so a restore that dropped the last ten minutes conserves it too;
 `SUM(version)` rises with every transfer and is what a lost tail shows up in. Every finding goes to the verdict and
 to `backup-verify.json`; a step that could not run fails the run rather than being skipped.
+
+**Replacing a node from the chain (`add-node`).** The operator's recovery as a fault: a `kill` with
+`heal: false` (or a `remove-node`) takes a node away for good — the cluster evicts a dead member on its own,
+5 s suspicion plus 30 s grace by default — and an `add-node` scheduled after it boots a replacement that joins
+the survivors through CamusDB's `--join-existing`. With `seed_from_backup: true` (the default) the fault takes a
+closing incremental on the target node, restores that chain on the target into its restore root, copies the
+restored data root into the joiner's data directory and boots the joiner from it, so the leader ships only the
+delta since the backup; with it off the joiner starts empty and is seeded by snapshot. The joiner takes the next
+free `camusN` slot (`node_name` picks one; it must be within `spare_certs`, which the certificate's SANs cover),
+runs the same image, config, environment and mounts as the fleet, and is removed at teardown. The injection
+returns when the node reports ready, which CamusDB does only once Kommander has promoted it to Voter; its seeds
+are the fleet nodes answering `/ping` at that moment. After the workload, `backup_verify` reads every joined
+node: a Voter in the chain node's roster, ready, hosting the cluster's partitions, and reading the live ledger
+exactly, or the run fails. See `scenarios/bank-backup-replace-node-preflight.yml`.
+
+```yaml
+nemesis:
+  events:
+    - { at: 20s,  fault: backup,   target: camus1, duration: 5s }
+    - { at: 40s,  fault: kill,     target: camus3, heal: false }
+    - { at: 100s, fault: add-node, target: camus1, duration: 5s, seed_from_backup: true }  # boots camus4
+```
 
 `checks.min_throughput_under_fault_fraction` (default 0 = off) is the floor on throughput *inside* a window: the
 recovery rules judge the tail after a heal, and for an operation that is not an outage the window is the whole

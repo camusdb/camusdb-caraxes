@@ -151,8 +151,8 @@ public sealed class ScenarioRunner
             {
                 Console.WriteLine("==> verifying the backup chain on the live cluster");
                 backupVerifier = new Caraxes.Core.Backup.BackupVerifier(scenario, plan, orchestrator, runDir);
-                backupVerify = await backupVerifier.VerifyLiveAsync(Path.Combine(runDir, "timeline.jsonl"), cancellationToken)
-                    .ConfigureAwait(false);
+                backupVerify = await backupVerifier.VerifyLiveAsync(
+                    Path.Combine(runDir, "timeline.jsonl"), nemesisContext?.JoinedNodes ?? [], cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -164,7 +164,8 @@ public sealed class ScenarioRunner
             {
                 Console.WriteLine("==> capturing node logs");
                 IReadOnlyList<string> captureNotes = await orchestrator
-                    .CaptureLogsAsync(Path.Combine(artifactsDir, "run"), scenario.NodeLogTail, cancellationToken)
+                    .CaptureLogsAsync(Path.Combine(artifactsDir, "run"), scenario.NodeLogTail, cancellationToken,
+                        nemesisContext?.LaunchedNodes)
                     .ConfigureAwait(false);
 
                 notes.AddRange(captureNotes);
@@ -216,6 +217,9 @@ public sealed class ScenarioRunner
 
     /// <summary>Elle's verdict on an append run's history; null when no check ran.</summary>
     private ElleResult? elleResult;
+
+    /// <summary>What the faults needed beyond their targets, and the nodes they added; built per run.</summary>
+    private NemesisContext? nemesisContext;
 
     /// <summary>The backup verification, when the scenario asked for one.</summary>
     private Caraxes.Core.Backup.BackupVerifier? backupVerifier;
@@ -339,9 +343,11 @@ public sealed class ScenarioRunner
         Task monitorTask = monitor.RunAsync(sideStop.Token);
         Task placementTask = placementPoller.RunAsync(sideStop.Token);
         Task hostIoTask = hostIo.RunAsync(sideStop.Token);
+        nemesisContext = new NemesisContext(
+            probes, orchestrator, TimeSpan.FromSeconds(scenario.BackupVerify?.RestoreTimeoutSeconds ?? 3600));
         Task? nemesisTask = scenario.Nemesis is null
             ? null
-            : new NemesisRunner(plan, probes).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
+            : new NemesisRunner(plan, nemesisContext).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
 
         WorkloadInvocation result;
         try
@@ -574,6 +580,7 @@ public sealed class ScenarioRunner
         }
 
         GradeElle(notes, ref passed);
+        GradeAddNode(notes, ref passed);
         GradeBackupVerify(notes, ref passed);
         GradeDivergentApply(outputDir, notes, ref passed);
         GradeSuspend(notes, ref passed);
@@ -634,6 +641,28 @@ public sealed class ScenarioRunner
         Directory.Exists(outputDir) ? Directory.GetFiles(outputDir, "node-log-*.txt").Length : 0;
 
     /// <summary>
+    /// Fails a run in which a scheduled <c>add-node</c> did not produce a joined node. The nemesis is
+    /// best-effort for faults that decorate the workload; a replacement that never joined is the
+    /// scenario's claim not happening, so it is graded like a verification step.
+    /// </summary>
+    private void GradeAddNode(List<string> notes, ref bool passed)
+    {
+        int scheduled = scenario.Nemesis?.Events.Count(e => e.Fault == "add-node") ?? 0;
+        if (scheduled == 0)
+            return;
+
+        (int injects, int errors) = FaultTimeline.Count(Path.Combine(runDir, "timeline.jsonl"), "add-node");
+        int joined = nemesisContext?.JoinedNodes.Count ?? 0;
+        notes.Add($"add-node: {scheduled} scheduled, {joined} joined as Voter, {errors} failed" +
+                  (joined > 0 ? $" ({string.Join(", ", nemesisContext!.JoinedNodes.Select(j => $"{j.Node.Name} in {j.JoinSeconds:0.0} s"))})" : ""));
+        if (errors > 0 || injects < scheduled || joined < scheduled)
+        {
+            notes.Add($"  CHECK FAILED: add-node: {scheduled - joined} of {scheduled} replacement node(s) did not join as Voter (see timeline.jsonl and the joiner's node log)");
+            passed = false;
+        }
+    }
+
+    /// <summary>
     /// Fails a run whose <c>backup_verify</c> stage found anything, or could not run. Every finding is
     /// a note; the restore and the rehearsal ledgers are in <c>backup-verify.json</c>.
     /// </summary>
@@ -654,6 +683,7 @@ public sealed class ScenarioRunner
             $"{backupVerify.BackupErrorsDuringRun} failed, chain of {backupVerify.Chain.Count}, " +
             (backupVerify.Restore is null ? "not restored" : $"restored {backupVerify.Restore.EntriesApplied:N0} replayed entries") + ", " +
             (backupVerify.Booted ? $"rehearsal booted and {backupVerify.RestoredLedgers.Count} node(s) read back" : "no rehearsal") +
+            (backupVerify.JoinedNodes.Count > 0 ? $", {backupVerify.JoinedNodes.Count} joined node(s) read back" : "") +
             " (backup-verify.json)");
         foreach (string note in backupVerify.Notes)
             notes.Add($"  {note}");

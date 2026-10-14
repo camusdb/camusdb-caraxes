@@ -48,7 +48,7 @@ public sealed class NemesisSpec
 public sealed class NemesisEvent
 {
     /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node |
-    /// leader-transfer | clock-skew | backup.</summary>
+    /// leader-transfer | clock-skew | backup | add-node.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -108,6 +108,22 @@ public sealed class NemesisEvent
     /// the fault retries on the other nodes when the target is not it).</summary>
     public string BackupKind { get; set; } = "incremental";
 
+    /// <summary>Name of the node the <c>add-node</c> fault boots (<c>camusN</c>, beyond the fleet). Empty
+    /// takes the next free index. The slot must be within the certificate's spare SANs.</summary>
+    public string NodeName { get; set; } = "";
+
+    /// <summary>Whether the <c>add-node</c> fault seeds the joiner from the target's backup chain (a
+    /// closing incremental, a restore on the target, a copy into the joiner's data root) or lets it
+    /// start empty. Default true.</summary>
+    public bool SeedFromBackup { get; set; } = true;
+
+    /// <summary>The index of a <c>camusN</c> name, or null when the name is not of that form.</summary>
+    public static int? ParseNodeIndex(string name)
+    {
+        System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(name.Trim(), "^camus([1-9][0-9]*)$");
+        return m.Success ? int.Parse(m.Groups[1].Value) : null;
+    }
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(Fault))
@@ -117,6 +133,12 @@ public sealed class NemesisEvent
 
         if (To is not null && Fault != "leader-transfer")
             throw new NemesisException($"nemesis event '{Fault}': 'to' is only meaningful for leader-transfer");
+
+        if (NodeName.Length > 0 && Fault != "add-node")
+            throw new NemesisException($"nemesis event '{Fault}': 'node_name' is only meaningful for add-node");
+
+        if (NodeName.Length > 0 && ParseNodeIndex(NodeName) is null)
+            throw new NemesisException($"nemesis event 'add-node': node_name must be camusN, got '{NodeName}'");
 
         if (!BackupFault.Kinds.Contains(BackupKind.ToLowerInvariant()))
             throw new NemesisException(

@@ -156,6 +156,20 @@ public sealed class ScenarioSpec
             throw new ScenarioException(
                 "the nemesis schedules 'backup' but the cluster has no backup directory; set 'cluster.backups: true'");
 
+        if (Nemesis?.Events.Any(e => e.Fault == "add-node" && e.SeedFromBackup) == true && !Cluster.Backups)
+            throw new ScenarioException(
+                "the nemesis schedules 'add-node' seeded from a backup but the cluster has no backup directory; set 'cluster.backups: true' or 'seed_from_backup: false'");
+
+        foreach (NemesisEvent e in Nemesis?.Events.Where(e => e.Fault == "add-node" && e.NodeName.Length > 0) ?? [])
+        {
+            int index = NemesisEvent.ParseNodeIndex(e.NodeName)!.Value;
+            if (index <= Cluster.Nodes)
+                throw new ScenarioException($"'add-node' node_name '{e.NodeName}' is already part of the fleet of {Cluster.Nodes}");
+            if (index > Cluster.Nodes + Cluster.SpareCerts)
+                throw new ScenarioException(
+                    $"'add-node' node_name '{e.NodeName}' is beyond the fleet plus 'spare_certs' ({Cluster.Nodes} + {Cluster.SpareCerts}); raise spare_certs");
+        }
+
         BackupVerify?.Validate(this);
 
         // Cross-block, so it lives here rather than in WorkloadSpec: the workload names a node and

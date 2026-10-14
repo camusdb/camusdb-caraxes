@@ -58,35 +58,7 @@ public static class ComposeGenerator
 
         foreach (NodePlan node in plan.Nodes)
         {
-            Dictionary<string, object> environment = new()
-            {
-                ["CAMUS_RAFT_NODENAME"] = node.Name,
-                ["CAMUS_RAFT_NODEID"] = node.Index,
-                ["CAMUS_RAFT_HOST"] = node.Ip,
-                ["CAMUS_RAFT_PORT"] = node.RaftPort,
-                ["CAMUS_HTTP_PORT"] = 5095,
-                ["CAMUS_INITIAL_CLUSTER"] = node.InitialCluster,
-                ["CAMUS_INITIAL_CLUSTER_PARTITIONS"] = spec.Partitions,
-                // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
-                // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
-                ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
-
-                // A native crash (SIGSEGV in RocksDB/gRPC/runtime) exits 139 with nothing in the
-                // container log — soak runs have hit exactly that, unattributably. These make the
-                // runtime write a minidump (stacks, no heap — small) plus a JSON crash report with
-                // per-thread native frames into /dumps, a host bind mount under the cluster's run
-                // directory, so the evidence survives the container's death, its restart, and the
-                // teardown's `down -v`. It used to go to /data: on a tmpfs-backed /data the dump
-                // died with the container (the Kahuna 1.7.7 OOM fail-fasts, 51311414 item 2), and
-                // the Kahuna images had since defaulted to a /dumps volume that this variable was
-                // overriding. %p = pid, %t = unix time, so a crash-loop keeps every dump. Dump type
-                // is decimal here (unlike the GC variables, this one is parsed as a plain integer):
-                // 1 = mini.
-                ["DOTNET_DbgEnableMiniDump"] = 1,
-                ["DOTNET_DbgMiniDumpType"] = 1,
-                ["DOTNET_DbgMiniDumpName"] = "/dumps/crash-%p-%t.dmp",
-                ["DOTNET_EnableCrashReport"] = 1,
-            };
+            Dictionary<string, object> environment = NodeEnvironment(spec, node);
 
             Dictionary<string, object> service = new()
             {
@@ -126,34 +98,7 @@ public static class ComposeGenerator
             // keeps the node's heap budget and proportional cache sizing identical to a volume-backed
             // one while the container limit grows to hold the data (see ClusterSpec.GcHeapHardLimitMb).
             if (spec.MemoryLimitMb > 0)
-            {
                 service["mem_limit"] = $"{spec.MemoryLimitMb}m";
-                if (spec.GcHeapHardLimitMb > 0)
-                    environment["DOTNET_GCHeapHardLimit"] = ((long)spec.GcHeapHardLimitMb * 1024 * 1024).ToString("X");
-                else
-                    environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
-            }
-
-            // CamusDB calls ClearProviders() and then installs explicit AddFilter rules for
-            // Kahuna, Kommander and Grpc, so the standard Logging__LogLevel__* configuration path
-            // does NOT reach those categories — verified: the env var arrives in the container and
-            // Kommander still logs only at Warning. CAMUS_LOG_FILTERS is CamusDB's own escape
-            // hatch, applied last in Program.cs so it outranks the named variables, and it accepts
-            // any category rather than only the three that have dedicated variables.
-            if (spec.LogLevels.Count > 0)
-                environment["CAMUS_LOG_FILTERS"] =
-                    string.Join(',', spec.LogLevels.Select(kv => $"{kv.Key}={kv.Value}"));
-
-            // The shim must be loaded when the process starts; the clock-skew fault only rewrites the
-            // offset file it reads. See ClockSkewShim.
-            if (spec.ClockSkew)
-                foreach ((string key, string value) in ClockSkewShim.Environment)
-                    environment[key] = value;
-
-            // Applied last, so a scenario can deliberately override a variable Caraxes derived
-            // (including the GC budget above). See ClusterSpec.Env for why this exists.
-            foreach ((string key, string value) in spec.Env)
-                environment[key] = value;
 
             services[node.Name] = service;
 
@@ -175,9 +120,18 @@ public static class ComposeGenerator
                     ["driver"] = "bridge",
                     ["ipam"] = new Dictionary<string, object>
                     {
+                        // Dynamic addresses (the workload container, a curl helper with its own
+                        // namespace) come from the upper half of the /24, so a node that joins at
+                        // runtime can take its static slot in the lower half: docker hands a dynamic
+                        // container the first free address, which is exactly the next node's (run
+                        // replace-node r1, 2026-10-14: the workload held .5 and camus4 could not start).
                         ["config"] = new List<object>
                         {
-                            new Dictionary<string, object> { ["subnet"] = plan.NetworkSubnetCidr },
+                            new Dictionary<string, object>
+                            {
+                                ["subnet"] = plan.NetworkSubnetCidr,
+                                ["ip_range"] = plan.DynamicIpRangeCidr,
+                            },
                         },
                     },
                 },
@@ -188,6 +142,92 @@ public static class ComposeGenerator
         sb.AppendLine($"# Generated by caraxes for cluster '{spec.Name}'. Do not edit.");
         sb.Append(new SerializerBuilder().Build().Serialize(root));
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The environment every node container runs with: its Raft identity, the config path, the crash
+    /// dump settings, the GC budget, the log filters, the clock-skew shim and the spec's own
+    /// variables, in that order so a later entry overrides an earlier one. Shared by the compose file
+    /// and by the <c>add-node</c> fault's <c>docker run</c>, so a node that joins at runtime is set up
+    /// exactly like the ones the compose file started.
+    /// </summary>
+    public static Dictionary<string, object> NodeEnvironment(ClusterSpec spec, NodePlan node)
+    {
+        Dictionary<string, object> environment = new()
+        {
+            ["CAMUS_RAFT_NODENAME"] = node.Name,
+            ["CAMUS_RAFT_NODEID"] = node.Index,
+            ["CAMUS_RAFT_HOST"] = node.Ip,
+            ["CAMUS_RAFT_PORT"] = node.RaftPort,
+            ["CAMUS_HTTP_PORT"] = 5095,
+            ["CAMUS_INITIAL_CLUSTER"] = node.InitialCluster,
+            ["CAMUS_INITIAL_CLUSTER_PARTITIONS"] = spec.Partitions,
+            // CamusDB's config discovery honors CAMUS_CONFIG_PATH ahead of the image's
+            // baked ./Config/config.yml, and CLI flags still outrank the file for identity.
+            ["CAMUS_CONFIG_PATH"] = $"/app/caraxes-config/{node.Name}.yml",
+
+            // A native crash (SIGSEGV in RocksDB/gRPC/runtime) exits 139 with nothing in the
+            // container log — soak runs have hit exactly that, unattributably. These make the
+            // runtime write a minidump (stacks, no heap — small) plus a JSON crash report with
+            // per-thread native frames into /dumps, a host bind mount under the cluster's run
+            // directory, so the evidence survives the container's death, its restart, and the
+            // teardown's `down -v`. It used to go to /data: on a tmpfs-backed /data the dump
+            // died with the container (the Kahuna 1.7.7 OOM fail-fasts, 51311414 item 2), and
+            // the Kahuna images had since defaulted to a /dumps volume that this variable was
+            // overriding. %p = pid, %t = unix time, so a crash-loop keeps every dump. Dump type
+            // is decimal here (unlike the GC variables, this one is parsed as a plain integer):
+            // 1 = mini.
+            ["DOTNET_DbgEnableMiniDump"] = 1,
+            ["DOTNET_DbgMiniDumpType"] = 1,
+            ["DOTNET_DbgMiniDumpName"] = "/dumps/crash-%p-%t.dmp",
+            ["DOTNET_EnableCrashReport"] = 1,
+        };
+
+        // A cgroup memory limit is what makes the node's Server GC self-cap: without one, each
+        // node sizes its heap against the whole Docker VM and three nodes race each other to
+        // the VM ceiling. The runtime's default self-cap (75% of the limit) still overcommits,
+        // because ~350-400 MiB of native memory (RocksDB) lives outside the managed heap: at a
+        // 1536 MiB limit, a 1152 MiB heap budget plus native memory meets the limit and a
+        // loaded node is OOM-killed anyway (soak run G, t+88m). So the heap gets an explicit
+        // 60% budget instead, which leaves ~600 MiB of a 1536 MiB limit for native memory.
+        // .NET reads GC env vars as hexadecimal: 3C = 60. The 0x prefix is deliberately
+        // omitted — YAML resolves a plain 0x3C to the integer 60, compose would pass "60",
+        // and the runtime would re-read that as hex (96%). "3C" stays a string end to end.
+        // An explicit gc_heap_hard_limit_mb replaces the percentage with an absolute byte count
+        // (also hex, no 0x prefix). The runtime lets the absolute form win when both are set, but
+        // emitting only one keeps the compose file unambiguous. This is how a tmpfs-backed run
+        // keeps the node's heap budget and proportional cache sizing identical to a volume-backed
+        // one while the container limit grows to hold the data (see ClusterSpec.GcHeapHardLimitMb).
+        if (spec.MemoryLimitMb > 0)
+        {
+            if (spec.GcHeapHardLimitMb > 0)
+                environment["DOTNET_GCHeapHardLimit"] = ((long)spec.GcHeapHardLimitMb * 1024 * 1024).ToString("X");
+            else
+                environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
+        }
+
+        // CamusDB calls ClearProviders() and then installs explicit AddFilter rules for
+        // Kahuna, Kommander and Grpc, so the standard Logging__LogLevel__* configuration path
+        // does NOT reach those categories — verified: the env var arrives in the container and
+        // Kommander still logs only at Warning. CAMUS_LOG_FILTERS is CamusDB's own escape
+        // hatch, applied last in Program.cs so it outranks the named variables, and it accepts
+        // any category rather than only the three that have dedicated variables.
+        if (spec.LogLevels.Count > 0)
+            environment["CAMUS_LOG_FILTERS"] =
+                string.Join(',', spec.LogLevels.Select(kv => $"{kv.Key}={kv.Value}"));
+
+        // The shim must be loaded when the process starts; the clock-skew fault only rewrites the
+        // offset file it reads. See ClockSkewShim.
+        if (spec.ClockSkew)
+            foreach ((string key, string value) in ClockSkewShim.Environment)
+                environment[key] = value;
+
+        // Applied last, so a scenario can deliberately override a variable Caraxes derived
+        // (including the GC budget above). See ClusterSpec.Env for why this exists.
+        foreach ((string key, string value) in spec.Env)
+            environment[key] = value;
+
+        return environment;
     }
 
     /// <summary>

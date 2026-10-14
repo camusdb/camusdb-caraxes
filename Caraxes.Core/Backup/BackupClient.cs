@@ -160,6 +160,9 @@ public static class BackupClient
     /// partition (<c>BackupNotCoordinator</c>).</summary>
     public const string NotCoordinatorCode = "CADB070E";
 
+    /// <summary>CamusDB's code for a chain that does not resolve (<c>BackupChainInvalid</c>).</summary>
+    public const string ChainInvalidCode = "CADB0701";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -256,6 +259,23 @@ public static class BackupClient
 
                 string body = JsonSerializer.Serialize(new { parentBackupId = parent.BackupId });
                 BackupInfo incremental = await TakeOneAsync(node, "/v1/backups/incremental", body, cancellationToken).ConfigureAwait(false);
+
+                // The engine publishes an incremental whose chain it then refuses to resolve when the
+                // topology generation moved since the parent (a member evicted or joined): the link
+                // exists and no restore can use it (run replace-node r1, 2026-10-14; vorpal kahuna).
+                // Its own rule says a new full is required across such a change, so the harness takes
+                // that full and says so in capitals; the orphan stays in the catalog as the evidence.
+                try
+                {
+                    await ChainAsync(node, incremental.BackupId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (BackupRequestException e) when (e.Code == ChainInvalidCode)
+                {
+                    BackupInfo full = await TakeOneAsync(node, "/v1/backups/full", null, cancellationToken).ConfigureAwait(false);
+                    return new BackupTaken(node, requested, full, TimeSpan.Zero,
+                        $"CHAIN BROKEN BY THE ENGINE: incremental {incremental.ShortId} was published but its chain does not resolve ({e.Message}); the harness started a new chain with this full");
+                }
+
                 return new BackupTaken(node, requested, incremental, TimeSpan.Zero, "");
             }
 

@@ -27,6 +27,10 @@ public sealed class ClusterPlan
 
     public string NetworkSubnetCidr => $"{Spec.Subnet}.0/24";
 
+    /// <summary>The upper half of the /24, where docker allocates dynamic addresses; every static node
+    /// slot (the fleet and the spare certificates' joiners) sits below it.</summary>
+    public string DynamicIpRangeCidr => $"{Spec.Subnet}.128/25";
+
     private ClusterPlan(ClusterSpec spec, IReadOnlyList<NodePlan> nodes)
     {
         Spec = spec;
@@ -39,21 +43,7 @@ public sealed class ClusterPlan
 
         List<NodePlan> nodes = new(spec.Nodes);
         for (int i = 1; i <= spec.Nodes; i++)
-        {
-            nodes.Add(new NodePlan
-            {
-                Index = i,
-                Name = $"camus{i}",
-                ContainerName = $"{spec.Name}-camus{i}",
-                Ip = $"{spec.Subnet}.{spec.FirstIp + i - 1}",
-                // Step-2 raft ports match the repo's docker/local.yml convention (7070/7072/7074).
-                RaftPort = spec.BaseRaftPort + 2 * (i - 1),
-                HostRestPort = spec.BaseRestPort + i - 1,
-                HostGrpcPort = spec.BaseGrpcPort + i - 1,
-                Zone = spec.Zones.Count > 0 ? spec.Zones[i - 1] : null,
-                VolumeName = $"camus{i}-data",
-            });
-        }
+            nodes.Add(NodeAt(spec, i));
 
         // A node's initial-cluster lists the OTHER nodes' raft endpoints, mirroring docker/local.yml:
         // each node discovers itself from its own --raft-host/--raft-port flags.
@@ -63,6 +53,37 @@ public sealed class ClusterPlan
 
         return new ClusterPlan(spec, nodes);
     }
+
+    /// <summary>
+    /// The node plan for index <paramref name="index"/>, whether or not it is part of the initial
+    /// fleet: the same name, address and port arithmetic the fleet uses, so a node that joins at
+    /// runtime (the <c>add-node</c> fault) takes the slot the certificate's spare SANs already cover.
+    /// </summary>
+    public static NodePlan NodeAt(ClusterSpec spec, int index)
+    {
+        if (index < 1)
+            throw new ArgumentOutOfRangeException(nameof(index), index, "node indexes start at 1");
+        if (index > spec.Nodes + spec.SpareCerts)
+            throw new ArgumentOutOfRangeException(nameof(index), index,
+                $"camus{index} is beyond the {spec.Nodes} node(s) plus {spec.SpareCerts} spare certificate(s) of cluster '{spec.Name}'; raise spare_certs");
+
+        return new NodePlan
+        {
+            Index = index,
+            Name = $"camus{index}",
+            ContainerName = $"{spec.Name}-camus{index}",
+            Ip = $"{spec.Subnet}.{spec.FirstIp + index - 1}",
+            // Step-2 raft ports match the repo's docker/local.yml convention (7070/7072/7074).
+            RaftPort = spec.BaseRaftPort + 2 * (index - 1),
+            HostRestPort = spec.BaseRestPort + index - 1,
+            HostGrpcPort = spec.BaseGrpcPort + index - 1,
+            Zone = spec.Zones.Count >= index ? spec.Zones[index - 1] : null,
+            VolumeName = $"camus{index}-data",
+        };
+    }
+
+    /// <summary>The Raft endpoint a node advertises to its peers.</summary>
+    public static string RaftEndpoint(NodePlan node) => $"{node.Ip}:{node.RaftPort}";
 
     /// <summary>Every node's REST base URL on the host, for probes.</summary>
     public IEnumerable<string> HostRestUrls => Nodes.Select(n => $"http://localhost:{n.HostRestPort}");

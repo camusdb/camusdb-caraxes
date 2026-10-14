@@ -14,6 +14,11 @@ namespace Caraxes.Core.Backup;
 /// <summary>One link of the verified chain, as written to <c>backup-verify.json</c>.</summary>
 public sealed record ChainLink(string BackupId, string Type, DateTime CreatedAtUtc, string? ParentBackupId, int PartitionCount, string? SubstitutionReason, bool IsInvalid);
 
+/// <summary>A runtime-joined node after the workload: its roster role, what it hosts, and its ledger.</summary>
+public sealed record JoinedNodeOutcome(
+    string Node, string SeededFrom, string? SeedLeafBackupId, double JoinSeconds, IReadOnlyList<string> Seeds,
+    string Role, bool Ready, int HostedPartitions, int RosterSize, IReadOnlyList<string> Roster, LedgerFingerprint? Ledger);
+
 /// <summary>The restore's outcome, as written to <c>backup-verify.json</c>.</summary>
 public sealed record RestoreOutcome(string TargetDir, int PartitionsRestored, long EntriesApplied, long LastAppliedPhysicalMs, long MinRecoverablePhysicalMs, long MaxRecoverablePhysicalMs, int ChainLength, double Seconds);
 
@@ -42,6 +47,9 @@ public sealed class BackupVerifyResult
     public RestoreOutcome? Restore { get; set; }
 
     public bool Booted { get; set; }
+
+    /// <summary>Nodes the <c>add-node</c> fault brought in during the run, and what they held after the workload.</summary>
+    public List<JoinedNodeOutcome> JoinedNodes { get; set; } = [];
 
     public Dictionary<string, LedgerFingerprint> RestoredLedgers { get; set; } = [];
 
@@ -74,13 +82,16 @@ public sealed class BackupVerifier
 
     private readonly string runDir;
 
-    public BackupVerifier(ScenarioSpec scenario, ClusterPlan plan, ClusterOrchestrator orchestrator, string runDir)
+    private readonly HttpProbes probes;
+
+    public BackupVerifier(ScenarioSpec scenario, ClusterPlan plan, ClusterOrchestrator orchestrator, string runDir, HttpProbes? probes = null)
     {
         this.scenario = scenario;
         spec = scenario.BackupVerify ?? throw new ArgumentException("scenario has no backup_verify block", nameof(scenario));
         this.plan = plan;
         this.orchestrator = orchestrator;
         this.runDir = runDir;
+        this.probes = probes ?? new HttpProbes();
     }
 
     public string ResultPath => Path.Combine(runDir, "backup-verify.json");
@@ -89,9 +100,15 @@ public sealed class BackupVerifier
     public string RestoredRoot => Path.Combine(orchestrator.BackupsRoot, "restored");
 
     public async Task<BackupVerifyResult> VerifyLiveAsync(string timelinePath, CancellationToken cancellationToken)
+        => await VerifyLiveAsync(timelinePath, [], cancellationToken).ConfigureAwait(false);
+
+    /// <param name="joined">Nodes the nemesis added during the run; each is checked against the live ledger.</param>
+    public async Task<BackupVerifyResult> VerifyLiveAsync(
+        string timelinePath, IReadOnlyList<Nemesis.JoinedNode> joined, CancellationToken cancellationToken)
     {
         BackupVerifyResult result = new() { Node = spec.EffectiveNode(scenario) };
         NodePlan node = plan.Nodes.First(n => n.Name == result.Node);
+        joinedPlans = joined.Select(j => j.Node).ToList();
 
         (result.BackupsDuringRun, result.BackupErrorsDuringRun, int refusedAttempts) = CountTimelineBackups(timelinePath, result.Node);
         if (refusedAttempts > 0)
@@ -119,6 +136,8 @@ public sealed class BackupVerifier
                     else
                         result.Notes.Add($"FINDING: the final incremental was substituted with a full (not graded, require_unbroken_chain: false): {final.Backup.SubstitutionReason}");
                 }
+                if (final.Note.StartsWith("CHAIN BROKEN", StringComparison.Ordinal))
+                    result.Notes.Add($"FINDING: {final.Note}");
                 if (!string.Equals(final.Node.Name, node.Name, StringComparison.Ordinal))
                     result.Failures.Add($"the final backup landed on {final.Node.Name}, not {node.Name}");
             }
@@ -126,6 +145,9 @@ public sealed class BackupVerifier
             Console.WriteLine($"==> backup verify: reading the live ledger on {node.Name}");
             result.LiveLedger = await LedgerProbe.ReadAsync(node, scenario.Workload.Database, scenario.Workload.Tables, cancellationToken).ConfigureAwait(false);
             result.Notes.Add($"live ledger on {node.Name} after the final backup: {result.LiveLedger.Describe()}");
+
+            foreach (Nemesis.JoinedNode j in joined)
+                await VerifyJoinedAsync(j, node, result, cancellationToken).ConfigureAwait(false);
 
             IReadOnlyList<BackupInfo> catalog = await BackupClient.ListAsync(node, cancellationToken).ConfigureAwait(false);
             BackupInfo? leaf = BackupClient.NewestValid(catalog);
@@ -176,6 +198,63 @@ public sealed class BackupVerifier
 
         return Write(result);
     }
+
+    /// <summary>
+    /// A node that joined during the run has to be a full member holding the data once the load stops:
+    /// a Voter in the roster the chain node reports, ready and hosting every partition of the cluster,
+    /// and reading the same ledger as the chain node. A joiner that is any of those things short is a
+    /// replacement that did not replace anything.
+    /// </summary>
+    private async Task VerifyJoinedAsync(Nemesis.JoinedNode j, NodePlan chainNode, BackupVerifyResult result, CancellationToken cancellationToken)
+    {
+        Console.WriteLine($"==> backup verify: reading the joined node {j.Node.Name}");
+        string joinerUrl = $"http://localhost:{j.Node.HostRestPort}";
+        NodeHealth? health = await probes.GetHealthAsync(joinerUrl, cancellationToken).ConfigureAwait(false);
+        ClusterMembership? roster = await probes.GetMembershipAsync($"http://localhost:{chainNode.HostRestPort}", cancellationToken).ConfigureAwait(false);
+        string endpoint = ClusterPlan.RaftEndpoint(j.Node);
+        string role = roster?.Members.FirstOrDefault(m => m.Endpoint == endpoint)?.Role ?? "absent";
+        List<string> members = roster?.Members.Select(m => $"{Name(m.Endpoint)}={m.Role}").ToList() ?? [];
+
+        LedgerFingerprint? ledger = null;
+        try
+        {
+            ledger = await LedgerProbe.ReadAsync(j.Node, scenario.Workload.Database, scenario.Workload.Tables, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            result.Failures.Add($"joined node {j.Node.Name}: its ledger could not be read: {e.Message}");
+        }
+
+        result.JoinedNodes.Add(new JoinedNodeOutcome(
+            j.Node.Name, j.SeededFrom, j.SeedLeafBackupId, j.JoinSeconds, j.Seeds, role, health?.Ready == true,
+            health?.HostedPartitions ?? 0, roster?.Members.Count ?? 0, members, ledger));
+        result.Notes.Add(
+            $"joined node {j.Node.Name}: {role} in a roster of {roster?.Members.Count ?? 0} ({string.Join(", ", members)}), " +
+            $"{(health?.Ready == true ? "ready" : "NOT ready")}, hosting {health?.HostedPartitions ?? 0} partition(s), joined in {j.JoinSeconds:0.0} s, seeded from {j.SeededFrom}");
+
+        if (!string.Equals(role, "Voter", StringComparison.OrdinalIgnoreCase))
+            result.Failures.Add($"joined node {j.Node.Name} is '{role}' in {chainNode.Name}'s roster, not a Voter");
+        if (health?.Ready != true)
+            result.Failures.Add($"joined node {j.Node.Name} does not report ready after the workload");
+        // The meta partition plus every data partition: a replacement must hold what the fleet holds.
+        if (health is not null && health.HostedPartitions < scenario.Cluster.Partitions)
+            result.Failures.Add($"joined node {j.Node.Name} hosts {health.HostedPartitions} partition(s); the cluster has {scenario.Cluster.Partitions}");
+        if (ledger is not null && result.LiveLedger is not null)
+        {
+            if (ledger == result.LiveLedger)
+                result.Notes.Add($"joined node {j.Node.Name} reads the live ledger exactly: {ledger.Describe()}");
+            else
+                result.Failures.Add($"joined node {j.Node.Name} reads a different ledger: {ledger.Describe()}; live {result.LiveLedger.Describe()}");
+        }
+
+        string Name(string ep) => plan.Nodes.Concat(joinedPlans).FirstOrDefault(n => ClusterPlan.RaftEndpoint(n) == ep)?.Name ?? ep;
+    }
+
+    private IEnumerable<NodePlan> joinedPlans = [];
 
     /// <summary>
     /// The disaster-recovery rehearsal. Copies the restore into one data root per node, brings the

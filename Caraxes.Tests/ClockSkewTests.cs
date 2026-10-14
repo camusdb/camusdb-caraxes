@@ -58,7 +58,7 @@ public sealed class ClockSkewTests
         NemesisEvent e = spec.Nemesis!.Events[0];
         Assert.That(e.Fault, Is.EqualTo("clock-skew"));
         Assert.That(e.OffsetMs, Is.EqualTo(-2500));
-        Assert.That(FaultFactory.Create(e, null!).Describe(ClusterPlan.FromSpec(spec.Cluster).Nodes[1]),
+        Assert.That(FaultFactory.Create(e, (HttpProbes)null!).Describe(ClusterPlan.FromSpec(spec.Cluster).Nodes[1]),
             Does.Contain("by -2500 ms"));
     }
 

@@ -14,7 +14,7 @@ namespace Caraxes.Core.Nemesis;
 public static class FaultFactory
 {
     public static readonly IReadOnlyList<string> KnownKinds =
-        ["kill", "stop", "pause", "partition", "slow", "loss", "fill-disk", "slow-disk", "remove-node", "leader-transfer", "clock-skew", "backup"];
+        ["kill", "stop", "pause", "partition", "slow", "loss", "fill-disk", "slow-disk", "remove-node", "leader-transfer", "clock-skew", "backup", "add-node"];
 
     public static void EnsureKnownKind(string kind)
     {
@@ -25,7 +25,11 @@ public static class FaultFactory
 
     /// <param name="probes">Shared HTTP probes, needed by faults that read the cluster's placement
     /// (leader-transfer). Process and network faults ignore it.</param>
-    public static IFault Create(NemesisEvent e, HttpProbes probes) => e.Fault switch
+    public static IFault Create(NemesisEvent e, HttpProbes probes) => Create(e, new NemesisContext(probes));
+
+    /// <param name="context">What a fault may need beyond its target: probes, the orchestrator and the
+    /// registry of joined nodes (add-node). Process and network faults ignore it.</param>
+    public static IFault Create(NemesisEvent e, NemesisContext context) => e.Fault switch
     {
         "kill" => new KillFault(),
         "stop" => new StopFault(),
@@ -36,9 +40,10 @@ public static class FaultFactory
         "fill-disk" => new FillDiskFault(),
         "slow-disk" => new SlowDiskFault(e.WriteBps, e.WriteIops, e.ReadBps, e.Device),
         "remove-node" => new RemoveNodeFault(),
-        "leader-transfer" => new LeaderTransferFault(probes, e.To),
+        "leader-transfer" => new LeaderTransferFault(context.Probes, e.To),
         "clock-skew" => new ClockSkewFault(e.OffsetMs),
         "backup" => new BackupFault(e.BackupKind),
+        "add-node" => new AddNodeFault(context, e.NodeName, e.SeedFromBackup),
         _ => throw new NemesisException($"unknown fault '{e.Fault}'"),
     };
 

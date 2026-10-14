@@ -36,6 +36,12 @@ public sealed class ClusterOrchestrator
 
     public string ComposeFilePath => Path.Combine(runDir, "compose.yml");
 
+    /// <summary>The per-node config directory the fleet mounts read-only; a joiner's config is written here too.</summary>
+    public string ConfigDir => Path.Combine(runDir, "config");
+
+    /// <summary>The crash-dump bind mounts, one sub-directory per node.</summary>
+    public string DumpsDir => Path.Combine(runDir, "dumps");
+
     /// <summary>The compose file of the disaster-recovery rehearsal fleet (<see cref="UpRestoredAsync"/>):
     /// the same project, nodes and addresses, with every <c>/data</c> bind-mounted from a restored root.</summary>
     public string RestoredComposeFilePath => Path.Combine(runDir, "compose-restored.yml");
@@ -220,6 +226,72 @@ public sealed class ClusterOrchestrator
         await PrintStatusAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Starts one more node of this cluster at runtime, joining the fleet: the same image, config,
+    /// environment and mounts the compose file gives a node (one <c>docker run</c> built from the same
+    /// generators), on the compose network at the slot's address, with <c>--join-existing true</c>
+    /// appended to the command line and <c>CAMUS_INITIAL_CLUSTER</c> naming the seeds the caller put
+    /// on <paramref name="joiner"/>. Labelled as a service of the compose project so <see cref="DownAsync"/>
+    /// removes it with the fleet. <paramref name="dataHostDir"/> is bound at <c>/data</c>: a restored
+    /// data root, or an empty directory for a node the leader seeds.
+    /// </summary>
+    public async Task LaunchJoinerAsync(NodePlan joiner, string dataHostDir, CancellationToken cancellationToken = default)
+    {
+        ClusterSpec spec = plan.Spec;
+
+        Directory.CreateDirectory(ConfigDir);
+        File.WriteAllText(Path.Combine(ConfigDir, $"{joiner.Name}.yml"), NodeConfigGenerator.Generate(plan, joiner));
+        Directory.CreateDirectory(Path.Combine(DumpsDir, joiner.Name));
+        if (spec.Backups)
+            foreach (string sub in new[] { "catalog", "restore" })
+                CreatePrivateDirectory(Path.Combine(BackupsDirOf(joiner), sub));
+
+        List<string> args =
+        [
+            "run", "-d",
+            "--name", joiner.ContainerName,
+            "--network", plan.NetworkName,
+            "--ip", joiner.Ip,
+            "--network-alias", joiner.Name,
+            "--cap-add", "NET_ADMIN",
+            "--restart", "no",
+            "--label", $"com.docker.compose.project={plan.ProjectName}",
+            "--label", $"com.docker.compose.service={joiner.Name}",
+            "--label", "caraxes.joiner=true",
+            "-p", $"{joiner.HostRestPort}:5095",
+            "-p", $"{joiner.HostGrpcPort}:5096",
+            "-v", $"{Path.GetFullPath(ConfigDir)}:/app/caraxes-config:ro",
+            "-v", $"{Path.GetFullPath(Path.Combine(DumpsDir, joiner.Name))}:/dumps",
+            "-v", $"{Path.GetFullPath(dataHostDir)}:/data",
+        ];
+
+        if (spec.Backups)
+            args.AddRange(["-v", $"{Path.GetFullPath(BackupsDirOf(joiner))}:{NodeConfigGenerator.BackupMount}"]);
+        if (spec.MemoryLimitMb > 0)
+            args.AddRange(["--memory", $"{spec.MemoryLimitMb}m"]);
+
+        foreach ((string key, object value) in ComposeGenerator.NodeEnvironment(spec, joiner))
+            args.AddRange(["-e", $"{key}={value}"]);
+        args.AddRange(["-e", "CAMUS_EXTRA_ARGS=--join-existing true"]);
+
+        args.Add(spec.NodeImage);
+
+        Console.WriteLine($"==> starting {joiner.Name} ({joiner.Ip}) to join the cluster through {joiner.InitialCluster}");
+        await ProcessRunner.RunCheckedAsync("docker", args, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Containers of this compose project that the compose file does not name: the nodes
+    /// <see cref="LaunchJoinerAsync"/> started. Their names, from docker.</summary>
+    public async Task<IReadOnlyList<string>> ListJoinerContainersAsync(CancellationToken cancellationToken = default)
+    {
+        ProcessResult result = await ProcessRunner.RunAsync(
+            "docker", ["ps", "-a", "--filter", $"label=com.docker.compose.project={plan.ProjectName}", "--filter", "label=caraxes.joiner=true", "--format", "{{.Names}}"],
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return result.Success
+            ? result.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [];
+    }
+
     /// <summary>Tears the rehearsal fleet down. Its compose file names the same project as the live
     /// cluster's, so this is the ordinary teardown pointed at the restored compose file.</summary>
     public async Task DownRestoredAsync(CancellationToken cancellationToken = default)
@@ -241,6 +313,15 @@ public sealed class ClusterOrchestrator
         // alone, or a deleted runs/ directory strands containers and volumes.
         if (!File.Exists(ComposeFilePath))
             WriteArtifacts();
+
+        // A node that joined at runtime is a container of this project the compose file does not
+        // name. --remove-orphans is meant to remove it; done explicitly first so a joiner that is
+        // still catching up (or wedged) can never survive the fleet and hold the subnet.
+        foreach (string joiner in await ListJoinerContainersAsync(cancellationToken).ConfigureAwait(false))
+        {
+            Console.WriteLine($"==> removing runtime-joined node container {joiner}");
+            await ProcessRunner.RunAsync("docker", ["rm", "-f", joiner], cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
 
         List<string> args = ["compose", "-f", ComposeFilePath, "down", "--remove-orphans"];
         if (!keepVolumes)
@@ -396,10 +477,13 @@ public sealed class ClusterOrchestrator
     /// <param name="tail">Last N lines per node; 0 or less captures the whole log. Bound it only
     /// when disk forces the issue: a promotion fingerprint printed early in a ten-minute run is
     /// exactly what a tail discards.</param>
+    /// <param name="additionalNodes">Nodes outside the plan whose logs are wanted too: the ones a
+    /// runtime join added.</param>
     public async Task<IReadOnlyList<string>> CaptureLogsAsync(
         string destinationDir,
         int tail = 0,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IEnumerable<NodePlan>? additionalNodes = null)
     {
         List<string> notes = [];
 
@@ -413,7 +497,7 @@ public sealed class ClusterOrchestrator
             return notes;
         }
 
-        foreach (NodePlan node in plan.Nodes)
+        foreach (NodePlan node in plan.Nodes.Concat(additionalNodes ?? []))
         {
             string destination = Path.Combine(destinationDir, $"node-log-{node.Name}.txt");
 
