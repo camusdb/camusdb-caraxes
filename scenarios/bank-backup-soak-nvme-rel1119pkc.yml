@@ -1,6 +1,6 @@
-# INCREMENTAL BACKUPS UNDER THE BANK SOAK (2026-10-14). The 1.11.9 stack with the row-id cache on, the image the
-# fault-soak pair pk1 passed on (caraxes/camusdb:bankrel1119pkc: CamusDB HEAD 693c61bb pinned to the published
-# Kahuna.Core 1.11.9 -> Kahuna.Shared 1.11.9 -> Kommander 1.10.9; workload on CamusDB.Client 0.15.1).
+# INCREMENTAL BACKUPS UNDER THE BANK SOAK (2026-10-14). The fault-soak body with the row-id cache on, on the Kahuna
+# working tree that fixes incremental backups (see THE STACK below; Kommander 1.10.10, CamusDB HEAD 5009c9c7 with
+# Kahuna.Core pinned to the local pack; workload on CamusDB.Client 0.15.1).
 #
 # TWO QUESTIONS. (1) Does a backup chain taken while the ledger is under full-rate contended load hold every
 # committed transfer? (2) What does taking it cost the foreground while it runs?
@@ -23,15 +23,17 @@
 # it — every transfer conserves it, so a restore that dropped the last ten minutes conserves it too; SUM(version)
 # rises with every transfer and is what a lost tail shows up in.
 #
-# EXPECTED TO FAIL ON KAHUNA 1.11.9, AND THAT IS THE FINDING (preflight v1-v3, 2026-10-14; bank-backup-preflight.yml
-# has the evidence). Every incremental comes back "taken as Full": Kahuna's BackupDriver reads the partition's last
-# application checkpoint (IWAL.GetLastCheckpoint, advanced on every flush cycle) as the WAL compaction floor and
-# refuses an incremental that starts below it, so on a node with writes since its parent no incremental is possible —
-# with compaction switched off entirely the refusal still names the checkpoint. Behind it, the PITR retention floor
-# never engages on a loaded node (its search misreads the compacted prefix, returns -1 and clears the floor). The
-# verdict reads SUBSTITUTED on every link and the chain is one full long. bank-backup-soak-nvme-rel1119pkc-full.yml
-# is the arm that passes today: the same schedule as fulls, the same no-data-loss proof, the cost of a full every
-# four minutes. Run this arm again on the Kahuna that fixes both; nothing in it needs to change.
+# THE STACK. Kahuna 1.11.9 cannot chain an incremental under load (vorpal kahuna d7353534: BackupDriver gated on the
+# application checkpoint instead of the WAL compaction floor; f3cff51a: the PITR horizon cleared the retention floor
+# when its search landed in the compacted prefix). This arm runs on the fix: ~/kahuna packed as Kahuna.Core /
+# Kahuna.Shared 1.11.11-pitr.1 into ~/camusdb/.localnuget, CamusDB.Core pinned to it and docker/Dockerfile copying
+# nuget.config and .localnuget into the build context for the image only (both reverted). Image
+# caraxes/camusdb:bankpitr1, on which bank-backup-preflight-pitr1.yml passed (run p2, 2026-10-14: a full and three
+# incrementals, 327,315 WAL entries replayed by the restore, ledger equal on every rehearsal node).
+# base_snapshot_interval_seconds is 20 s because the horizon's start-up tick runs before the partition is hosted and
+# protects nothing until the next tick (residual on f3cff51a); with a 2 h window the whole run's log is then held
+# from its first index, which is what the window asks for. bank-backup-soak-nvme-rel1119pkc-full.yml is the arm
+# that passes on the released 1.11.9 image.
 #
 # THE COST (checks). Each backup opens a window from the request to five seconds after it returns. In-window
 # throughput must stay above 80% of the clean minute before it (min_throughput_under_fault_fraction), the tail
@@ -66,11 +68,11 @@ cluster:
     # Longer than the run: an incremental whose parent aged past the WAL floor is taken as a full, and this
     # run exists to test incrementals. The window is the retained WAL (~ window x write rate).
     pitr_window_seconds: 7200
-    base_snapshot_interval_seconds: 1800
+    base_snapshot_interval_seconds: 20    # the start-up tick protects nothing; see THE STACK above
   env:
     MALLOC_ARENA_MAX: "2"
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankrel1119pkc"
+  image: "caraxes/camusdb:bankpitr1"
   camusdb:
     point_read_row_id_cache_enabled: true
 workload:

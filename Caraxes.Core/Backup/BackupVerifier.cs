@@ -93,7 +93,9 @@ public sealed class BackupVerifier
         BackupVerifyResult result = new() { Node = spec.EffectiveNode(scenario) };
         NodePlan node = plan.Nodes.First(n => n.Name == result.Node);
 
-        (result.BackupsDuringRun, result.BackupErrorsDuringRun) = CountTimelineBackups(timelinePath, result.Node);
+        (result.BackupsDuringRun, result.BackupErrorsDuringRun, int refusedAttempts) = CountTimelineBackups(timelinePath, result.Node);
+        if (refusedAttempts > 0)
+            result.Notes.Add($"FINDING: {refusedAttempts} backup attempt(s) during the run were refused before a retry succeeded (see REFUSED in timeline.jsonl)");
         if (result.BackupErrorsDuringRun > 0)
             result.Failures.Add($"{result.BackupErrorsDuringRun} backup request(s) failed during the run (see timeline.jsonl); a backup that did not happen cost nothing and proves nothing");
 
@@ -105,6 +107,8 @@ public sealed class BackupVerifier
                 BackupTaken final = await BackupClient.TakeAsync(node, plan, "incremental", cancellationToken).ConfigureAwait(false);
                 result.FinalBackup = final.Describe();
                 result.Notes.Add($"final backup: {final.Describe()}");
+                if (final.Refusals.Count > 0)
+                    result.Notes.Add($"FINDING: the final backup was refused {final.Refusals.Count} time(s) before it was taken: {string.Join(" | ", final.Refusals)}");
                 // The same expectation as the chain rule: a schedule of fulls asks for one closing
                 // incremental on purpose, and on an engine that cannot chain it, the substitution is
                 // the finding the run exists to record, not a reason to fail the rest of the proof.
@@ -331,14 +335,16 @@ public sealed class BackupVerifier
         return failures;
     }
 
-    /// <summary>Counts the nemesis's backup injects on <paramref name="node"/> and its backup errors on any node.</summary>
-    public static (int Taken, int Errors) CountTimelineBackups(string timelinePath, string node)
+    /// <summary>Counts the nemesis's backup injects on <paramref name="node"/>, its backup errors on any
+    /// node, and the attempts refused before a retry succeeded (the <c>REFUSED n attempt(s)</c> detail).</summary>
+    public static (int Taken, int Errors, int RefusedAttempts) CountTimelineBackups(string timelinePath, string node)
     {
         if (!File.Exists(timelinePath))
-            return (0, 0);
+            return (0, 0, 0);
 
         int taken = 0;
         int errors = 0;
+        int refused = 0;
         foreach (string line in File.ReadLines(timelinePath))
         {
             if (string.IsNullOrWhiteSpace(line))
@@ -351,10 +357,17 @@ public sealed class BackupVerifier
                     continue;
                 string phase = root.TryGetProperty("phase", out JsonElement p) ? p.GetString() ?? "" : "";
                 string? target = root.TryGetProperty("target", out JsonElement t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
+                string detail = root.TryGetProperty("detail", out JsonElement d) ? d.GetString() ?? "" : "";
                 if (phase == "inject" && target == node)
                     taken++;
                 else if (phase == "error")
                     errors++;
+                if (phase == "inject")
+                {
+                    System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(detail, @"REFUSED (\d+) attempt");
+                    if (m.Success)
+                        refused += int.Parse(m.Groups[1].Value);
+                }
             }
             catch (JsonException)
             {
@@ -362,7 +375,7 @@ public sealed class BackupVerifier
             }
         }
 
-        return (taken, errors);
+        return (taken, errors, refused);
     }
 
     private BackupVerifyResult Write(BackupVerifyResult result)

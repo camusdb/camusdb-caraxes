@@ -280,6 +280,16 @@ public sealed class BackupClientTests
     }
 
     [Test]
+    public void Describe_NamesRefusedAttempts()
+    {
+        NodePlan node = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: d")).Nodes[0];
+        BackupInfo full = Info("deadbeef-0000-0000-0000-000000000000", "Full", DateTime.UtcNow);
+        string line = new BackupTaken(node, "full", full, TimeSpan.FromSeconds(4), "", ["attempt 1 CADB0708: could not pin"]).Describe();
+        Assert.That(line, Does.Contain("REFUSED 1 attempt(s) first: attempt 1 CADB0708: could not pin"));
+        Assert.That(new BackupTaken(node, "full", full, TimeSpan.Zero, "").Describe(), Does.Not.Contain("REFUSED"));
+    }
+
+    [Test]
     public void Describe_NamesASubstitutionLoudly()
     {
         NodePlan node = ClusterPlan.FromSpec(ClusterSpecReader.Read("name: d")).Nodes[0];
@@ -361,15 +371,15 @@ public sealed class BackupVerifierTests
             """{"ts":"2026-10-14T10:00:00Z","offsetSeconds":0,"phase":"note","kind":"backup","target":null,"detail":"start"}""",
             """{"ts":"2026-10-14T10:01:00Z","offsetSeconds":60,"phase":"inject","kind":"backup","target":"camus1","detail":"full backup"}""",
             """{"ts":"2026-10-14T10:01:05Z","offsetSeconds":65,"phase":"heal","kind":"backup","target":"camus1","detail":"healed"}""",
-            """{"ts":"2026-10-14T10:02:00Z","offsetSeconds":120,"phase":"inject","kind":"backup","target":"camus2","detail":"incremental"}""",
+            """{"ts":"2026-10-14T10:02:00Z","offsetSeconds":120,"phase":"inject","kind":"backup","target":"camus2","detail":"incremental backup 1234 on camus2; REFUSED 2 attempt(s) first: attempt 1 CADB0708: no | attempt 2 CADB0708: no"}""",
             """{"ts":"2026-10-14T10:03:00Z","offsetSeconds":180,"phase":"error","kind":"backup","target":"camus1","detail":"inject failed: CADB0700"}""",
             """{"ts":"2026-10-14T10:04:00Z","offsetSeconds":240,"phase":"inject","kind":"kill","target":"camus1","detail":"SIGKILL"}""",
             "not json",
         ]);
         try
         {
-            Assert.That(BackupVerifier.CountTimelineBackups(path, "camus1"), Is.EqualTo((1, 1)));
-            Assert.That(BackupVerifier.CountTimelineBackups(path + ".missing", "camus1"), Is.EqualTo((0, 0)));
+            Assert.That(BackupVerifier.CountTimelineBackups(path, "camus1"), Is.EqualTo((1, 1, 2)));
+            Assert.That(BackupVerifier.CountTimelineBackups(path + ".missing", "camus1"), Is.EqualTo((0, 0, 0)));
         }
         finally
         {

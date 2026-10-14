@@ -1,0 +1,61 @@
+# PREFLIGHT ON THE FIXED KAHUNA (2026-10-14): the same path as bank-backup-preflight.yml, asked for as INCREMENTALS,
+# on the Kahuna working tree that fixes vorpal kahuna d7353534 (BackupDriver gated incrementals on the application
+# checkpoint instead of the WAL compaction floor) and f3cff51a (the PITR horizon cleared the retention floor when its
+# search landed in the compacted prefix). ~/kahuna packed as Kahuna.Core / Kahuna.Shared 1.11.11-pitr.1 into
+# ~/camusdb/.localnuget; CamusDB.Core pinned to it and docker/Dockerfile copying nuget.config and .localnuget into the
+# build context for this image only (both reverted afterwards). Image caraxes/camusdb:bankpitr1.
+#
+# Done-when: the chain on camus1 is one full followed by three incrementals (two scheduled, one closing), no
+# substitution, the restore replays WAL entries from every incremental, and the rehearsal fleet's ledger matches the
+# live one on every node. The compaction settings are the defaults: the retention floor must do the retaining.
+#
+# TWO THINGS THE FIRST RUNS ON THIS PACK FOUND (p1 and a Debug rerun, 2026-10-14). (1) The horizon's first tick runs
+# at start-up, before partition 1 is hosted, so it protects nothing, and the next tick is base_snapshot_interval_seconds
+# later: at the 600 s of p1 the floor never engaged and the incrementals were substituted exactly as before the fix;
+# at 20 s the second tick held the floor at index 1 for the whole run, both incrementals chained, and the restore
+# replayed 194,360 entries. Hence 20 s here, and a residual on vorpal kahuna f3cff51a (assert the floor when a
+# partition becomes hosted). (2) The first backup of both runs was refused with CADB0708 "could not pin MVCC history":
+# the snapshot-floor read needs the meta leader's read-index confirmation and answers MustRetry when it cannot get
+# it, which the driver reports as ExactCheckpointUnavailable; the same request 30 s later succeeds. The fault now asks
+# up to three times, three seconds apart, and writes every refused attempt to the timeline in capitals.
+name: bank-backup-preflight-pitr1
+cluster:
+  name: bank-backup-preflight-pitr1
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  backups: true
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr1"
+  kahuna:
+    pitr_window_seconds: 3600
+    base_snapshot_interval_seconds: 20    # see note (1) above: the start-up tick protects nothing
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 100s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 20s, fault: backup, target: camus1, duration: 5s }   # empty catalog: the chain starts with a full
+    - { at: 50s, fault: backup, target: camus1, duration: 5s }
+    - { at: 80s, fault: backup, target: camus1, duration: 5s }
+backup_verify:
+  node: camus1
+  final_incremental: true
+  require_unbroken_chain: true
+checks:
+  max_recovery_seconds: 30
+teardown: true

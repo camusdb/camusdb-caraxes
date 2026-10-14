@@ -110,10 +110,16 @@ public sealed class RestoreResponse
     public bool Ok => Status == "ok";
 }
 
-/// <summary>What a backup request produced, for the timeline and the verdict.</summary>
-public sealed record BackupTaken(NodePlan Node, string RequestedKind, BackupInfo Backup, TimeSpan Elapsed, string Note)
+/// <summary>What a backup request produced, for the timeline and the verdict. <paramref name="Refusals"/>
+/// lists the failure envelopes of the attempts before the one that succeeded, oldest first.</summary>
+public sealed record BackupTaken(NodePlan Node, string RequestedKind, BackupInfo Backup, TimeSpan Elapsed, string Note, IReadOnlyList<string> Refusals)
 {
-    /// <summary>One line: kind, id, parent, partitions, elapsed, and any substitution.</summary>
+    public BackupTaken(NodePlan node, string requestedKind, BackupInfo backup, TimeSpan elapsed, string note)
+        : this(node, requestedKind, backup, elapsed, note, [])
+    {
+    }
+
+    /// <summary>One line: kind, id, parent, partitions, elapsed, any substitution, and any refused attempt.</summary>
     public string Describe()
     {
         string actual = Backup.ActualKind ?? Backup.Type;
@@ -123,7 +129,10 @@ public sealed record BackupTaken(NodePlan Node, string RequestedKind, BackupInfo
         string parent = Backup.ParentBackupId is null ? "" : $", parent {Backup.ParentBackupId[..Math.Min(8, Backup.ParentBackupId.Length)]}";
         string substitution = Backup.SubstitutionReason is null ? "" : $"; SUBSTITUTED: {Backup.SubstitutionReason}";
         string note = Note.Length == 0 ? "" : $"; {Note}";
-        return $"{kind} backup {Backup.ShortId} on {Node.Name}{parent}, {Backup.PartitionCount} partition(s), {Elapsed.TotalSeconds:0.00} s{substitution}{note}";
+        string refused = Refusals.Count == 0
+            ? ""
+            : $"; REFUSED {Refusals.Count} attempt(s) first: {string.Join(" | ", Refusals)}";
+        return $"{kind} backup {Backup.ShortId} on {Node.Name}{parent}, {Backup.PartitionCount} partition(s), {Elapsed.TotalSeconds:0.00} s{substitution}{note}{refused}";
     }
 }
 
@@ -161,6 +170,18 @@ public static class BackupClient
     /// the copy plus the replay of every segment. Five minutes covers a long soak's chain.</summary>
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Attempts a backup request gets before it counts as failed, <see cref="RetryDelay"/> apart. The
+    /// engine fails a backup closed whenever it cannot prove something at that instant — the meta
+    /// leader's read-index confirmation for the snapshot floor is the case seen (preflight pitr1,
+    /// 2026-10-14: the first backup of the run refused as "could not pin MVCC history", the next
+    /// request 30 s later fine) — and an operator's job asks again. Every refused attempt is kept
+    /// on the result and written to the timeline in capitals, so a retry never hides a refusal.
+    /// </summary>
+    public const int MaxAttempts = 3;
+
+    public static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(3);
+
     public static async Task<IReadOnlyList<BackupInfo>> ListAsync(NodePlan node, CancellationToken cancellationToken)
     {
         string body = await InContainerHttp.GetAsync(node, "/v1/backups", RequestTimeout, cancellationToken).ConfigureAwait(false);
@@ -190,12 +211,39 @@ public static class BackupClient
     public static async Task<BackupTaken> TakeAsync(NodePlan node, ClusterPlan plan, string kind, CancellationToken cancellationToken)
     {
         string requested = kind.ToLowerInvariant();
-        System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+        if (!BackupFault.Kinds.Contains(requested))
+            throw new ArgumentException($"unknown backup kind '{kind}'; use full, incremental or coordinated", nameof(kind));
 
+        System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+        List<string> refusals = [];
+
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                BackupTaken taken = await TakeOnceAsync(node, plan, requested, cancellationToken).ConfigureAwait(false);
+                return taken with { Elapsed = clock.Elapsed, Refusals = refusals };
+            }
+            catch (BackupRequestException e) when (attempt < MaxAttempts)
+            {
+                refusals.Add($"attempt {attempt} {e.Message}");
+                await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (BackupRequestException e)
+            {
+                throw new BackupRequestException(e.Code,
+                    $"{e.Message.Substring(e.Code.Length + 2)} (attempt {attempt} of {MaxAttempts}" +
+                    (refusals.Count == 0 ? ")" : $"; earlier: {string.Join(" | ", refusals)})"));
+            }
+        }
+    }
+
+    private static async Task<BackupTaken> TakeOnceAsync(NodePlan node, ClusterPlan plan, string requested, CancellationToken cancellationToken)
+    {
         switch (requested)
         {
             case "full":
-                return new BackupTaken(node, requested, await TakeOneAsync(node, "/v1/backups/full", null, cancellationToken).ConfigureAwait(false), clock.Elapsed, "");
+                return new BackupTaken(node, requested, await TakeOneAsync(node, "/v1/backups/full", null, cancellationToken).ConfigureAwait(false), TimeSpan.Zero, "");
 
             case "incremental":
             {
@@ -203,12 +251,12 @@ public static class BackupClient
                 if (parent is null)
                 {
                     BackupInfo full = await TakeOneAsync(node, "/v1/backups/full", null, cancellationToken).ConfigureAwait(false);
-                    return new BackupTaken(node, requested, full, clock.Elapsed, "no backup to chain on in this node's catalog, so the chain starts here with a full");
+                    return new BackupTaken(node, requested, full, TimeSpan.Zero, "no backup to chain on in this node's catalog, so the chain starts here with a full");
                 }
 
                 string body = JsonSerializer.Serialize(new { parentBackupId = parent.BackupId });
                 BackupInfo incremental = await TakeOneAsync(node, "/v1/backups/incremental", body, cancellationToken).ConfigureAwait(false);
-                return new BackupTaken(node, requested, incremental, clock.Elapsed, "");
+                return new BackupTaken(node, requested, incremental, TimeSpan.Zero, "");
             }
 
             case "coordinated":
@@ -220,7 +268,7 @@ public static class BackupClient
                     {
                         BackupInfo taken = await TakeOneAsync(candidate, "/v1/backups/coordinated", null, cancellationToken).ConfigureAwait(false);
                         string note = candidate.Index == node.Index ? "" : $"{node.Name} is not the backup coordinator; taken on {candidate.Name}";
-                        return new BackupTaken(candidate, requested, taken, clock.Elapsed, note);
+                        return new BackupTaken(candidate, requested, taken, TimeSpan.Zero, note);
                     }
                     catch (BackupRequestException e) when (e.Code == NotCoordinatorCode)
                     {
@@ -231,7 +279,7 @@ public static class BackupClient
             }
 
             default:
-                throw new ArgumentException($"unknown backup kind '{kind}'; use full, incremental or coordinated", nameof(kind));
+                throw new ArgumentException($"unknown backup kind '{requested}'", nameof(requested));
         }
     }
 
