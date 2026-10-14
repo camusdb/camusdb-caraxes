@@ -35,6 +35,17 @@
 # from its first index, which is what the window asks for. bank-backup-soak-nvme-rel1119pkc-full.yml is the arm
 # that passes on the released 1.11.9 image.
 #
+# RUN i1 (2026-10-14, this image). All eleven backups on the first attempt: the full at 3m in 6.7 s, the ten
+# incrementals in 46-84 s each (four minutes of WAL apiece), the closing one in 32 s; chain of 12, no substitution.
+# The restore of that chain was cut off by the harness's 300 s request bound and aborted on the node, so the
+# rehearsal did not run (restore_timeout_seconds below is the fix; the replay rate measured on the preflight is
+# ~55k entries/s and this chain holds tens of millions). What the windows said: the full cost 62% of the
+# foreground while it ran (3,412 of 9,014 ops/s, the one admissible window) and the NVMe left its fast regime
+# right after it (fsync p50 0.05 -> 1.86 ms, util 21% -> 79%) and never came back, so every incremental window
+# was judged on the slow regime and reported INADMISSIBLE: 62-73% of pre-fault while an incremental ran, 85-107%
+# on three of them. The retained Raft log (the 2 h window keeps all of it) plus the catalog on the same device
+# is the write volume behind the regime move. p1 leadership moved three times during the window.
+#
 # THE COST (checks). Each backup opens a window from the request to five seconds after it returns. In-window
 # throughput must stay above 80% of the clean minute before it (min_throughput_under_fault_fraction), the tail
 # must regain 90% within 30 s and hold it (the ordinary recovery rules). The full at 3m is the expensive one: the
@@ -113,6 +124,7 @@ backup_verify:
   restore: true
   boot: true
   require_unbroken_chain: true
+  restore_timeout_seconds: 3600
 checks:
   max_recovery_seconds: 30
   min_recovered_throughput_fraction: 0.9

@@ -284,11 +284,13 @@ public static class BackupClient
     }
 
     /// <summary>Restores the chain ending at <paramref name="leafBackupId"/> into <paramref name="targetDir"/>
-    /// on the node (under its restore root), at the chain's latest recoverable point.</summary>
-    public static async Task<RestoreResponse> RestoreAsync(NodePlan node, string leafBackupId, string targetDir, CancellationToken cancellationToken)
+    /// on the node (under its restore root), at the chain's latest recoverable point. The node aborts the
+    /// restore when the request is aborted, so <paramref name="timeout"/> must cover the whole replay.</summary>
+    public static async Task<RestoreResponse> RestoreAsync(
+        NodePlan node, string leafBackupId, string targetDir, TimeSpan timeout, CancellationToken cancellationToken)
     {
         string body = JsonSerializer.Serialize(new { leafBackupId, targetDir, targetTimeMs = 0 });
-        string answer = await InContainerHttp.PostAsync(node, "/v1/restore", body, RequestTimeout, cancellationToken).ConfigureAwait(false);
+        string answer = await InContainerHttp.PostAsync(node, "/v1/restore", body, timeout, cancellationToken).ConfigureAwait(false);
         RestoreResponse restore = Parse<RestoreResponse>(answer, "/v1/restore", node);
         if (!restore.Ok)
             throw new BackupRequestException(restore.Code ?? "unknown", restore.Message ?? "restore failed");

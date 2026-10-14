@@ -155,7 +155,8 @@ public sealed class BackupVerifier
             string targetDir = $"{NodeConfigGenerator.BackupRestoreRoot}/{leaf.BackupId}";
             Console.WriteLine($"==> backup verify: restoring the chain into {targetDir} on {node.Name}");
             System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
-            RestoreResponse restore = await BackupClient.RestoreAsync(node, leaf.BackupId, targetDir, cancellationToken).ConfigureAwait(false);
+            RestoreResponse restore = await BackupClient.RestoreAsync(
+                node, leaf.BackupId, targetDir, TimeSpan.FromSeconds(spec.RestoreTimeoutSeconds), cancellationToken).ConfigureAwait(false);
             result.Restore = new RestoreOutcome(
                 restore.DataRoot ?? targetDir, restore.PartitionsRestored, restore.EntriesApplied, restore.LastAppliedPhysicalMs,
                 restore.MinRecoverablePhysicalMs, restore.MaxRecoverablePhysicalMs, restore.Chain.Count, clock.Elapsed.TotalSeconds);

@@ -45,6 +45,13 @@ public sealed class BackupVerifySpec
     /// the rehearsal fleet takes the live fleet's addresses.</summary>
     public bool Boot { get; set; } = true;
 
+    /// <summary>Seconds the restore request may take before the harness gives up on it. The node aborts the
+    /// restore when the request is aborted, so this must cover the whole replay: the base-image copy plus
+    /// every incremental's entries at the engine's replay rate (about 55,000 entries per second on the
+    /// benchmark host: 327,315 in 6 s on preflight pitr1). A 45-minute soak at ~5,000 ops/s leaves tens of
+    /// millions of entries, which the previous 300 s bound cut off (soak i1, 2026-10-14). Default 3600.</summary>
+    public int RestoreTimeoutSeconds { get; set; } = 3600;
+
     /// <summary>Fail the run when the leaf's chain does not contain every backup the run took on the
     /// node: an incremental the engine substituted with a full (its parent aged past the WAL floor)
     /// restarts the chain, and a run whose incrementals were silently fulls did not test incrementals.
@@ -59,6 +66,9 @@ public sealed class BackupVerifySpec
         if (Node.Length > 0 && !scenario.Cluster.NodeNames.Contains(Node))
             throw new ScenarioException(
                 $"'backup_verify.node' must name a node of this cluster ({string.Join(", ", scenario.Cluster.NodeNames)}), got '{Node}'");
+
+        if (RestoreTimeoutSeconds < 1)
+            throw new ScenarioException($"'backup_verify.restore_timeout_seconds' must be >= 1, got {RestoreTimeoutSeconds}");
 
         if (Boot && !Restore)
             throw new ScenarioException("'backup_verify.boot' needs 'backup_verify.restore: true'; there is nothing to boot from otherwise");

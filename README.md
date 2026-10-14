@@ -237,6 +237,7 @@ backup_verify:
   restore: true                  # POST /v1/restore into the node's restore root
   boot: true                     # the rehearsal: needs teardown: true and every node hosting every range
   require_unbroken_chain: true   # every backup the run took must still be in the leaf's chain
+  restore_timeout_seconds: 3600  # the node aborts a restore whose request is cut off; cover the whole replay
 checks:
   min_throughput_under_fault_fraction: 0.8   # in-window mean ops/s must stay above this share of the pre-fault median
 ```

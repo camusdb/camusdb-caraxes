@@ -86,7 +86,16 @@ public sealed class BackupSpecTests
         Assert.That(verify.Restore, Is.True);
         Assert.That(verify.Boot, Is.True);
         Assert.That(verify.RequireUnbrokenChain, Is.True);
+        Assert.That(verify.RestoreTimeoutSeconds, Is.EqualTo(3600));
         Assert.That(verify.EffectiveNode(spec), Is.EqualTo("camus2"), "the node the schedule names most");
+    }
+
+    [Test]
+    public void BackupVerify_RestoreTimeoutParsesAndIsBounded()
+    {
+        ScenarioSpec spec = ScenarioSpecReader.Read(Base + "backup_verify:\n  restore_timeout_seconds: 7200\n");
+        Assert.That(spec.BackupVerify!.RestoreTimeoutSeconds, Is.EqualTo(7200));
+        Assert.Throws<ScenarioException>(() => ScenarioSpecReader.Read(Base + "backup_verify:\n  restore_timeout_seconds: 0\n"));
     }
 
     [Test]

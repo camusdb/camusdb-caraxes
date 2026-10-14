@@ -29,7 +29,7 @@ public static class ScenarioSpecReader
 
     private static readonly HashSet<string> AllowedBackupVerifyKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "node", "final_incremental", "restore", "boot", "require_unbroken_chain",
+        "node", "final_incremental", "restore", "boot", "require_unbroken_chain", "restore_timeout_seconds",
     };
 
     private static readonly HashSet<string> AllowedElleKeys = new(StringComparer.OrdinalIgnoreCase)
