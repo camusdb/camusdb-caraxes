@@ -257,14 +257,8 @@ recovery rules judge the tail after a heal, and for an operation that is not an 
 cost. A window whose bar was set on the host device's slow regime is reported as inadmissible, like the held rule.
 
 See `scenarios/bank-backup-preflight.yml` (short, proves the whole path), `bank-backup-soak-nvme-rel1119pkc.yml`
-(the incremental arm) and `bank-backup-soak-nvme-rel1119pkc-full.yml` (the full arm). **On Kahuna 1.11.9 the
-incremental arm fails, and that is its finding** (preflight v1-v3, 2026-10-14): Kahuna's `BackupDriver` reads the
-partition's last *application checkpoint* (`IWAL.GetLastCheckpoint`, advanced on every flush cycle) as the WAL
-compaction floor and refuses any incremental that starts below it, so on a node that has written since its parent
-every incremental is taken as a full — with compaction switched off entirely the refusal still names the
-checkpoint. Behind it, the PITR retention floor never engages on a loaded node: the horizon tick's binary search
-reads the compacted prefix as "no entry before the boundary", returns -1, and clears the floor in Kommander. The
-full arm asks for what the engine can deliver so the data-loss and cost questions are answered today.
+(the incremental arm) and `bank-backup-soak-nvme-rel1119pkc-full.yml` (the full arm; a schedule of fulls sets
+`require_unbroken_chain: false`, because its chain is one link long by construction).
 
 ### Bank-transfer invariant workload
 
