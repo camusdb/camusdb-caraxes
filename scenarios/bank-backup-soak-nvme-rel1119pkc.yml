@@ -46,6 +46,19 @@
 # on three of them. The retained Raft log (the 2 h window keeps all of it) plus the catalog on the same device
 # is the write volume behind the regime move. p1 leadership moved three times during the window.
 #
+# RUN i2 (2026-10-14, PASS). Eleven backups on the first attempt (full 4.7 s; incrementals 41-83 s; closing 15 s),
+# chain of 12, no substitution; the restore replayed 9,623,338 WAL entries in 653 s (~14,700 entries/s on this
+# device, so size restore_timeout_seconds from that), the rehearsal fleet booted from it and all three nodes read
+# rows 2,000, SUM(balance) 2,993,071,553, SUM(version) 10,807,982 — the live ledger exactly. 9.9M ops at 3,670/s,
+# 8 conflicts, 668 indeterminate (all client-side cancellations, resolved by the ledger), 800 failed, 0 internal.
+# COST, as far as this host can say it: the NVMe left its fast regime right after the first full again, so every
+# incremental window was judged on the slow regime and reported INADMISSIBLE rather than graded; inside those
+# windows the foreground ran at 53-95% of its pre-fault rate (seven of ten at 65-93%). The whole-second outages
+# (completed 0, peak error 100%) are check-quorum step-downs behind durable-write stalls on the slow device —
+# p1 leadership moved six times — the same mechanism the fault soaks see on this device, with the backups' catalog
+# writes and the retained 2 h of Raft log on the same NVMe as the push into that regime. A tmpfs rig, or a second
+# device for /backups, is the arm that would grade the 80% floor.
+#
 # THE COST (checks). Each backup opens a window from the request to five seconds after it returns. In-window
 # throughput must stay above 80% of the clean minute before it (min_throughput_under_fault_fraction), the tail
 # must regain 90% within 30 s and hold it (the ordinary recovery rules). The full at 3m is the expensive one: the
