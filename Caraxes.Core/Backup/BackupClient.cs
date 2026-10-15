@@ -173,6 +173,12 @@ public static class BackupClient
     /// the copy plus the replay of every segment. Five minutes covers a long soak's chain.</summary>
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(5);
 
+    /// <summary>How long a backup request may run. A take is the node's own work under the run's load:
+    /// 433 s for an incremental on the soak's leader while it backfilled a joiner (replace-node n3), and
+    /// the 5-minute bound of the other requests cut one off at 300 s (curl exit 28) and wrote it down as
+    /// a failed backup. The bound is for a hang, not for a slow take; a slow take shows in the timeline.</summary>
+    public static readonly TimeSpan TakeTimeout = TimeSpan.FromMinutes(20);
+
     /// <summary>
     /// Attempts a backup request gets before it counts as failed, <see cref="RetryDelay"/> apart. The
     /// engine fails a backup closed whenever it cannot prove something at that instant — the meta
@@ -345,7 +351,7 @@ public static class BackupClient
 
     private static async Task<BackupInfo> TakeOneAsync(NodePlan node, string path, string? jsonBody, CancellationToken cancellationToken)
     {
-        string answer = await InContainerHttp.PostAsync(node, path, jsonBody, RequestTimeout, cancellationToken).ConfigureAwait(false);
+        string answer = await InContainerHttp.PostAsync(node, path, jsonBody, TakeTimeout, cancellationToken).ConfigureAwait(false);
         BackupResponse response = Parse<BackupResponse>(answer, path, node);
         if (!response.Ok)
             throw new BackupRequestException(response.Code ?? "unknown", response.Message ?? $"{path} failed");

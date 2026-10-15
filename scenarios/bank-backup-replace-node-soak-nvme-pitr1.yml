@@ -45,8 +45,20 @@
 # ran from that full: equal on every node. Reconciliation and the scan probe passed; the device was in its slow
 # regime for most backup windows (inadmissible).
 #
-# RUN n3 is the acceptance run on the same image with the two changes above: a join that survives the backfill is
-# the expected shape until c2ffa0eb lands; a short one after it.
+# RUN n3 (2026-10-15, FAIL on the replacement; the rest held). Same image, the two changes above. The add-node fired at
+# 36m and camus4 started at 43.5m (closing incremental behind the 39m backup, the restore, the chain copy now ~1 min).
+# It bootstrapped, Kommander withheld the seeded checkpoint (21.4 M) and the leader backfilled from id 1 at 2,000-3,500
+# entries/s while also taking backups and serving 128 workers; at the fault's 15-minute bound camus4 was a Learner in
+# both views with 2.5 M of 22.5 M entries, alive, no join timeout in its log: Kommander's progress-bounded ceiling
+# (d7eda742) holds, the seed (kahuna c2ffa0eb) is what is missing, and without it this join needs ~2 hours. The
+# backfill also made camus1's takes slow: 433 s, 224 s, one cut off by the harness's 300 s request bound (now 20 min
+# for a take) and the 55m one cancelled at the run's end after 431 s (dropped from the schedule). Those two are the
+# backup_verify FAIL; reconciliation, the scan probe, the live ledger and the rehearsal from the final full all held
+# (rows 2,000, SUM(version) 11,899,078 on every node). The chain restarted twice (eviction, then the join's own
+# membership change) and one take was refused once with CADB0708 before succeeding.
+#
+# RUN n4 waits for kahuna c2ffa0eb: with the seed honoured the catch-up is the ~1.5 M entries after the closing
+# incremental, and this arm becomes a measurement of the join rather than of the backfill.
 #
 # The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
 # roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
@@ -115,8 +127,7 @@ nemesis:
     - { at: 39m, fault: backup, target: camus1, duration: 5s }
     - { at: 43m, fault: backup, target: camus1, duration: 5s }
     - { at: 47m, fault: backup, target: camus1, duration: 5s }
-    - { at: 51m, fault: backup, target: camus1, duration: 5s }
-    - { at: 55m, fault: backup, target: camus1, duration: 5s }
+    - { at: 51m, fault: backup, target: camus1, duration: 5s }   # none at 55m: a take ran 7 min under the backfill (n3) and the run's end cancelled it
 backup_verify:
   node: camus1
   final_incremental: true
