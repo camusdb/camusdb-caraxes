@@ -57,8 +57,10 @@
 # (rows 2,000, SUM(version) 11,899,078 on every node). The chain restarted twice (eviction, then the join's own
 # membership change) and one take was refused once with CADB0708 before succeeding.
 #
-# RUN n4 waits for kahuna c2ffa0eb: with the seed honoured the catch-up is the ~1.5 M entries after the closing
-# incremental, and this arm becomes a measurement of the join rather than of the backfill.
+# RUN n4 (2026-10-15) is on bankpitr3 (CamusDB 2c07eb81, Kahuna.Core 1.12.2 from kahuna 7bfb3817: the seed certified
+# through the WAL's snapshot boundary, topology-diverged incrementals substituted with a full at take time). Preflight
+# r5 showed both: camus4 presented at the restored index and the chain never broke. Here the catch-up should be the
+# entries written after the closing incremental, and the 35m backup should read "taken as Full ... SUBSTITUTED".
 #
 # The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
 # roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
@@ -89,7 +91,7 @@ cluster:
   env:
     MALLOC_ARENA_MAX: "2"
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr2"
+  image: "caraxes/camusdb:bankpitr3"
   camusdb:
     point_read_row_id_cache_enabled: true
 workload:

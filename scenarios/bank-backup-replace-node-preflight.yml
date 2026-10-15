@@ -1,7 +1,8 @@
 # REPLACE A NODE FROM THE BACKUP CHAIN, PREFLIGHT (2026-10-14). The operator's recovery in one short run. Runs r1-r3
 # were on the bankpitr1 image (Kahuna.Core 1.11.11-pitr.1, the tree that fixes incremental backups; see
-# bank-backup-preflight-pitr1); r4 onward on bankpitr2 (CamusDB 367fde77 with Kahuna.Core 1.12.1 and Kommander 1.10.11:
-# the seeded join exposed, the join ceiling made progress-bounded):
+# bank-backup-preflight-pitr1); r4 on bankpitr2 (CamusDB 367fde77 with Kahuna.Core 1.12.1 and Kommander 1.10.11: the
+# seeded join exposed, the join ceiling made progress-bounded); r5 onward on bankpitr3 (CamusDB 2c07eb81 with Kahuna.Core
+# 1.12.2, packed locally from kahuna 7bfb3817: the seed certified, topology-diverged incrementals substituted at take time):
 #   20s  backup on camus1          -> the chain starts with a full
 #   40s  kill camus3, never healed -> a permanent loss; SWIM evicts it from the roster ~35 s later (5 s suspicion + 30 s grace)
 #   50s  backup on camus1          -> an incremental on the full
@@ -44,6 +45,13 @@
 # when it is present; the snapshot-boundary path is the one that stamps it (vorpal kahuna c2ffa0eb). The add-node
 # outcome now says which of the two happened, from the joiner's log. The membership-change chain refusal (7c8dc622)
 # still reproduces on Kahuna 1.12.1.
+#
+# RUN r5 (2026-10-15, PASS, first run on bankpitr3). Both findings fixed. camus4 bootstrapped from the 3-link chain
+# (308,112 entries replayed in 10.4 s) and presented at the restored index: "bootstrap: SEEDED at the restored index",
+# presence frontier 721,014 from its first batch, no "Withholding last-checkpoint advance" line; ready at 30.6 s, Voter
+# at 54.9 s (65 s in r3/r4), hosting the partition, ledger equal; rehearsal matched on every node. The closing
+# incremental after the workload was substituted at take time ("SUBSTITUTED: ... the cluster topology changed since the
+# parent chain was taken; a full backup was taken instead") instead of being published and refused: no CHAIN BROKEN.
 name: bank-backup-replace-node-preflight
 cluster:
   name: bank-backup-replace-node-preflight
@@ -54,7 +62,7 @@ cluster:
   isolation: read_committed
   backups: true
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr2"
+  image: "caraxes/camusdb:bankpitr3"
   kahuna:
     pitr_window_seconds: 3600
     base_snapshot_interval_seconds: 20    # the start-up horizon tick protects nothing (vorpal kahuna f3cff51a, residual)
