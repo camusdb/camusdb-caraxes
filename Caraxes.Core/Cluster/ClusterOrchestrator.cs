@@ -16,9 +16,11 @@ namespace Caraxes.Core.Cluster;
 /// directory was deleted.
 /// </summary>
 /// <summary>What a runtime joiner bootstraps from: the leaf backup its data root was restored from,
-/// and the host directory of the catalog that holds that chain (the target node's), which is copied
-/// into the joiner's own backup mount. See <see cref="ClusterOrchestrator.LaunchJoinerAsync"/>.</summary>
-public sealed record JoinerSeed(string LeafBackupId, string CatalogHostDir);
+/// the host directory of the catalog that holds that chain (the target node's), and the ids of the
+/// chain's links, which are the only entries copied into the joiner's own backup mount. A catalog
+/// holds every backup the node ever took (17 GB after 45 minutes of the soak, run n2); the bootstrap
+/// reads one chain of it. See <see cref="ClusterOrchestrator.LaunchJoinerAsync"/>.</summary>
+public sealed record JoinerSeed(string LeafBackupId, string CatalogHostDir, IReadOnlyList<string> ChainBackupIds);
 
 public sealed class ClusterOrchestrator
 {
@@ -191,6 +193,23 @@ public sealed class ClusterOrchestrator
              plan.Spec.NodeImage, "-c", "cp -a /caraxes-source/. /caraxes-target/"],
             cancellationToken: cancellationToken);
 
+    /// <summary>Copies the named backups out of a catalog: each one's artifact directory and its
+    /// manifest (<c>{id:N}/</c> and <c>{id:N}.manifest</c>, Kahuna's catalog layout), preserving
+    /// ownership and modes, from a throwaway container on the node image. A missing entry fails the
+    /// copy: a chain with a link missing cannot be bootstrapped from.</summary>
+    public Task CopyCatalogEntriesAsRootAsync(string catalogHostDir, string targetHostDir, IReadOnlyList<string> backupIds, CancellationToken cancellationToken = default)
+    {
+        IEnumerable<string> names = backupIds.Select(id => Guid.Parse(id).ToString("N"));
+        string script = "set -e; for n in " + string.Join(' ', names) + "; do cp -a \"/caraxes-source/$n\" \"/caraxes-source/$n.manifest\" /caraxes-target/; done";
+        return ProcessRunner.RunCheckedAsync(
+            "docker",
+            ["run", "--rm", "--entrypoint", "sh",
+             "-v", $"{Path.GetFullPath(catalogHostDir)}:/caraxes-source:ro",
+             "-v", $"{Path.GetFullPath(targetHostDir)}:/caraxes-target",
+             plan.Spec.NodeImage, "-c", script],
+            cancellationToken: cancellationToken);
+    }
+
     /// <summary>
     /// Disaster-recovery rehearsal: brings the same fleet up again with every node's <c>/data</c> taken
     /// from <c>{restoredRoot}/{node}</c>, a copy of a restored data root. Same project, names, addresses
@@ -262,8 +281,8 @@ public sealed class ClusterOrchestrator
         {
             if (!spec.Backups)
                 throw new InvalidOperationException($"{joiner.Name} cannot bootstrap from a backup: the cluster runs without backups");
-            Console.WriteLine($"==> copying the backup catalog under {seed.CatalogHostDir} into {joiner.Name}'s backup mount for the bootstrap");
-            await CopyTreeAsRootAsync(seed.CatalogHostDir, Path.Combine(BackupsDirOf(joiner), "catalog"), cancellationToken).ConfigureAwait(false);
+            Console.WriteLine($"==> copying the {seed.ChainBackupIds.Count}-link chain ending at {seed.LeafBackupId} from the catalog under {seed.CatalogHostDir} into {joiner.Name}'s backup mount for the bootstrap");
+            await CopyCatalogEntriesAsRootAsync(seed.CatalogHostDir, Path.Combine(BackupsDirOf(joiner), "catalog"), seed.ChainBackupIds, cancellationToken).ConfigureAwait(false);
         }
 
         List<string> args =

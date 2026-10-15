@@ -21,8 +21,9 @@ namespace Caraxes.Core.Nemesis;
 ///
 /// <para>Seeding. With <c>seed_from_backup: true</c> (the default) the fault takes one closing
 /// incremental on the target node, restores that chain on the target into its restore root, copies
-/// the restored data root into the joiner's data directory and the target's catalog into the joiner's
-/// backup mount, and boots the joiner with <c>--pitr-bootstrap-from</c> naming the closing backup:
+/// the restored data root into the joiner's data directory and the chain's links (only those) from
+/// the target's catalog into the joiner's backup mount, and boots the joiner with
+/// <c>--pitr-bootstrap-from</c> naming the closing backup:
 /// CamusDB replays the chain into the store and writes the restored index into the empty WAL before
 /// Raft starts, so the node presents at that index and the leader ships only the delta since. The
 /// target is the node whose catalog holds the chain, usually the one the run's <c>backup</c> events
@@ -97,6 +98,7 @@ public sealed class AddNodeFault : IFault
         Directory.CreateDirectory(dataDir);
 
         string? leaf = null;
+        IReadOnlyList<BackupInfo>? chain = null;
         RestoreOutcome? restore = null;
         string seededFrom = "nothing (empty data root; the leader seeds it)";
         if (seedFromBackup)
@@ -106,6 +108,7 @@ public sealed class AddNodeFault : IFault
             string targetDir = $"{NodeConfigGenerator.BackupRestoreRoot}/{leaf}";
             Stopwatch restoreClock = Stopwatch.StartNew();
             RestoreResponse response = await BackupClient.RestoreAsync(target, leaf, targetDir, context.RestoreTimeout, cancellationToken).ConfigureAwait(false);
+            chain = response.Chain;
             restore = new RestoreOutcome(
                 response.DataRoot ?? targetDir, response.PartitionsRestored, response.EntriesApplied, response.LastAppliedPhysicalMs,
                 response.MinRecoverablePhysicalMs, response.MaxRecoverablePhysicalMs, response.Chain.Count, restoreClock.Elapsed.TotalSeconds);
@@ -114,7 +117,9 @@ public sealed class AddNodeFault : IFault
             seededFrom = $"{target.Name}'s chain at {closing.Backup.ShortId} ({closing.Describe()}; restore of {response.Chain.Count} link(s) replayed {response.EntriesApplied:N0} entries in {restoreClock.Elapsed.TotalSeconds:0.0} s)";
         }
 
-        JoinerSeed? seed = leaf is null ? null : new JoinerSeed(leaf, Path.Combine(orchestrator.BackupsDirOf(target), "catalog"));
+        JoinerSeed? seed = leaf is null
+            ? null
+            : new JoinerSeed(leaf, Path.Combine(orchestrator.BackupsDirOf(target), "catalog"), chain!.Select(b => b.BackupId).ToList());
         await orchestrator.LaunchJoinerAsync(joiner, dataDir, seed, cancellationToken).ConfigureAwait(false);
         context.LaunchedNodes.Add(joiner);
 

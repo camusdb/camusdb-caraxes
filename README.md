@@ -258,7 +258,8 @@ to `backup-verify.json`; a step that could not run fails the run rather than bei
 5 s suspicion plus 30 s grace by default — and an `add-node` scheduled after it boots a replacement that joins
 the survivors through CamusDB's `--join-existing`. With `seed_from_backup: true` (the default) the fault takes a
 closing incremental on the target node, restores that chain on the target into its restore root, copies the
-restored data root into the joiner's data directory and the target's catalog into the joiner's backup mount, and
+restored data root into the joiner's data directory and the chain's links from the target's catalog into the
+joiner's backup mount (only those: a catalog holds every backup the node ever took), and
 boots the joiner with `--pitr-bootstrap-from` naming the closing backup: the node replays the chain and writes the
 restored index into its empty WAL before Raft starts, so it presents at that index and the leader ships only the
 delta since the backup. The injection's outcome says whether the seed was honoured (CamusDB's "Seeded the node"

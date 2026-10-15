@@ -30,10 +30,23 @@
 # being overwritten). Until then the kill window's throughput cost is read, not graded: the floor applies to healed
 # windows only.
 #
-# RUN n2 (2026-10-14) is the acceptance run on bankpitr2 (CamusDB 367fde77, Kahuna.Core 1.12.1, Kommander 1.10.11):
-# the join ceiling is now progress-bounded (d7eda742 fixed) and the joiner starts with --pitr-bootstrap-from. The
-# preflight (r4) showed the seed is written but not honoured (kahuna c2ffa0eb: the node still presents at index 0), so
-# the expected shape is a join that survives the backfill rather than a short one.
+# RUN n2 (2026-10-14, FAIL on the replacement, harness-shaped; the rest held). First run on bankpitr2 (CamusDB 367fde77,
+# Kahuna.Core 1.12.1, Kommander 1.10.11: the join ceiling progress-bounded, the joiner started with
+# --pitr-bootstrap-from). The add-node fired at 36m and camus4 started at 47m: its closing incremental queued behind
+# the 35m backup (refused after the eviction, so a 182 s full) and the 39m one, then the restore of the 3-link chain
+# took minutes, then the harness copied camus1's WHOLE catalog (17 GB, 16 backups) into camus4's mount, 4.5 minutes.
+# The workload ended at 45m+drain and cancelled the inject after 669 s, so camus4 never counted. Two changes from it:
+# the harness now copies only the chain's links (2.5 GB here), and the workload runs 60m with backups through 55m so
+# the join has its window. What camus4's log showed in its two minutes is the finding from the preflight at scale:
+# the seed wrote checkpoint 21,535,090 and Kommander withheld it ("landed over a gap (floor -1, first missing id 1)"),
+# so the leader backfilled from id 1 at ~8,500 entries/s (851 k in 100 s): about 45 minutes to catch up on 23 M
+# entries the restored store already held (kahuna c2ffa0eb). The membership change of the join itself also refused
+# the closing incremental after the workload (7c8dc622 again), so the chain restarted with a full and the rehearsal
+# ran from that full: equal on every node. Reconciliation and the scan probe passed; the device was in its slow
+# regime for most backup windows (inadmissible).
+#
+# RUN n3 is the acceptance run on the same image with the two changes above: a join that survives the backfill is
+# the expected shape until c2ffa0eb lands; a short one after it.
 #
 # The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
 # roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
@@ -74,7 +87,7 @@ workload:
   mode: closed
   workers: 128
   connections: 64
-  duration: 45m
+  duration: 60m        # was 45m through run n2: the join needs the room, see RUN n2
   warmup: 2m
   drain: 30s
   read_percent: 50
@@ -101,6 +114,9 @@ nemesis:
     - { at: 36m, fault: add-node, target: camus1, duration: 5s, seed_from_backup: true }   # camus4 joins the survivors
     - { at: 39m, fault: backup, target: camus1, duration: 5s }
     - { at: 43m, fault: backup, target: camus1, duration: 5s }
+    - { at: 47m, fault: backup, target: camus1, duration: 5s }
+    - { at: 51m, fault: backup, target: camus1, duration: 5s }
+    - { at: 55m, fault: backup, target: camus1, duration: 5s }
 backup_verify:
   node: camus1
   final_incremental: true
