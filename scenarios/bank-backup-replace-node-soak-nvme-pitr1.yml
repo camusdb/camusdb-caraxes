@@ -62,6 +62,18 @@
 # r5 showed both: camus4 presented at the restored index and the chain never broke. Here the catch-up should be the
 # entries written after the closing incremental, and the 35m backup should read "taken as Full ... SUBSTITUTED".
 #
+# RUN n4 (2026-10-15, PASS). The replacement joined under load: the add-node fired at 36m, its closing backup was taken
+# as a full (101 s; the topology had moved since the chain, substituted at take time), the 1-link restore took 25 s,
+# camus4 started at ~40m and presented at index 15,908,527, the restored point, 580 k entries behind the leader
+# ("bootstrap: SEEDED at the restored index"); ready at 140 s, Voter at 329 s, hosting the partition, and after the
+# workload it read the live ledger exactly (rows 2,000, SUM(version) 11,708,610). Compare n3: 22.5 M entries to
+# backfill, 2.5 M done at the 15-minute bound. The 35m backup read "taken as Full ... SUBSTITUTED" (95 s) instead of
+# CHAIN BROKEN; the 39m one was refused once with CADB070D (the topology changed during the backup: the join) and then
+# taken as a full (240 s); 43m, 47m and 51m chained on it in 20-66 s. 13 backups, 0 failed; the closing chain of 5
+# restored 2,922,336 entries in 260 s and the rehearsal matched on every node. Reconciliation and the scan probe
+# passed; the device sat in its slow regime (fsync p50 ~2 ms, util >90%), so the throughput windows are inadmissible,
+# as on the incremental arm. The add-node window ran at 2,653 ops/s against a 3,015 ops/s run mean.
+#
 # The no-data-loss proof is the incremental arm's plus one: after the workload camus4 must be a Voter in camus1's
 # roster, ready, hosting the partition, and read the live ledger exactly; then the closing incremental, the chain,
 # the restore, and the rehearsal of the original three slots from it.
