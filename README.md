@@ -1,5 +1,7 @@
 # Caraxes
 
+[![nightly-append](https://github.com/camusdb/camusdb-caraxes/actions/workflows/nightly-append.yml/badge.svg)](https://github.com/camusdb/camusdb-caraxes/actions/workflows/nightly-append.yml)
+
 Jepsen-style reliability/chaos testing harness for [CamusDB](../camusdb). Caraxes orchestrates a
 Docker cluster of CamusDB nodes from a declarative YAML spec, drives SQL load through
 `CamusDB.Workload`, injects faults (kills, partitions, latency, membership changes), and renders a
@@ -517,6 +519,15 @@ Phased build-out (see the project plan): cluster orchestration (done) → worklo
 → nemesis fault injection + membership changes (done) → invariant workloads, verdict engine, and a
 scenario matrix (done) → disk faults (`fill-disk`, `slow-disk` done; device-mapper corruption pending) →
 Elle history checking (list-append done; predicate and index workloads pending).
+
+## Complementary verifications
+
+Caraxes tests CamusDB end to end. The layers below it have their own Jepsen suites:
+
+- [Kahuna Jepsen](https://github.com/kahunakv/kahuna-jepsen) — Jepsen tests for Kahuna, the
+  distributed key/value and locking layer under CamusDB.
+- [Kommander Jepsen](https://github.com/kahunakv/kommander-jepsen) — Jepsen tests for Kommander,
+  the Raft consensus library under Kahuna.
 
 ## Blog
 
