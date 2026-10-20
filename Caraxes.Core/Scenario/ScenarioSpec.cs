@@ -36,6 +36,10 @@ public sealed class ScenarioSpec
     /// restore it, boot the cluster from the restore and read the ledger back. Absent = not verified.</summary>
     public BackupVerifySpec? BackupVerify { get; set; }
 
+    /// <summary>The post-run proof that the schema changes the run made converged on every node and match
+    /// the data: indexes against the primary key, added columns, foreign keys. Absent = not verified.</summary>
+    public SchemaVerifySpec? SchemaVerify { get; set; }
+
     /// <summary>The Elle check of an append run's history. Defaulted when omitted; ignored for the
     /// other workload shapes, which write no history.</summary>
     public ElleSpec Elle { get; set; } = new();
@@ -171,6 +175,7 @@ public sealed class ScenarioSpec
         }
 
         BackupVerify?.Validate(this);
+        SchemaVerify?.Validate();
 
         // Cross-block, so it lives here rather than in WorkloadSpec: the workload names a node and
         // only the cluster block knows how many there are. Caught at read time because the

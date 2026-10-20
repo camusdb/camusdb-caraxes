@@ -56,9 +56,9 @@ backup on the node, see below), `add-node` (boot a replacement that joins the cl
 `partition` (iptables-isolate a node from all peers), `slow` / `loss` (tc netem latency / packet
 loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-capped tmpfs data mount, see
 below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
-below), `clock-skew` (move one node's wall clock forward or back, see below), and `remove-node`
-(drain via `/v1/cluster/leave`, a one-way scale-down). Targets are a node
-name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
+below), `clock-skew` (move one node's wall clock forward or back, see below), `remove-node`
+(drain via `/v1/cluster/leave`, a one-way scale-down), and `sql` (an online schema change or bulk write, see
+below). Targets are a node name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
 applies to each, so `kill` of a zone kills the whole zone together). Every healable fault still in
 effect when the workload finishes is healed on the way out, so the cluster is never left broken.
 
@@ -289,6 +289,69 @@ cost. A window whose bar was set on the host device's slow regime is reported as
 See `scenarios/bank-backup-preflight.yml` (short, proves the whole path), `bank-backup-soak-nvme-rel1119pkc.yml`
 (the incremental arm) and `bank-backup-soak-nvme-rel1119pkc-full.yml` (the full arm; a schedule of fulls sets
 `require_unbroken_chain: false`, because its chain is one link long by construction).
+
+### Online schema changes under load (`sql` fault and `schema_verify`)
+
+The `sql` nemesis fault runs one SQL statement on its target node while the workload runs: an online schema change
+(`CREATE INDEX`, `ALTER TABLE ... ADD COLUMN`, `ADD CONSTRAINT ... FOREIGN KEY`, `DROP INDEX`) or a bulk write
+(`INSERT ... SELECT`, a large `DELETE`). It is scheduled like a fault, so a kill, partition or pause can be timed to
+land inside it, and the correlator grades what it cost. The statement goes from the host to the node's REST port
+(`/execute-sql-ddl`, `/execute-sql-non-query` or `/execute-sql-query`, by its leading keyword); a follower forwards
+DDL to the schema leader, so sending each statement to a different node puts the forwarding in the path. The window
+runs from the request to `duration` after it is answered; a schema change waits for its whole backfill, so the window
+covers it. Two `sql` events on one node must not overlap (windows are keyed by kind and node).
+
+A statement refused with a retryable code (`CADB0502`, `CADB0504`) is sent again with backoff, up to `sql_retries`
+(default 10), and the attempt count goes to the timeline and the verdict. `expect` says what the statement must do:
+`ok` (the default), `error` (it must be refused), or `any` (a fault scheduled into its window may cut it, and
+`schema_verify` judges what it left). A statement whose outcome does not match fails the run.
+
+`schema_verify` runs after the workload, on the live, quiescent cluster:
+
+- **Convergence.** Every node must report each listed element in the same state, and the state must hold for
+  `stable_seconds`, so a job a fault interrupted has been resumed or rolled back first. Then each element must match
+  its `expect`: `present`, `absent`, or `either`.
+- **Indexes.** The table is read through `@{FORCE_INDEX=pk}` and through `@{FORCE_INDEX=<index>}`, projecting the
+  primary key, the key columns and the `INCLUDE` columns, and the two reads must hold the same rows with the same
+  values (a covering index answers from its own entries, so a stale entry shows up as a value mismatch). Then
+  `probe_rows` rows spread over the key space are looked up through the index at their current key, which catches
+  an entry left at an old key even for a non-covering index. A `unique` index must also have unique keys.
+- **Columns.** Every row must hold `value` (the workload never writes the column, so only the fill and the inserts'
+  default can), with no NULL (`not_null`, default true), and with `distinct: true` no value twice (a function or
+  identity default).
+- **Foreign keys.** Present means `SHOW CREATE TABLE` renders the constraint (only a public one is rendered); no
+  child row may reference a missing parent.
+- **Assertions.** A query run on every node whose first value must equal `equals`.
+- **The application's view.** `max_workload_errors` (default 0, -1 off) fails the run when the workload recorded
+  non-retryable errors: an online change is meant to cost the application retryable conflicts only.
+- **The coordinator's evidence**, from the node logs: an `Abandoning coordinator job` line fails the run, and
+  `require_resume: true` fails it as VACUOUS when no node logged `Resuming coordinator job`, because then the fault
+  missed the change it was aimed at.
+
+The findings go to the verdict and to `schema-verify.json`. The bank ledger's own checks still apply, and they are
+the lost-update guard for a column fill, which rewrites rows the transfers update.
+
+```yaml
+nemesis:
+  events:
+    - { at: 30s,  fault: sql,  target: camus2, expect: any, sql: "ALTER TABLE workload_accounts ADD COLUMN tier INT64 NOT NULL DEFAULT (7)" }
+    - { at: 36s,  fault: kill, target: camus2, duration: 15s }    # the node holding the request
+    - { at: 56s,  fault: kill, target: camus3, duration: 15s }    # rolling: one of them leads the schema partition
+    - { at: 76s,  fault: kill, target: camus1, duration: 15s }
+    - { at: 130s, fault: sql,  target: camus1, expect: any, sql: "ALTER TABLE workload_accounts ADD COLUMN tier INT64 NOT NULL DEFAULT (7)" }
+schema_verify:
+  require_resume: true
+  indexes: [ { table: workload_accounts, name: acct_balance, columns: [balance], include: [version] } ]
+  columns: [ { table: workload_accounts, name: tier, value: "7" } ]
+  foreign_keys: [ { table: workload_holds, name: fk_holds_account, column: account_id, parent: workload_accounts } ]
+  assertions: [ { sql: "SELECT COUNT(*) FROM workload_holds WHERE amount < 20", equals: "0" } ]
+```
+
+There is no HTTP surface that names the schema leader, so a scenario that must kill the coordinator kills every node
+in turn while the change runs, and `require_resume` proves one of the kills landed. Re-sending the cut statement after
+the faults heal (`expect: any`) and requiring the element `present` proves a cut change either finished or rolled back
+cleanly enough to run again. See `scenarios/schema-preflight.yml`, `schema-add-column-kill.yml` and
+`schema-index-kill.yml`.
 
 ### Bank-transfer invariant workload
 

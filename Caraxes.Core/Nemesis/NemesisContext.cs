@@ -28,14 +28,40 @@ public sealed record JoinedNode(
 /// </summary>
 public sealed class NemesisContext
 {
-    public NemesisContext(HttpProbes probes, ClusterOrchestrator? orchestrator = null, TimeSpan? restoreTimeout = null)
+    public NemesisContext(
+        HttpProbes probes, ClusterOrchestrator? orchestrator = null, TimeSpan? restoreTimeout = null, string database = "caraxes")
     {
         Probes = probes;
         Orchestrator = orchestrator;
         RestoreTimeout = restoreTimeout ?? TimeSpan.FromHours(1);
+        Database = database;
     }
 
     public HttpProbes Probes { get; }
+
+    /// <summary>The workload's database, which the <c>sql</c> fault's statements run in.</summary>
+    public string Database { get; }
+
+    private readonly Lock sqlGate = new();
+
+    private readonly List<SqlStatementOutcome> sqlStatements = [];
+
+    /// <summary>Every <c>sql</c> event's outcome, in completion order. Read by the verdict and the
+    /// schema verification after the workload.</summary>
+    public IReadOnlyList<SqlStatementOutcome> SqlStatements
+    {
+        get
+        {
+            lock (sqlGate)
+                return sqlStatements.ToList();
+        }
+    }
+
+    public void RecordSql(SqlStatementOutcome outcome)
+    {
+        lock (sqlGate)
+            sqlStatements.Add(outcome);
+    }
 
     public ClusterOrchestrator? Orchestrator { get; }
 

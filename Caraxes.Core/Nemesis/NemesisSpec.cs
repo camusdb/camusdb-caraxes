@@ -48,7 +48,7 @@ public sealed class NemesisSpec
 public sealed class NemesisEvent
 {
     /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node |
-    /// leader-transfer | clock-skew | backup | add-node.</summary>
+    /// leader-transfer | clock-skew | backup | add-node | sql.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -117,6 +117,23 @@ public sealed class NemesisEvent
     /// start empty. Default true.</summary>
     public bool SeedFromBackup { get; set; } = true;
 
+    /// <summary>The statement the <c>sql</c> fault runs on the target node: DDL (an online schema change)
+    /// or a bulk write. Required for <c>sql</c>, refused for every other kind.</summary>
+    public string? Sql { get; set; }
+
+    /// <summary>What the <c>sql</c> statement must do: <c>ok</c> (the default), <c>error</c> (it must be
+    /// refused, e.g. a delete a foreign key forbids), or <c>any</c> (a fault scheduled into its window
+    /// may cut it; <c>schema_verify</c> then judges what it left).</summary>
+    public string Expect { get; set; } = "ok";
+
+    /// <summary>Bound on one <c>sql</c> statement, from the host. A schema change waits for its whole
+    /// backfill, so this must cover the backfill of the largest table. Default 1800.</summary>
+    public int SqlTimeoutSeconds { get; set; } = 1800;
+
+    /// <summary>How many times the <c>sql</c> fault resends a statement refused with a retryable code
+    /// (<c>CADB0502</c>, <c>CADB0504</c>). Default 10; 0 tests the first attempt alone.</summary>
+    public int SqlRetries { get; set; } = 10;
+
     /// <summary>The index of a <c>camusN</c> name, or null when the name is not of that form.</summary>
     public static int? ParseNodeIndex(string name)
     {
@@ -133,6 +150,22 @@ public sealed class NemesisEvent
 
         if (To is not null && Fault != "leader-transfer")
             throw new NemesisException($"nemesis event '{Fault}': 'to' is only meaningful for leader-transfer");
+
+        if (Fault == "sql" && string.IsNullOrWhiteSpace(Sql))
+            throw new NemesisException("nemesis event 'sql': give the statement to run in 'sql'");
+
+        if (Fault != "sql" && Sql is not null)
+            throw new NemesisException($"nemesis event '{Fault}': 'sql' is only meaningful for the sql fault");
+
+        if (!SqlFault.Expectations.Contains(Expect))
+            throw new NemesisException(
+                $"nemesis event '{Fault}': expect must be one of {string.Join(", ", SqlFault.Expectations)}, got '{Expect}'");
+
+        if (SqlRetries < 0)
+            throw new NemesisException($"nemesis event '{Fault}': sql_retries must be >= 0, got {SqlRetries}");
+
+        if (SqlTimeoutSeconds < 1)
+            throw new NemesisException($"nemesis event '{Fault}': sql_timeout_seconds must be >= 1, got {SqlTimeoutSeconds}");
 
         if (NodeName.Length > 0 && Fault != "add-node")
             throw new NemesisException($"nemesis event '{Fault}': 'node_name' is only meaningful for add-node");
@@ -192,7 +225,11 @@ public sealed class RandomNemesisSpec
             throw new NemesisException("nemesis.random.faults is empty");
 
         foreach (string fault in Faults)
+        {
             FaultFactory.EnsureKnownKind(fault);
+            if (fault == "sql")
+                throw new NemesisException("nemesis.random cannot draw 'sql': a statement has to be written out, so schedule it as an event");
+        }
 
         try
         {

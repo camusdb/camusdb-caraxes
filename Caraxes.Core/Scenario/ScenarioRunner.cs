@@ -145,6 +145,17 @@ public sealed class ScenarioRunner
                     TimeSpan.FromSeconds(scenario.DrainObservationIntervalSeconds),
                     cancellationToken).ConfigureAwait(false));
 
+            // Still up, and quiescent: no writer is left, so the primary key and every index it is compared
+            // with hold still while they are read, and a job a fault interrupted has had its chance to resume.
+            if (scenario.SchemaVerify is not null)
+            {
+                Console.WriteLine("==> verifying the schema changes on the live cluster");
+                List<NodePlan> schemaNodes = plan.Nodes.Concat(nemesisContext?.JoinedNodes.Select(j => j.Node) ?? []).ToList();
+                schemaVerify = await new Caraxes.Core.Schema.SchemaVerifier(scenario.SchemaVerify, scenario.Workload.Database, schemaNodes)
+                    .VerifyAsync(nemesisContext?.SqlStatements ?? [], Path.Combine(artifactsDir, "run", "schema-verify.json"), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             // Still up, and quiescent: the chain is closed over the final ledger and the live
             // fingerprint is read now, so the rehearsal after teardown has something exact to match.
             if (scenario.BackupVerify is not null)
@@ -225,6 +236,9 @@ public sealed class ScenarioRunner
     private Caraxes.Core.Backup.BackupVerifier? backupVerifier;
 
     private Caraxes.Core.Backup.BackupVerifyResult? backupVerify;
+
+    /// <summary>The schema verification, when the scenario asked for one.</summary>
+    private Caraxes.Core.Schema.SchemaVerifyResult? schemaVerify;
 
     /// <summary>
     /// Waits for partition leadership to settle before the measured window opens, and records where it
@@ -344,7 +358,7 @@ public sealed class ScenarioRunner
         Task placementTask = placementPoller.RunAsync(sideStop.Token);
         Task hostIoTask = hostIo.RunAsync(sideStop.Token);
         nemesisContext = new NemesisContext(
-            probes, orchestrator, TimeSpan.FromSeconds(scenario.BackupVerify?.RestoreTimeoutSeconds ?? 3600));
+            probes, orchestrator, TimeSpan.FromSeconds(scenario.BackupVerify?.RestoreTimeoutSeconds ?? 3600), scenario.Workload.Database);
         Task? nemesisTask = scenario.Nemesis is null
             ? null
             : new NemesisRunner(plan, nemesisContext).RunAsync(scenario.Nemesis, timelinePath, sideStop.Token);
@@ -582,6 +596,8 @@ public sealed class ScenarioRunner
         GradeElle(notes, ref passed);
         GradeAddNode(notes, ref passed);
         GradeBackupVerify(notes, ref passed);
+        GradeSqlStatements(notes, ref passed);
+        GradeSchemaVerify(outputDir, notes, ref passed);
         GradeDivergentApply(outputDir, notes, ref passed);
         GradeSuspend(notes, ref passed);
         GradeHostLoad(notes, ref passed);
@@ -658,6 +674,111 @@ public sealed class ScenarioRunner
         if (errors > 0 || injects < scheduled || joined < scheduled)
         {
             notes.Add($"  CHECK FAILED: add-node: {scheduled - joined} of {scheduled} replacement node(s) did not join as Voter (see timeline.jsonl and the joiner's node log)");
+            passed = false;
+        }
+    }
+
+    /// <summary>
+    /// Fails a run in which a scheduled <c>sql</c> statement did not do what its <c>expect</c> said, or
+    /// never ran. The nemesis is best-effort for faults that decorate the workload; a schema change that
+    /// was refused is the scenario's claim not happening, so it is graded like a verification step.
+    /// </summary>
+    private void GradeSqlStatements(List<string> notes, ref bool passed)
+    {
+        int scheduled = scenario.Nemesis?.Events.Count(e => e.Fault == "sql") ?? 0;
+        if (scheduled == 0)
+            return;
+
+        IReadOnlyList<SqlStatementOutcome> outcomes = nemesisContext?.SqlStatements ?? [];
+        notes.Add($"sql: {scheduled} scheduled, {outcomes.Count} ran, {outcomes.Count(o => o.Ok)} ok, " +
+                  $"{outcomes.Count(o => o.Answered && !o.Ok)} refused, {outcomes.Count(o => !o.Answered)} cut");
+        foreach (SqlStatementOutcome o in outcomes)
+        {
+            if (o.MetExpectation)
+            {
+                notes.Add($"  sql on {o.Node}: {o.Describe()}");
+                continue;
+            }
+
+            notes.Add($"  CHECK FAILED: sql on {o.Node} (expect {o.Expect}): {o.Describe()}");
+            passed = false;
+        }
+
+        if (outcomes.Count < scheduled)
+        {
+            notes.Add($"  CHECK FAILED: sql: {scheduled - outcomes.Count} of {scheduled} statement(s) never ran (see timeline.jsonl: a target that did not resolve, or a run that ended first)");
+            passed = false;
+        }
+    }
+
+    /// <summary>
+    /// Fails a run whose <c>schema_verify</c> stage found anything, or could not run, and reads the
+    /// coordinator's own evidence from the node logs: an abandoned job fails the run, and with
+    /// <c>require_resume</c> a run in which no job was resumed is VACUOUS.
+    /// </summary>
+    private void GradeSchemaVerify(string outputDir, List<string> notes, ref bool passed)
+    {
+        if (scenario.SchemaVerify is null)
+            return;
+
+        if (schemaVerify is null)
+        {
+            notes.Add("  CHECK FAILED: schema verify: the stage did not run (the workload or seeding failed before it)");
+            passed = false;
+            return;
+        }
+
+        notes.Add($"schema verify: {(schemaVerify.Passed ? "PASS" : "FAIL")} on {schemaVerify.Nodes.Count} node(s)" +
+                  (schemaVerify.ConvergedAfterSeconds is double s ? $", converged after {s:0.0} s" : ", never converged") +
+                  " (schema-verify.json)");
+        foreach (string note in schemaVerify.Notes.Where(n => !n.StartsWith("sql on ", StringComparison.Ordinal)))
+            notes.Add($"  {note}");
+        foreach (string failure in schemaVerify.Failures)
+            notes.Add($"  CHECK FAILED: schema verify: {failure}");
+        if (!schemaVerify.Passed)
+            passed = false;
+
+        if (scenario.SchemaVerify.MaxWorkloadErrors >= 0)
+        {
+            WorkloadErrorCounts errors = WorkloadErrorCounts.Read(Path.Combine(outputDir, "errors.json"));
+            string byCode = string.Join("; ", errors.ByCode.Select(kv => $"{kv.Key} x{kv.Value.Count}: {kv.Value.Sample}"));
+            if (errors.Total > scenario.SchemaVerify.MaxWorkloadErrors)
+            {
+                notes.Add($"  CHECK FAILED: schema verify: the server refused {errors.Total} workload operation(s) with a non-retryable code " +
+                          $"(max_workload_errors {scenario.SchemaVerify.MaxWorkloadErrors}; {errors.Unattributed} more had no verdict and are not counted): {byCode}");
+                passed = false;
+            }
+            else
+            {
+                notes.Add($"  workload errors: {errors.Total} refused (max {scenario.SchemaVerify.MaxWorkloadErrors}), {errors.Unattributed} without a verdict" +
+                          (errors.Total > 0 ? $" — {byCode}" : ""));
+            }
+        }
+
+        CoordinatorLogResult jobs = CoordinatorLogCheck.Scan(outputDir);
+        if (!jobs.LogsFound)
+        {
+            notes.Add("  coordinator jobs: NOT CHECKED — no node logs were captured");
+            if (scenario.SchemaVerify.RequireResume)
+            {
+                notes.Add("  CHECK FAILED: schema verify: require_resume needs the node logs");
+                passed = false;
+            }
+            return;
+        }
+
+        notes.Add($"  coordinator jobs: {jobs.Resumed.Count} resumed, {jobs.Abandoned.Count} abandoned" +
+                  (jobs.Resumed.Count > 0 ? $" — {string.Join("; ", jobs.Resumed.Take(5))}" : ""));
+        foreach (string line in jobs.Abandoned)
+        {
+            notes.Add($"  CHECK FAILED: schema verify: a coordinator job was abandoned: {line}");
+            passed = false;
+        }
+
+        if (scenario.SchemaVerify.RequireResume && jobs.Resumed.Count == 0)
+        {
+            notes.Add("  CHECK FAILED: VACUOUS: no node resumed a coordinator job, so no fault interrupted a schema change " +
+                      "(require_resume: true); lengthen the change (more rows) or move the fault into its window");
             passed = false;
         }
     }

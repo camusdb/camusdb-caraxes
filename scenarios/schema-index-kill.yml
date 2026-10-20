@@ -1,0 +1,56 @@
+# CREATE INDEX ON A BUSY TABLE WHILE THE NODES DIE ONE BY ONE. The index is on balance, covering version: every transfer
+# moves two entries while the backfill builds them, which is the WriteOnly-plus-backfill hand-off at its busiest.
+# Same rolling-kill shape as schema-add-column-kill: the statement's own node first, then the other two, so the
+# schema leader dies with the job in flight and the next one must resume the backfill from its checkpoint.
+#   30s   CREATE INDEX acct_balance, sent to camus2
+#   34s   kill camus2 / 54s camus3 / 74s camus1, 15 s each
+#   130s  the same CREATE INDEX again on camus1          -> refused as a duplicate if the job finished, built if it rolled back
+# After the workload the index must exist on every node and hold exactly the rows the primary key holds, each with its
+# current balance and version, and every sampled row must be found through the index at its current balance.
+#
+# BLOCKED ON CAMUSDB (schema-preflight p1/p2, 2026-10-20, image bankpitr3). On this build CREATE INDEX cannot complete on
+# a table under sustained writes: the backfill reads 500 rows per transaction and keeps them as commit dependencies
+# (SchemaDdlService.BackfillIndexEntriesAsync), a transfer that updates any of them aborts the batch with CADB0502, and
+# the batch is not retried, so the whole statement fails and the index is dropped again. Eleven attempts over 40 s all
+# failed on 20,000 rows at 32 workers. Until the backfill retries a batch the way the ADD COLUMN fill does, this
+# scenario fails at its first statement and its require_resume check reports VACUOUS; it is the regression test for
+# that fix.
+name: schema-index-kill
+cluster:
+  name: schema-index-kill
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr3"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 60000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 200s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 30s,  fault: sql,  target: camus2, duration: 5s, expect: any, sql: "CREATE INDEX acct_balance ON workload_accounts (balance) INCLUDE (version)" }
+    - { at: 34s,  fault: kill, target: camus2, duration: 15s }
+    - { at: 54s,  fault: kill, target: camus3, duration: 15s }
+    - { at: 74s,  fault: kill, target: camus1, duration: 15s }
+    - { at: 130s, fault: sql,  target: camus1, duration: 5s, expect: any, sql: "CREATE INDEX acct_balance ON workload_accounts (balance) INCLUDE (version)" }
+schema_verify:
+  require_resume: true
+  indexes:
+    - { table: workload_accounts, name: acct_balance, columns: [balance], include: [version] }
+checks:
+  max_recovery_seconds: 60
+teardown: true

@@ -24,7 +24,13 @@ public static class ScenarioSpecReader
     {
         "name", "cluster", "workload", "nemesis", "checks", "teardown", "settle_seconds",
         "capture_node_logs", "node_log_tail", "drain_observation_seconds", "drain_observation_interval_seconds",
-        "precondition_device_gb", "elle", "backup_verify",
+        "precondition_device_gb", "elle", "backup_verify", "schema_verify",
+    };
+
+    private static readonly HashSet<string> AllowedSchemaVerifyKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "converge_timeout_seconds", "stable_seconds", "probe_rows", "query_timeout_seconds", "require_resume", "max_workload_errors",
+        "indexes", "columns", "foreign_keys", "assertions",
     };
 
     private static readonly HashSet<string> AllowedBackupVerifyKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -122,6 +128,7 @@ public static class ScenarioSpecReader
         RejectNested(root, "checks", AllowedChecksKeys);
         RejectNested(root, "elle", AllowedElleKeys);
         RejectNested(root, "backup_verify", AllowedBackupVerifyKeys);
+        RejectNested(root, "schema_verify", AllowedSchemaVerifyKeys);
     }
 
     private static void RejectNested(Dictionary<string, object> root, string section, HashSet<string> allowed)
