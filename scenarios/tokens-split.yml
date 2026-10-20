@@ -1,0 +1,67 @@
+# TOKEN WORKLOAD WHILE KEY RANGES SPLIT. The token table is all churn: every move deletes a key and inserts
+# another, so a range that splits under it is copying a key space whose members change every millisecond, and a
+# tombstone or a fresh insert that the copy misses is a resurrected or a lost token. 3,000 tokens over a 300-key
+# split threshold (the slot index is a key space of its own and splits too), with the split settings of bank-split,
+# and a partition and a kill on top. Same verdict as tokens-preflight; require_split fails the run as VACUOUS when
+# no split happened during the measured run.
+#
+# RUN s1 (2026-10-20, image bankpitr3): every correctness check PASS while six partitions appeared (splits) under the
+# churn: 3,000 rows for 3,000 tokens, 47,129 moves committed and 34 indeterminate all accounted for per slot, 19,989
+# snapshot lookups clean, 174 probes with no short or over count, slot index equal to the primary key on all three
+# nodes. Throughput never regained 90% after the camus1 kill. 20 snapshot lookups were refused CADB0502 "Range ... is
+# locked" under key-range sharding, although a serializable read-only snapshot is documented as never blocked.
+name: tokens-split
+cluster:
+  name: tokens-split
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr3"
+  kahuna:
+    range_split_threshold: 300
+    range_split_min_range_size: 100
+    range_split_load_threshold: 100
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    range_split_settle_window_ms: 15000
+    enable_load_reports: true
+workload:
+  kind: tokens
+  tokens: 3000
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 150s
+  warmup: 15s
+  drain: 10s
+  read_percent: 30
+  write_percent: 70
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 59
+  events:
+    - { at: 40s, fault: partition, target: random, duration: 20s }
+    - { at: 90s, fault: kill,      target: random, duration: 20s }
+schema_verify:
+  stable_seconds: 5
+  max_workload_errors: -1
+  indexes:
+    - { table: workload_tokens, name: workload_tokens_slot, columns: [slot] }
+checks:
+  max_recovery_seconds: 60
+  grade_recovery: false   # a correctness arm: a contended token table under 32 writers collapses into contention after a fault,
+                          # so throughput recovery is reported in analysis.md but does not decide the verdict
+  require_split: true
+teardown: true

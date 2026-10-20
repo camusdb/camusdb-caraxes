@@ -1,0 +1,42 @@
+# TOKEN WORKLOAD PREFLIGHT: the bank transfer for deletes, fault-free. 2,000 tokens live in workload_tokens, one
+# row per slot; every write deletes a slot's row and inserts its successor (a fresh key, the same key, or the key
+# the previous move deleted) in one transaction, and every read looks a slot up in a read-only transaction. The
+# table holds exactly 2,000 rows at every committed state, which the in-window scan probe counts every 5 s on
+# every gateway, and after the run every slot must hold one row at the generation its committed moves account
+# for. A lost delete shows as a slot with two rows, a lost insert as a slot with none, a double spend as two
+# commits from one generation, a stale index entry as a slot index that disagrees with the primary key.
+# schema_verify repeats the index comparison from the host on every node. Not a measurement; it proves the path.
+#
+# RUN t1 (2026-10-20, image bankpitr3): PASS. 94,985 moves committed (fresh 31,050, same 31,805, back 32,130), every
+# slot exact, 40,396 snapshot lookups and 163 probes clean, no error. The race path was exercised: 1,238 moves refused
+# CADB0502 and 755 CADB0504 at commit, 19 deletes found their row already gone, 49 lookups straddled a racing move.
+name: tokens-preflight
+cluster:
+  name: tokens-preflight
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr3"
+workload:
+  kind: tokens
+  tokens: 2000
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 120s
+  warmup: 15s
+  drain: 10s
+  read_percent: 30
+  write_percent: 70
+  scan_probe_interval: 5s
+schema_verify:
+  stable_seconds: 5
+  max_workload_errors: -1        # the workload's own verdict judges this run; the index cross-check is what is wanted here
+  indexes:
+    - { table: workload_tokens, name: workload_tokens_slot, columns: [slot] }
+teardown: true

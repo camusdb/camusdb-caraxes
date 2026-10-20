@@ -83,6 +83,55 @@ public sealed class ReconciliationSummary
 
     /// <summary>The in-window scan probe's verdict, or null when the run did not probe.</summary>
     public ScanProbeSummary? ScanProbe { get; set; }
+
+    /// <summary>The token workload's verdict on its own table, or null for every other shape.</summary>
+    public TokenSummary? Tokens { get; set; }
+}
+
+/// <summary>
+/// The subset of the token workload's verdict the scenario reports: how many moves committed and how
+/// the final table compared with the journal. The pass/fail is already folded into
+/// <see cref="ReconciliationSummary.Passed"/>, and every finding is in its failures; this is the note.
+/// </summary>
+public sealed class TokenSummary
+{
+    public string Status { get; set; } = "";
+
+    public long Tokens { get; set; }
+
+    public long Rows { get; set; }
+
+    public long Committed { get; set; }
+
+    public long Indeterminate { get; set; }
+
+    public long ConflictRetries { get; set; }
+
+    public long ConflictFinal { get; set; }
+
+    public long Errors { get; set; }
+
+    public long Reads { get; set; }
+
+    public long ReadViolations { get; set; }
+
+    public long MissingSlots { get; set; }
+
+    public long DuplicateSlots { get; set; }
+
+    public long GenBelow { get; set; }
+
+    public long GenAbove { get; set; }
+
+    public long DoubleCommits { get; set; }
+
+    public long IndexMissing { get; set; }
+
+    public long IndexExtra { get; set; }
+
+    public Dictionary<string, long> MovesByKind { get; set; } = [];
+
+    public bool Passed { get; set; }
 }
 
 /// <summary>
@@ -98,6 +147,10 @@ public sealed class ScanProbeSummary
     public long Exact { get; set; }
 
     public long Short { get; set; }
+
+    /// <summary>Counts above the expected rows: only the token table can produce one (a deleted row seen
+    /// next to its successor).</summary>
+    public long Over { get; set; }
 
     public long Errors { get; set; }
 

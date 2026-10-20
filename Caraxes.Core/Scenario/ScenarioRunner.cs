@@ -560,10 +560,22 @@ public sealed class ScenarioRunner
             notes.Add(
                 $"scan probe: {(probe.Passed ? "PASS" : "FAIL")} — {probe.Probes:N0} COUNT(*) probe(s) on " +
                 $"{probe.Gateways} gateway(s), {probe.InWindowProbes:N0} in the window, {probe.Short:N0} short, " +
+                (probe.Over > 0 ? $"{probe.Over:N0} over, " : "") +
                 $"{probe.Errors:N0} failed, lowest count {probe.MinRows:N0}, " +
                 $"{probe.MeanElapsedMs:N0} ms mean / {probe.MaxElapsedMs:N0} ms max");
         else if (reconciliation is not null)
             notes.Add("scan probe: not run — scan visibility under load was not tested (set workload.scan_probe_interval)");
+
+        // The findings themselves are already reconciliation failures; this says what was moved and read.
+        if (reconciliation?.Tokens is TokenSummary tokens)
+            notes.Add(
+                $"tokens: {(tokens.Passed ? "PASS" : "FAIL")} — {tokens.Rows:N0} row(s) for {tokens.Tokens:N0} token(s), " +
+                $"{tokens.Committed:N0} move(s) committed " +
+                $"({string.Join(", ", tokens.MovesByKind.Select(kv => $"{kv.Key} {kv.Value:N0}"))}), " +
+                $"{tokens.Indeterminate:N0} indeterminate, {tokens.ConflictRetries:N0} conflict retries, " +
+                $"{tokens.ConflictFinal:N0} gave up, {tokens.Reads:N0} lookup(s) with {tokens.ReadViolations:N0} violation(s) (token-ledger.csv)");
+        else if (scenario.Workload.Kind == "tokens")
+            notes.Add("tokens: NO VERDICT — reconciliation.json carries no token result");
 
         // A scenario passes when the workload accepted the run AND reconciliation held — that is the
         // real consistency guard (versions, row count, accounting all balanced). Internal errors get

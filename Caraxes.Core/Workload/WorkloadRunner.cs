@@ -220,6 +220,9 @@ public sealed class WorkloadRunner
             AppendIfPositive(workloadArgs, "--append-max-txn-length", scenario.Workload.AppendMaxTxnLength);
         }
 
+        if (scenario.Workload.Kind == "tokens")
+            AppendIfPositive(workloadArgs, "--tokens", scenario.Workload.Tokens);
+
         List<string> notes = [];
 
         // Said out loud because it changes what the number means: a single-gateway run is not
@@ -290,7 +293,7 @@ public sealed class WorkloadRunner
         return new WorkloadRunPlan(workloadArgs, notes);
     }
 
-    private static void AppendIfPositive(List<string> args, string flag, int value)
+    private static void AppendIfPositive(List<string> args, string flag, long value)
     {
         if (value <= 0)
             return;

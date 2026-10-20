@@ -67,6 +67,7 @@ public static class ScenarioSpecReader
         "connection_options", "pipeline",
         "scan_probe_timeout",
         "append_keys", "append_max_writes_per_key", "append_max_txn_length",
+        "tokens",
     };
 
     public static ScenarioSpec ReadFile(string path)

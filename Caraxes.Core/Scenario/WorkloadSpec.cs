@@ -25,8 +25,18 @@ public sealed class WorkloadSpec
     /// <c>append</c> runs Elle list-append transactions on a table of its own and records every attempt
     /// to <c>history.edn</c>; the scenario's <c>elle:</c> step then checks that history for dependency
     /// cycles, which no conserved sum can see. The seeded dataset is still created and reconciled, but
-    /// the append shape leaves it untouched.</summary>
+    /// the append shape leaves it untouched.
+    /// <c>tokens</c> is the bank transfer for deletes: a table of <see cref="Tokens"/> rows, one per
+    /// slot, where each write deletes a slot's row and inserts its successor in one transaction, so the
+    /// table holds exactly that many rows at every committed state. After the run each slot must hold
+    /// one row at the generation its committed moves account for; a read-only lookup must always find
+    /// exactly one; the in-window scan probe counts the table too. Lost deletes, lost inserts, double
+    /// spends and stale index entries each fail the run. The seeded dataset is untouched.</summary>
     public string Kind { get; set; } = "accounts";
+
+    /// <summary><c>tokens</c> only: tokens in the table (<c>--tokens</c>). Fewer tokens means more moves
+    /// racing for the same row. 0 leaves the workload default (2000).</summary>
+    public long Tokens { get; set; }
 
     /// <summary><c>append</c> only: lists active at one time (<c>--append-keys</c>). Fewer keys means
     /// more contention and more dependency edges for Elle. 0 leaves the workload default (10).</summary>
@@ -221,8 +231,14 @@ public sealed class WorkloadSpec
 
     public void Validate()
     {
-        if (Kind is not ("accounts" or "bank" or "fanout" or "append"))
-            throw new ScenarioException($"'workload.kind' must be 'accounts', 'bank', 'fanout' or 'append', got '{Kind}'");
+        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "tokens"))
+            throw new ScenarioException($"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append' or 'tokens', got '{Kind}'");
+
+        if (Tokens < 0)
+            throw new ScenarioException($"'workload.tokens' must be >= 0 (0 = workload default), got {Tokens}");
+
+        if (Kind != "tokens" && Tokens > 0)
+            throw new ScenarioException($"'workload.tokens' applies only to 'workload.kind: tokens', but kind is '{Kind}'");
 
         if (AppendKeys < 0 || AppendMaxWritesPerKey < 0 || AppendMaxTxnLength < 0)
             throw new ScenarioException(

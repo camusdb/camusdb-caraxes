@@ -1,0 +1,60 @@
+# TOKEN WORKLOAD UNDER LEADER CHURN: the reproduction arm for a snapshot that counted rows an aborted move deleted.
+#
+# tokens-faults run f1 (2026-10-20, image bankpitr3): at 15:47:33Z two serializable read-only COUNT(*) probes of
+# workload_tokens returned 490 and 491 of 500, on camus2 and camus3 in the same second. In that second camus1 won
+# an unscheduled election for partition 1 (term 6), which holds the token rows, and 13 in-flight moves were refused
+# ("Refusing the one-phase bundle ... staged intents were confirmed in term 5, and the partition is led in term 6";
+# "Refusing to commit ... the write intent its staged write ... relied on lapsed or was dropped"). None of those
+# moves committed: the final table and the journal agree exactly. So the snapshot hid rows whose deletes never
+# committed. Run f2 had the same trigger three times and no short count; the probe samples every 5 s and the
+# in-doubt window is short.
+#
+# A graceful handover does not produce it: run c1 handed leadership over every 15 s, probed every second (1,131
+# snapshot counts, all exactly 500) and logged no refused move at all, because a clean transfer leaves no intent
+# staged in the old term. This arm takes the leader away instead, alternating a 10 s pause (it wakes holding intents
+# of a term that is gone) and a 10 s kill, every 25 s, and probes every second on every gateway inside a snapshot.
+# A short or over count fails the run through the scan probe.
+#
+# RUN c2 (2026-10-20, image bankpitr3, this schedule): not reproduced. Partition 1 changed leader 7 times with 19
+# in-flight moves refused, and all 834 snapshot counts (one per second per gateway) were exactly 500; tokens PASS
+# (64,838 moves committed, 63 indeterminate, 27,643 snapshot lookups clean).
+name: tokens-leader-churn
+cluster:
+  name: tokens-leader-churn
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr3"
+workload:
+  kind: tokens
+  tokens: 500
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 200s
+  warmup: 15s
+  drain: 10s
+  read_percent: 30
+  write_percent: 70
+  expect_faults: true
+  scan_probe_interval: 1s
+nemesis:
+  seed: 3
+  events:
+    - { at: 20s, fault: pause, target: leader, duration: 10s }
+    - { at: 45s, fault: kill, target: leader, duration: 10s }
+    - { at: 70s, fault: pause, target: leader, duration: 10s }
+    - { at: 95s, fault: kill, target: leader, duration: 10s }
+    - { at: 120s, fault: pause, target: leader, duration: 10s }
+    - { at: 145s, fault: kill, target: leader, duration: 10s }
+    - { at: 170s, fault: pause, target: leader, duration: 10s }
+checks:
+  max_recovery_seconds: 60
+  grade_recovery: false   # a correctness arm: a 500-token table under 32 writers collapses into contention after a fault,
+                          # so throughput recovery is reported in analysis.md but does not decide the verdict
+teardown: true

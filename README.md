@@ -362,6 +362,36 @@ changed sum is direct evidence of an atomicity break. This invariant is checked 
 **never waived** — unlike conflicts, an atomicity violation is a correctness failure a chaos run must
 catch. See `scenarios/bank-kill.yml`.
 
+### Delete workload (`tokens`)
+
+`workload.kind: tokens` is the bank transfer for deletes. A table of its own, `workload_tokens`, holds
+`workload.tokens` rows (default 2,000), one per slot. Each write is a **move**: it reads a slot's row through
+the non-unique slot index, `DELETE`s it (the delete must match the row just read; a racing move that got there
+first sends this one back to `BEGIN`), and `INSERT`s the successor at the next generation, in one transaction.
+The successor's key is either a fresh key, the key just deleted (reuse inside the transaction), or the key
+the slot's previous move deleted (reuse of a key whose delete an earlier transaction committed). Each read is
+a serializable read-only transaction (CamusDB's snapshot, whatever isolation the moves run at) that looks one
+slot up and must find exactly one row. At read committed a statement reads the latest committed version of each
+key, so an index lookup and its row fetch may straddle a move; a snapshot may not.
+
+The table holds exactly `tokens` rows at every committed state, so the checks are exact and never waived:
+
+- **In the window.** The scan probe counts `workload_tokens` alongside the dataset on every gateway, inside a
+  snapshot (the dataset counts are unchanged); a count
+  above the token count (`over`) is a deleted row seen next to its successor, a count below it a lost one. A
+  read-only lookup that finds no row or two fails the run.
+- **After the run**, against the workload's journal (`token-ledger.csv`): every slot holds exactly one row (two
+  is a committed delete that came back, or a double spend; none is a lost insert); its generation lies between
+  the moves that committed and those plus the moves whose commit had no verdict (below is a lost committed
+  move, above a move the client saw fail that applied); no two moves committed from one generation; and the
+  slot index holds exactly the primary key's rows.
+
+The index is deliberately not unique: two moves of one generation that both commit leave two rows, so the only
+thing preventing a double spend is the engine's conflict detection on the deleted row. The seeded dataset is
+created and reconciled as usual and left untouched. The verdict goes to `reconciliation.json` (`Tokens`) and the
+scenario notes. See `scenarios/tokens-preflight.yml`, `tokens-faults.yml`, `tokens-split.yml` and
+`tokens-leader-churn.yml` (leaders paused and killed every 25 s, the scan probe every second).
+
 ### Many-table workload (`fanout`) and range auto-split
 
 `workload.kind: fanout` is the bank transfer spread over many tables. `workload.tables: N` cuts the

@@ -1,0 +1,62 @@
+# TOKEN WORKLOAD UNDER FAULTS: deletes and their successors while leaders die, freeze, lose the network and hand
+# over. Same table and verdict as tokens-preflight (exactly one row per slot, at the generation the committed
+# moves account for, no double spend, slot index equal to the primary key, every read-only lookup finding one
+# row, and the scan probe counting exactly 2,000 rows on every gateway throughout). 500 tokens at 32 workers, so
+# moves race for the same row and the delete's conflict detection is what stands between them and a double spend.
+#   30s   kill the partition leader for 20 s        -> moves in flight on it end indeterminate; their slots get a band
+#   75s   pause a node for 25 s                     -> a frozen follower falls behind and is caught up by backfill
+#   125s  partition a node for 20 s
+#   170s  hand every partition's leadership over    -> moves straddle the leader change
+#
+# RUN f1 (2026-10-20, image bankpitr3): tokens PASS (62,498 moves committed, 28 indeterminate, every slot exact,
+# 26,629 snapshot lookups clean, slot index equal to the primary key on all three nodes), but the scan probe caught
+# two serializable read-only COUNT(*) of workload_tokens at 15:47:33Z returning 490 and 491 of 500 (camus2, camus3,
+# same second). No nemesis fault was active: camus1 had just won an unscheduled election for partition 1 (term 6,
+# the token rows) and 13 in-flight moves were refused ("Refusing the one-phase bundle ... staged intents were
+# confirmed in term 5, and the partition is led in term 6"; "Refusing to commit ... the write intent its staged
+# write ... relied on lapsed or was dropped"). Those moves never committed, so the snapshot hid rows whose deletes
+# did not commit. Not reproduced since: f2 (the same schedule; partition 1 changed leader 3 times with 36 refused
+# moves; 210 probes exact) and tokens-leader-churn c1/c2. Throughput did not regain 90% within 60 s after the kill
+# and the partition (161.7 s and 65.1 s) in f1, and after the partition and the transfer in f2.
+name: tokens-faults
+cluster:
+  name: tokens-faults
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bankpitr3"
+workload:
+  kind: tokens
+  tokens: 500
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 220s
+  warmup: 15s
+  drain: 10s
+  read_percent: 30
+  write_percent: 70
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 11
+  events:
+    - { at: 30s,  fault: kill,            target: leader, duration: 20s }
+    - { at: 75s,  fault: pause,           target: random, duration: 25s }
+    - { at: 125s, fault: partition,       target: random, duration: 20s }
+    - { at: 170s, fault: leader-transfer, target: leader, duration: 5s }
+schema_verify:
+  stable_seconds: 5
+  max_workload_errors: -1
+  indexes:
+    - { table: workload_tokens, name: workload_tokens_slot, columns: [slot] }
+checks:
+  max_recovery_seconds: 60
+  grade_recovery: false   # a correctness arm: a 500-token table under 32 writers collapses into contention after a fault,
+                          # so throughput recovery is reported in analysis.md but does not decide the verdict
+teardown: true
