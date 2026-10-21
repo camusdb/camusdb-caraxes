@@ -28,6 +28,10 @@
 #
 # RUN s5 (2026-10-21, PASS, image kahuna1131, Kahuna.Core 1.13.1): 55,918 moves exact, 23,914 snapshot lookups clean,
 # 149 probes all exact, 174 moves gave up.
+# RUN s6 (2026-10-21, PASS, image startfix1): 53,313 moves committed, 13 indeterminate, 22,684 lookups clean; 140 probes
+# in the window, none short.
+# RUN s7 (2026-10-21, PASS, image kahuna1133 = Kahuna.Core 1.13.3): 53,584 moves committed, 37 indeterminate, 22,870
+# lookups clean; 126 probes in the window, none short or over.
 name: tokens-split
 cluster:
   name: tokens-split
@@ -41,7 +45,7 @@ cluster:
   isolation: read_committed
   diagnostics: true
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:resumefix1"
+  image: "caraxes/camusdb:kahuna1133"
   kahuna:
     range_split_threshold: 300
     range_split_min_range_size: 100

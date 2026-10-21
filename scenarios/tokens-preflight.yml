@@ -10,6 +10,10 @@
 # RUN t1 (2026-10-20, image bankpitr3): PASS. 94,985 moves committed (fresh 31,050, same 31,805, back 32,130), every
 # slot exact, 40,396 snapshot lookups and 163 probes clean, no error. The race path was exercised: 1,238 moves refused
 # CADB0502 and 755 CADB0504 at commit, 19 deletes found their row already gone, 49 lookups straddled a racing move.
+# RUN t2 (2026-10-21, PASS, image startfix1 = CamusDB f58798d4, Kahuna.Core 1.13.2): 78,011 moves committed, 0
+# indeterminate, 33,335 lookups clean; 142 probes in the window, none short.
+# RUN t3 (2026-10-21, PASS, image kahuna1133 = CamusDB f58798d4, Kahuna.Core 1.13.3): 77,188 moves committed, 0
+# indeterminate, 32,991 lookups clean; 142 probes in the window, none short or over.
 name: tokens-preflight
 cluster:
   name: tokens-preflight
@@ -19,7 +23,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:resumefix1"
+  image: "caraxes/camusdb:kahuna1133"
 workload:
   kind: tokens
   tokens: 2000

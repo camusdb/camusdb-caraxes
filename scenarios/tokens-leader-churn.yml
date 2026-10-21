@@ -18,6 +18,16 @@
 # RUN c2 (2026-10-20, image bankpitr3, this schedule): not reproduced. Partition 1 changed leader 7 times with 19
 # in-flight moves refused, and all 834 snapshot counts (one per second per gateway) were exactly 500; tokens PASS
 # (64,838 moves committed, 63 indeterminate, 27,643 snapshot lookups clean).
+# RUN c3 (2026-10-21, FAIL, image startfix1 = CamusDB f58798d4, Kahuna.Core 1.13.2): tokens PASS (63,433 moves committed,
+# 61 indeterminate, 27,060 lookups clean), but 3 of 694 snapshot COUNT(*) probes read 499 of 500, at 19:47:29.10 (camus1),
+# 29.36 and 30.34 (camus2); camus3 read 500 in between. No fault was active (the last healed at 19:47:09); at 19:47:28 a
+# leader-balancer handover moved partition 2 to camus1 (term 9 -> 10) and refused 9 in-flight moves: the f1/s2 shape,
+# but on a build with the history fence, and the short scans took a normal ~230 ms (no MustRetry wait). Three moves
+# committed at ~28.51 kept live prepared intents on partition 2 until at least 29.8. Filed as vorpal 82aaed88.
+# RUN c4, c5, c6 (2026-10-21, PASS, image kahuna1133 = CamusDB f58798d4, Kahuna.Core 1.13.3 with the 82aaed88 fix: the
+# range scan captures prepared intents before each page read): 65,572 / 72,585 / 71,489 moves committed, 62 / 43 / 65
+# indeterminate, 28,019 / 31,013 / 30,633 lookups clean; 563 / 668 / 648 probes in the window, none short or over,
+# across 26 / 23 / 25 elections (c3 had 27) and 2 / 4 / 0 refused one-phase bundles.
 name: tokens-leader-churn
 cluster:
   name: tokens-leader-churn
@@ -27,7 +37,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:resumefix1"
+  image: "caraxes/camusdb:kahuna1133"
 workload:
   kind: tokens
   tokens: 500

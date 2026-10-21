@@ -31,6 +31,10 @@
 #
 # RUN f6 (2026-10-21, PASS, image kahuna1131, Kahuna.Core 1.13.1): 70,765 moves exact, 30,314 snapshot lookups clean,
 # 222 probes with none short.
+# RUN f7 (2026-10-21, PASS, image startfix1): 63,788 moves committed, 17 indeterminate, 27,184 lookups clean; 202 probes
+# in the window, none short.
+# RUN f8 (2026-10-21, PASS, image kahuna1133 = Kahuna.Core 1.13.3): 72,801 moves committed, 21 indeterminate, 31,127
+# lookups clean; 206 probes in the window, none short or over (13 elections, 6 refused one-phase bundles).
 name: tokens-faults
 cluster:
   name: tokens-faults
@@ -40,7 +44,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:resumefix1"
+  image: "caraxes/camusdb:kahuna1133"
 workload:
   kind: tokens
   tokens: 500
