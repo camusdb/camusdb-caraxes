@@ -101,19 +101,21 @@ public sealed class SchemaVerifier
         if (elements.Count > 0)
             await ConvergeAsync(elements, live, result, cancellationToken).ConfigureAwait(false);
 
-        if (result.Failures.Count == 0)
+        // Every element every node agrees is present gets its content check, even when another element failed to
+        // converge: a missing foreign key must not hide a corrupt index (schema-preflight p3 did exactly that).
+        // The assertions read the end state as a whole, so they run only when every element converged.
+        bool converged = result.Failures.Count == 0;
+        foreach (NodePlan node in live)
         {
-            foreach (NodePlan node in live)
-            {
-                foreach (IndexExpectation index in spec.Indexes.Where(i => result.States.GetValueOrDefault(IndexLabel(i)) == "present"))
-                    await CheckIndexAsync(node, index, result, cancellationToken).ConfigureAwait(false);
-                foreach (ColumnExpectation column in spec.Columns.Where(c => result.States.GetValueOrDefault(ColumnLabel(c)) == "present"))
-                    await CheckColumnAsync(node, column, result, cancellationToken).ConfigureAwait(false);
-                foreach (ForeignKeyExpectation fk in spec.ForeignKeys.Where(f => result.States.GetValueOrDefault(ForeignKeyLabel(f)) == "present"))
-                    await CheckForeignKeyAsync(node, fk, result, cancellationToken).ConfigureAwait(false);
+            foreach (IndexExpectation index in spec.Indexes.Where(i => result.States.GetValueOrDefault(IndexLabel(i)) == "present"))
+                await CheckIndexAsync(node, index, result, cancellationToken).ConfigureAwait(false);
+            foreach (ColumnExpectation column in spec.Columns.Where(c => result.States.GetValueOrDefault(ColumnLabel(c)) == "present"))
+                await CheckColumnAsync(node, column, result, cancellationToken).ConfigureAwait(false);
+            foreach (ForeignKeyExpectation fk in spec.ForeignKeys.Where(f => result.States.GetValueOrDefault(ForeignKeyLabel(f)) == "present"))
+                await CheckForeignKeyAsync(node, fk, result, cancellationToken).ConfigureAwait(false);
+            if (converged)
                 foreach (SqlAssertion assertion in spec.Assertions)
                     await CheckAssertionAsync(node, assertion, result, cancellationToken).ConfigureAwait(false);
-            }
         }
 
         Write(result, reportPath);
@@ -508,20 +510,30 @@ public sealed class IndexComparison
                 cmp.DuplicatePrimary.Add(id);
         }
 
-        Dictionary<string, int> seen = [];
+        // Every entry of a row, in index order: a row returned twice is named with all of its entries, because a
+        // stale entry (an old value the backfill or a writer left behind) and an exact double point at different paths.
+        Dictionary<string, List<string>> seen = [];
         foreach (JsonElement[] row in byIndex)
         {
             string id = SqlRest.Canonical(row[0]);
-            int count = seen.GetValueOrDefault(id) + 1;
-            seen[id] = count;
-            if (count == 2)
-                cmp.Duplicated.Add(id);
+            if (!seen.TryGetValue(id, out List<string>? entries))
+                seen[id] = entries = [];
+            entries.Add(Values(row));
 
             if (!primary.TryGetValue(id, out string? expected))
-                cmp.Extra.Add(id);
-            else if (count == 1 && expected != Values(row))
+            {
+                if (entries.Count == 1)
+                    cmp.Extra.Add(id);
+            }
+            else if (entries.Count == 1 && expected != Values(row))
                 cmp.Mismatched.Add($"{id}: index ({Values(row)}) vs primary key ({expected})");
         }
+
+        foreach ((string id, List<string> entries) in seen)
+            if (entries.Count > 1)
+                cmp.Duplicated.Add(primary.TryGetValue(id, out string? expected)
+                    ? $"{id}: index ({string.Join(") + (", entries)}) vs primary key ({expected})"
+                    : $"{id}: index ({string.Join(") + (", entries)}), not in the primary key");
 
         foreach (string id in primary.Keys)
             if (!seen.ContainsKey(id))

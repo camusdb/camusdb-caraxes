@@ -10,6 +10,12 @@
 # snapshot lookups clean, 174 probes with no short or over count, slot index equal to the primary key on all three
 # nodes. Throughput never regained 90% after the camus1 kill. 20 snapshot lookups were refused CADB0502 "Range ... is
 # locked" under key-range sharding, although a serializable read-only snapshot is documented as never blocked.
+#
+# RUN s2 (2026-10-20, FAIL, image schemafix1 = CamusDB 00027613, 5 splits). The snapshot lookups are no longer refused
+# by a range lock (20 in s1, 0 here) and throughput rose 19%. The token verdict and the index check pass. The scan
+# probe caught a snapshot COUNT(*) of 2,998 of 3,000 on camus3 at 00:16:51Z, in the second the leader balancer moved
+# partition 4 back to the restarted camus1 (elected after 0 ms) and 21 in-flight moves were refused with "no longer
+# led under term 3": the tokens-faults f1 shape (camusdb 4dc1945f), now under key-range sharding.
 name: tokens-split
 cluster:
   name: tokens-split
@@ -23,7 +29,7 @@ cluster:
   isolation: read_committed
   diagnostics: true
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr3"
+  image: "caraxes/camusdb:schemafix1"
   kahuna:
     range_split_threshold: 300
     range_split_min_range_size: 100

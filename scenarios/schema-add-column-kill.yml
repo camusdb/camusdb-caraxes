@@ -31,6 +31,12 @@
 # schema leader to camus1, which resumed seq -> Public, lost a fill batch to a transfer ("Coordinator resume failed ...
 # (conflict)", the k1 finding again), rolled seq back and dropped its sequence G9; 13 s later the statement's original
 # driver, still running, failed with CADB0543 "sequence 'G9' no longer exists". The nodes agreed seq was absent.
+#
+# RUN k3 (2026-10-20, correctness PASS, image schemafix1 = CamusDB 00027613; FAIL only on the throughput hold after the
+# camus1 kill). The kill cut the first ALTER and the next schema leader resumed tier to Public (require_resume met); the
+# re-send was refused as a duplicate column. The identity column was resumed to Public through the pause (its first
+# answer was a retryable refusal, the re-send a duplicate). tier holds 7 and seq is distinct and non-NULL in all 60,000
+# rows on all three nodes, the ledger reconciled, and no transfer was refused CADB0301 or CADB0099.
 name: schema-add-column-kill
 cluster:
   name: schema-add-column-kill
@@ -40,7 +46,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr3"
+  image: "caraxes/camusdb:schemafix1"
 workload:
   kind: bank
   database: caraxes

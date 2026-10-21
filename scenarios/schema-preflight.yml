@@ -1,10 +1,10 @@
 # ONLINE SCHEMA CHANGES UNDER LOAD, PREFLIGHT. Proves the sql fault and the schema_verify stage end to end on a small,
 # fault-free run before the fault scenarios commit to them. The bank workload keeps transferring across the whole
 # keyspace the whole time, so every change lands on a table under write contention:
+#   12s   CREATE TABLE workload_holds                   -> a child table for the foreign key (first: DDL queues, see p3)
 #   20s   CREATE INDEX on balance, covering version   -> every transfer moves two entries while the index backfills
 #   50s   ADD COLUMN tier DEFAULT 7                    -> the fill re-encodes rows the transfers are updating
-#   80s   CREATE TABLE workload_holds                   -> a child table for the foreign key
-#   90s   INSERT ... SELECT 5,000 holds (owner < 50)   -> one hold per account, amount = owner
+#   90s   INSERT ... SELECT 5,000 holds (owner < 50)   -> one hold per account, amount = owner, from a 1 s old snapshot
 #   110s  ADD FOREIGN KEY holds -> accounts             -> stamps the parent, so in-flight transfers must retry
 #   125s  DELETE the 2,000 holds with amount < 20       -> a bulk delete under the new constraint
 # After the workload: the index must hold exactly the rows the primary key holds with the same balance and version;
@@ -26,6 +26,17 @@
 #      but CADB0099 is not a retryable code, so no client retries it; the write-shape fence uses CADB0502 for the same case.
 #   4. The 5,000-row INSERT ... SELECT from the busy table was refused CADB0502 on all eleven attempts (read committed
 #      session); whether its source rows should be commit dependencies there is a question for CamusDB.
+#
+# RUNS p3/p4/p5 (2026-10-20, FAIL, image schemafix1 = CamusDB 00027613, Kahuna.Core 1.12.8). The four findings above are
+# fixed: CREATE INDEX completes on its first attempt (134-148 s), ADD COLUMN fills every row with 7, no transfer is
+# refused CADB0301 or CADB0099 (the spanning transfers now get CADB0502 and retry), and the INSERT ... SELECT reads a
+# 1 s old snapshot (AS OF SYSTEM TIME) and commits 5,000 rows in 4.5 s. Two new findings:
+#   1. The index is not identical to the table: 21 (p4) and 13 (p5) rows have a second, stale entry at a balance the
+#      row held for a few seconds around the moment the index became WriteOnly. A plain WHERE balance = <old value>
+#      returns the row with its current balance (checked on the live p5 cluster), so queries return wrong rows.
+#   2. DDL is serialized per database behind a backfill: in p3 CREATE TABLE workload_holds waited 87 s behind the index
+#      build and the column fill, so the INSERT, the foreign key and the DELETE found no table (fixed here by creating
+#      it at 12 s); the index build ran at ~150 rows/s and held the bank at ~72% of its throughput.
 name: schema-preflight
 cluster:
   name: schema-preflight
@@ -35,7 +46,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr3"
+  image: "caraxes/camusdb:schemafix1"
 workload:
   kind: bank
   database: caraxes
@@ -53,10 +64,10 @@ workload:
 nemesis:
   seed: 1
   events:
+    - { at: 12s,  fault: sql, target: camus3, duration: 2s, sql: "CREATE TABLE workload_holds (id OID PRIMARY KEY, account_id OID NOT NULL, amount INT64 NOT NULL)" }
     - { at: 20s,  fault: sql, target: camus1, duration: 5s, sql: "CREATE INDEX acct_balance ON workload_accounts (balance) INCLUDE (version)" }
     - { at: 50s,  fault: sql, target: camus2, duration: 5s, sql: "ALTER TABLE workload_accounts ADD COLUMN tier INT64 NOT NULL DEFAULT (7)" }
-    - { at: 80s,  fault: sql, target: camus3, duration: 2s, sql: "CREATE TABLE workload_holds (id OID PRIMARY KEY, account_id OID NOT NULL, amount INT64 NOT NULL)" }
-    - { at: 90s,  fault: sql, target: camus1, duration: 5s, sql: "INSERT INTO workload_holds (id, account_id, amount) SELECT id, id, owner FROM workload_accounts WHERE owner < 50" }
+    - { at: 90s,  fault: sql, target: camus1, duration: 5s, sql: "INSERT INTO workload_holds (id, account_id, amount) SELECT id, id, owner FROM workload_accounts AS OF SYSTEM TIME '-1s' WHERE owner < 50" }
     - { at: 110s, fault: sql, target: camus2, duration: 5s, sql: "ALTER TABLE workload_holds ADD CONSTRAINT fk_holds_account FOREIGN KEY (account_id) REFERENCES workload_accounts (id)" }
     - { at: 125s, fault: sql, target: camus3, duration: 5s, sql: "DELETE FROM workload_holds WHERE amount < 20" }
 schema_verify:

@@ -87,11 +87,28 @@ public sealed class SchemaTests
         IndexComparison cmp = IndexComparison.Compare(pk, ix);
 
         Assert.That(cmp.Missing, Is.EqualTo(new[] { "b" }));
-        Assert.That(cmp.Duplicated, Is.EqualTo(new[] { "a" }));
+        Assert.That(cmp.Duplicated, Is.EqualTo(new[] { "a: index (1, 10) + (1, 10) vs primary key (1, 10)" }));
         Assert.That(cmp.Extra, Is.EqualTo(new[] { "z" }));
         Assert.That(cmp.Mismatched, Has.Count.EqualTo(1));
         Assert.That(cmp.Mismatched[0], Does.StartWith("c: index (3, 29) vs primary key (3, 30)"));
         Assert.That(cmp.Problems(5), Has.Count.EqualTo(4));
+    }
+
+    [Test]
+    public void IndexComparison_NamesEveryEntryOfARowReturnedTwice()
+    {
+        List<JsonElement[]> pk = Rows("""[["a",5,11],["b",2,20]]""");
+        // a's old entry (balance 4, version 10) survived next to its current one; z has two entries and no row.
+        List<JsonElement[]> ix = Rows("""[["b",2,20],["a",4,10],["z",9,90],["a",5,11],["z",9,90]]""");
+        IndexComparison cmp = IndexComparison.Compare(pk, ix);
+
+        Assert.That(cmp.Duplicated, Is.EqualTo(new[]
+        {
+            "a: index (4, 10) + (5, 11) vs primary key (5, 11)",
+            "z: index (9, 90) + (9, 90), not in the primary key",
+        }));
+        Assert.That(cmp.Extra, Is.EqualTo(new[] { "z" }));
+        Assert.That(cmp.Mismatched, Has.Count.EqualTo(1));
     }
 
     [Test]

@@ -18,6 +18,9 @@
 # did not commit. Not reproduced since: f2 (the same schedule; partition 1 changed leader 3 times with 36 refused
 # moves; 210 probes exact) and tokens-leader-churn c1/c2. Throughput did not regain 90% within 60 s after the kill
 # and the partition (161.7 s and 65.1 s) in f1, and after the partition and the transfer in f2.
+#
+# RUN f3 (2026-10-20, PASS, image schemafix1 = CamusDB 00027613): 63,721 moves exact, 27,192 snapshot lookups and 199
+# in-window snapshot counts with no violation.
 name: tokens-faults
 cluster:
   name: tokens-faults
@@ -27,7 +30,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr3"
+  image: "caraxes/camusdb:schemafix1"
 workload:
   kind: tokens
   tokens: 500

@@ -15,6 +15,12 @@
 # failed on 20,000 rows at 32 workers. Until the backfill retries a batch the way the ADD COLUMN fill does, this
 # scenario fails at its first statement and its require_resume check reports VACUOUS; it is the regression test for
 # that fix.
+#
+# RUNS i1/i2 (2026-10-20, FAIL, image schemafix1 = CamusDB 00027613). The blocker above is fixed: the backfill rides
+# out the kills, the next schema leader resumes it from its checkpoint (i1 twice, i2 once; each first spent ~15 s
+# retrying a row the dead driver still held locked) and the index reaches Public on every node; the re-send is refused
+# as a duplicate. The index content fails: 3 (i1) and 10 (i2) rows carry a second, stale entry, the same defect
+# schema-preflight p4/p5 shows without any kill, so it is not a resume bug.
 name: schema-index-kill
 cluster:
   name: schema-index-kill
@@ -24,7 +30,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:bankpitr3"
+  image: "caraxes/camusdb:schemafix1"
 workload:
   kind: bank
   database: caraxes
