@@ -19,7 +19,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:schemafix1"
+  image: "caraxes/camusdb:resumefix1"
 workload:
   kind: tokens
   tokens: 2000

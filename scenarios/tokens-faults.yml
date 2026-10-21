@@ -21,6 +21,16 @@
 #
 # RUN f3 (2026-10-20, PASS, image schemafix1 = CamusDB 00027613): 63,721 moves exact, 27,192 snapshot lookups and 199
 # in-window snapshot counts with no violation.
+#
+# RUN f4 (2026-10-21, PASS, image schemafix2 = CamusDB fe98e37b + working tree, Kahuna.Core 1.13.1-schemafix.1): 78,790
+# moves exact, 33,679 snapshot lookups and 188 in-window snapshot counts with no violation; two elections refused
+# in-flight moves (9 at the pause's heal, 24 at the leader transfer) and no count was short.
+#
+# RUN f5 (2026-10-21, PASS, image schemafix3, Kahuna.Core 1.13.1-schemafix.2): 79,807 moves exact, 34,086 snapshot lookups
+# clean, 210 probes with none short across four elections that refused in-flight moves (48 in all).
+#
+# RUN f6 (2026-10-21, PASS, image kahuna1131, Kahuna.Core 1.13.1): 70,765 moves exact, 30,314 snapshot lookups clean,
+# 222 probes with none short.
 name: tokens-faults
 cluster:
   name: tokens-faults
@@ -30,7 +40,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:schemafix1"
+  image: "caraxes/camusdb:resumefix1"
 workload:
   kind: tokens
   tokens: 500

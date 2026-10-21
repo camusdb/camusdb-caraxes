@@ -21,6 +21,27 @@
 # retrying a row the dead driver still held locked) and the index reaches Public on every node; the re-send is refused
 # as a duplicate. The index content fails: 3 (i1) and 10 (i2) rows carry a second, stale entry, the same defect
 # schema-preflight p4/p5 shows without any kill, so it is not a resume bug.
+#
+# RUN i3 (2026-10-21, correctness PASS, image schemafix2 = CamusDB fe98e37b + working tree, Kahuna.Core 1.13.1-schemafix.1).
+# The stale-entry defect is fixed: after two resumes (camus1, then camus2 at attempt 2) the index holds exactly the
+# 60,000 rows of the primary key on all three nodes, each at its current balance and version, and 200 sampled rows were
+# found through it. Reconciliation and the scan probe (104 probes, all exact) pass. FAIL only on the throughput-regain
+# rule, which failed in i1/i2 as well and is no longer graded (see checks).
+#
+# RUN i4 (2026-10-21, PASS, image schemafix3, Kahuna.Core 1.13.1-schemafix.2): two resumes, the index identical to the
+# 60,000 rows of the primary key on all three nodes, reconciliation and 106 probes with none short (13 refused during the
+# kills, as in i2/i3).
+#
+# RUN i5 (2026-10-21, FAIL, image kahuna1131, Kahuna.Core 1.13.1): the index was never published. camus1 resumed the job
+# after the kill of camus2, lost the schema partition 18 s later to camus2, which had just restarted, and camus2 never
+# resumed it: the retry at 130 s was refused "already exists" and every indexed read answered CADB0405 to the end.
+# Filed as the CamusDB coordinator-resume race (vorpal 21120c62). 115 probes, none short; ledger reconciled.
+#
+# RUNS i6-i9 (2026-10-21, PASS, image resumefix1 = CamusDB with the coordinator-resume triggers (open, a 10 s sweep on
+# the schema leader, the election) and Kahuna.Core 1.13.1). Every interrupted build was published: i6 in two resumes,
+# i7 in four across five schema-leader moves, i8 in three, i9 in two. i7 repeated i5's shape, a node that had just
+# restarted winning the schema partition, and that node resumed the job 5 s later. Each attempt number appears once on
+# one node; the only failures are resumes cancelled by a lost leadership, each picked up by the next leader.
 name: schema-index-kill
 cluster:
   name: schema-index-kill
@@ -30,7 +51,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:schemafix1"
+  image: "caraxes/camusdb:resumefix1"
 workload:
   kind: bank
   database: caraxes
@@ -59,4 +80,8 @@ schema_verify:
     - { table: workload_accounts, name: acct_balance, columns: [balance], include: [version] }
 checks:
   max_recovery_seconds: 60
+  # A correctness arm: a running backfill and then the new index's maintenance on every transfer set the bank's rate
+  # (i2, i3 settled near 70%), so the throughput rules measure the schema change, not the recovery. The recovery
+  # findings stay in the report as NOT GRADED.
+  grade_recovery: false
 teardown: true

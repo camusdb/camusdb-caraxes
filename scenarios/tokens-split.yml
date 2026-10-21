@@ -16,6 +16,18 @@
 # probe caught a snapshot COUNT(*) of 2,998 of 3,000 on camus3 at 00:16:51Z, in the second the leader balancer moved
 # partition 4 back to the restarted camus1 (elected after 0 ms) and 21 in-flight moves were refused with "no longer
 # led under term 3": the tokens-faults f1 shape (camusdb 4dc1945f), now under key-range sharding.
+#
+# RUN s3 (2026-10-21, PASS, image schemafix2 = CamusDB fe98e37b + working tree, Kahuna.Core 1.13.1-schemafix.1 with the
+# snapshot-scan projection fence): 60,981 moves exact, 26,212 snapshot lookups clean, 168 probes all exact. The leader
+# balancer handed partitions back to camus1 twice with in-flight moves refused (14 at 13:39:17Z, 11 at 13:40:17Z), the
+# s2 trigger, and the snapshot counts that overlapped them were whole; the slowest took 6.0 s (p90 1.5 s, s2 0.8 s),
+# consistent with the scan waiting out a flush instead of counting short.
+#
+# RUN s4 (2026-10-21, PASS, image schemafix3, Kahuna.Core 1.13.1-schemafix.2): 52,943 moves exact, 22,607 snapshot
+# lookups clean, 168 probes all exact, across a handover that refused 17 in-flight moves.
+#
+# RUN s5 (2026-10-21, PASS, image kahuna1131, Kahuna.Core 1.13.1): 55,918 moves exact, 23,914 snapshot lookups clean,
+# 149 probes all exact, 174 moves gave up.
 name: tokens-split
 cluster:
   name: tokens-split
@@ -29,7 +41,7 @@ cluster:
   isolation: read_committed
   diagnostics: true
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:schemafix1"
+  image: "caraxes/camusdb:resumefix1"
   kahuna:
     range_split_threshold: 300
     range_split_min_range_size: 100

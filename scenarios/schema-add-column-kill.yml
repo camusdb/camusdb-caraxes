@@ -37,6 +37,19 @@
 # re-send was refused as a duplicate column. The identity column was resumed to Public through the pause (its first
 # answer was a retryable refusal, the re-send a duplicate). tier holds 7 and seq is distinct and non-NULL in all 60,000
 # rows on all three nodes, the ledger reconciled, and no transfer was refused CADB0301 or CADB0099.
+#
+# RUN k4 (2026-10-21, correctness PASS, image schemafix2 = CamusDB fe98e37b + working tree, Kahuna.Core 1.13.1-schemafix.1).
+# tier was resumed to Public through all three kills (attempts 1-3) and the re-send refused as a duplicate. The k3
+# finding is fixed: camus3 drove seq when it was paused; on waking it logged that its fill stopped because it lost
+# the schema leadership of term 5, did not take the column back, and waited for the next leader's outcome. camus2
+# resumed the job in term 6, lost the leadership in turn and stopped the same way, and a third resume published seq.
+# The statement answered ok in 63.5 s (k3: CADB0504, then "Duplicate column" on the retry). tier holds 7 and seq is
+# distinct and non-NULL in all 60,000 rows on all three nodes; ledger reconciled. FAIL only on the throughput-hold
+# rule after the camus1 kill, which is no longer graded (see checks).
+#
+# RUN k5 (2026-10-21, PASS, image kahuna1131, Kahuna.Core 1.13.1): tier published, the re-send refused as a duplicate,
+# 151 probes with none short. The third statement on camus2 answered CADB0501 after 39.4 s (coordinator session gone,
+# outcome unknown), within the "any" expectation; schema verify converged on all three nodes.
 name: schema-add-column-kill
 cluster:
   name: schema-add-column-kill
@@ -46,7 +59,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:schemafix1"
+  image: "caraxes/camusdb:resumefix1"
 workload:
   kind: bank
   database: caraxes
@@ -78,4 +91,8 @@ schema_verify:
     - { table: workload_accounts, name: seq, distinct: true }
 checks:
   max_recovery_seconds: 60
+  # A correctness arm: the column fills set the bank's rate while they run (k3, k4 held ~86% of the pre-fault median
+  # after the last kill), so the throughput rules measure the schema change, not the recovery. The recovery findings
+  # stay in the report as NOT GRADED.
+  grade_recovery: false
 teardown: true

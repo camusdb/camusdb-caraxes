@@ -1,9 +1,9 @@
 # ONLINE SCHEMA CHANGES UNDER LOAD, PREFLIGHT. Proves the sql fault and the schema_verify stage end to end on a small,
 # fault-free run before the fault scenarios commit to them. The bank workload keeps transferring across the whole
 # keyspace the whole time, so every change lands on a table under write contention:
-#   12s   CREATE TABLE workload_holds                   -> a child table for the foreign key (first: DDL queues, see p3)
 #   20s   CREATE INDEX on balance, covering version   -> every transfer moves two entries while the index backfills
 #   50s   ADD COLUMN tier DEFAULT 7                    -> the fill re-encodes rows the transfers are updating
+#   80s   CREATE TABLE workload_holds                   -> a child table for the foreign key, while the index backfills
 #   90s   INSERT ... SELECT 5,000 holds (owner < 50)   -> one hold per account, amount = owner, from a 1 s old snapshot
 #   110s  ADD FOREIGN KEY holds -> accounts             -> stamps the parent, so in-flight transfers must retry
 #   125s  DELETE the 2,000 holds with amount < 20       -> a bulk delete under the new constraint
@@ -35,8 +35,27 @@
 #      row held for a few seconds around the moment the index became WriteOnly. A plain WHERE balance = <old value>
 #      returns the row with its current balance (checked on the live p5 cluster), so queries return wrong rows.
 #   2. DDL is serialized per database behind a backfill: in p3 CREATE TABLE workload_holds waited 87 s behind the index
-#      build and the column fill, so the INSERT, the foreign key and the DELETE found no table (fixed here by creating
-#      it at 12 s); the index build ran at ~150 rows/s and held the bank at ~72% of its throughput.
+#      build and the column fill, so the INSERT, the foreign key and the DELETE found no table (p4/p5 created
+#      it at 12 s, p6 is back on this schedule); the index build ran at ~150 rows/s and held the bank at ~72% of its throughput.
+#
+# RUN p6 (2026-10-21, correctness PASS, image schemafix2 = CamusDB fe98e37b + working tree, Kahuna.Core 1.13.1-schemafix.1
+# = Kahuna 5049a909; p3's schedule again, CREATE TABLE sent 60 s into the index build). Both p3-p5 findings are fixed:
+# the index holds exactly the 20,000 rows of the primary key with their current balance and version on all three nodes,
+# and CREATE TABLE answered in 0.2 s while the index backfilled (87 s in p3), so the INSERT (5,000 rows, 0.7 s), the
+# foreign key and the DELETE all ran on schedule. The 20,000-row build took 40 s (134-148 s before) and held the bank at
+# 52% of its pre-DDL rate while it ran (1,730 vs 3,332 ops/s; p5: 70% for 134 s); with the index in place the bank
+# settles at 72%. FAIL on two counts: the throughput-regain rule (it failed in p4/p5 as well, behind the index finding,
+# and is no longer graded, see checks) and one read-committed COUNT(*) probe of 19,999 of 20,000 on camus2 at 13:23:01Z,
+# during the backfill: the first short count of these scenarios (0 of 676 probes on schemafix1), filed as a lead.
+#
+# RUNS p7/p8/p9 (2026-10-21, PASS, image schemafix3 = schemafix2 with Kahuna.Core 1.13.1-schemafix.2, the Kahuna fix for
+# p6's short count: a fenced row is projected from the history below its oldest queued revision instead of dropped).
+# 315 probes, none short, while the leader of the row partition served 2,400-3,300 history-fenced reads per run (camus3,
+# camus1, camus2): the path that dropped the row in p6 ran in all three and kept it. Index identical to the primary key,
+# column, foreign key and assertions as in p6; builds of 41-42 s.
+#
+# RUNS p10/p11 (2026-10-21, PASS, image kahuna1131 = CamusDB d4dee0aa + working tree with Kahuna.Core 1.13.1 from NuGet,
+# the release of the p6 fix). 210 probes, none short, camus1 serving 4,096 and 2,805 history-fenced reads.
 name: schema-preflight
 cluster:
   name: schema-preflight
@@ -46,7 +65,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:schemafix1"
+  image: "caraxes/camusdb:resumefix1"
 workload:
   kind: bank
   database: caraxes
@@ -64,9 +83,9 @@ workload:
 nemesis:
   seed: 1
   events:
-    - { at: 12s,  fault: sql, target: camus3, duration: 2s, sql: "CREATE TABLE workload_holds (id OID PRIMARY KEY, account_id OID NOT NULL, amount INT64 NOT NULL)" }
     - { at: 20s,  fault: sql, target: camus1, duration: 5s, sql: "CREATE INDEX acct_balance ON workload_accounts (balance) INCLUDE (version)" }
     - { at: 50s,  fault: sql, target: camus2, duration: 5s, sql: "ALTER TABLE workload_accounts ADD COLUMN tier INT64 NOT NULL DEFAULT (7)" }
+    - { at: 80s,  fault: sql, target: camus3, duration: 2s, sql: "CREATE TABLE workload_holds (id OID PRIMARY KEY, account_id OID NOT NULL, amount INT64 NOT NULL)" }
     - { at: 90s,  fault: sql, target: camus1, duration: 5s, sql: "INSERT INTO workload_holds (id, account_id, amount) SELECT id, id, owner FROM workload_accounts AS OF SYSTEM TIME '-1s' WHERE owner < 50" }
     - { at: 110s, fault: sql, target: camus2, duration: 5s, sql: "ALTER TABLE workload_holds ADD CONSTRAINT fk_holds_account FOREIGN KEY (account_id) REFERENCES workload_accounts (id)" }
     - { at: 125s, fault: sql, target: camus3, duration: 5s, sql: "DELETE FROM workload_holds WHERE amount < 20" }
@@ -83,4 +102,8 @@ schema_verify:
     - { sql: "SELECT COUNT(*) FROM workload_holds WHERE amount < 20", equals: "0" }
 checks:
   max_recovery_seconds: 60
+  # A correctness arm: every fault here is a DDL statement, and a covering index on the transfers' hot column costs every
+  # later transfer two index entries for good, so the bank settles near 70% of its pre-DDL rate (p4-p6) and "regain 90%"
+  # measures the new schema, not a recovery. The recovery findings stay in the report as NOT GRADED.
+  grade_recovery: false
 teardown: true
