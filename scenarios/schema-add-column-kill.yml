@@ -50,6 +50,15 @@
 # RUN k5 (2026-10-21, PASS, image kahuna1131, Kahuna.Core 1.13.1): tier published, the re-send refused as a duplicate,
 # 151 probes with none short. The third statement on camus2 answered CADB0501 after 39.4 s (coordinator session gone,
 # outcome unknown), within the "any" expectation; schema verify converged on all three nodes.
+#
+# RUN k6 (2026-10-21, FAIL, image resumefix1, CamusDB 386c0198): every node died at startup. camus2, restarted at +52 s,
+# had partition 0's leader (camus3) killed under it; the first election split and Kahuna's start gave up after 10 s
+# without a leader (unhandled RaftException "Leader couldn't be found or is not decided", exit 139). camus3 and camus1
+# then restarted without a majority and died the same way. The interrupted ADD COLUMN was never resumed. Filed as the
+# startup crash (vorpal 4470c35f); container logs in artifacts/crash, dumps under runs/clusters/schema-add-column-kill.
+# RUN k7 (2026-10-21, PASS, image startfix1 = CamusDB 386c0198 + Kahuna.Core 1.13.2 and the startup handling in Program.cs):
+# ledger reconciled, 128 probes in the window and none short, tier resumed to Public on camus2 (attempt 1), schema verify
+# converged on all three nodes. No restart had to wait out an undecided election this time.
 name: schema-add-column-kill
 cluster:
   name: schema-add-column-kill
@@ -59,7 +68,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:resumefix1"
+  image: "caraxes/camusdb:startfix1"
 workload:
   kind: bank
   database: caraxes

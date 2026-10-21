@@ -1,0 +1,56 @@
+# A NODE THAT RESTARTS INTO A CLUSTER WITH NO MAJORITY. All three nodes are killed within 4 s, with staggered restarts,
+# so the first node back is alone for 28 s and cannot elect a leader:
+#   30s   kill camus1 for 60 s                              -> back at 90 s
+#   32s   kill camus2 for 30 s                              -> back at 62 s, alone until camus1 returns
+#   34s   kill camus3 for 70 s                              -> back at 104 s, into a cluster that has a leader again
+# Kommander bounds one election wait by 10 s after the WAL restore, so camus2 sees its start's leader wait run out at
+# least twice before camus1 is back. A node whose start gives up there exits, and takes with it the vote the next node
+# back needs, which is how schema-add-column-kill k6 lost all three nodes. The start must keep waiting: every node must
+# be serving again by ~120 s, and the bank ledger must reconcile through the full outage.
+# RUN c1 (2026-10-21, FAIL as expected, control on resumefix1 = Kahuna.Core 1.13.1): camus2, back alone at 62 s, gave up
+# after one 10 s election wait (RaftException "Leader couldn't be found or is not decided") and exited; camus1 and camus3
+# then came back without a majority and died the same way. No node served again; reconciliation could not run.
+# RUN n1, n2 (2026-10-21, image startfix1 = Kahuna.Core 1.13.2 + Program.cs startup handling): camus2 logged 2 and 3
+# undecided rounds and kept waiting; every node came back and the ledger reconciled. Both FAILED only on the total-outage
+# check, which this scenario causes on purpose; require_progress_under_fault is off since.
+# RUN n3 (2026-10-21, PASS, startfix1): ledger reconciled (balance 14,991,779,030 at baseline and end), 94 probes in the
+# window and none short. Then by hand: all three stopped, camus2 started alone and logged 2 undecided rounds; docker stop
+# ended it in under 1 s with exit 0 and "Shutdown requested before the node finished starting" (no crash dump); all three
+# restarted, answered /ping, and still held 10,000 rows and the same balance.
+name: startup-no-majority
+cluster:
+  name: startup-no-majority
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:startfix1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 10000
+  mode: closed
+  workers: 16
+  connections: 8
+  duration: 180s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 30s, fault: kill, target: camus1, duration: 60s }
+    - { at: 32s, fault: kill, target: camus2, duration: 30s }
+    - { at: 34s, fault: kill, target: camus3, duration: 70s }
+checks:
+  max_recovery_seconds: 60
+  # The outage is the point: no fault window can make progress while two of three nodes are down, so neither progress
+  # nor recovery is graded. The run grades that every node comes back (node health) and the ledger reconciles.
+  require_progress_under_fault: false
+  grade_recovery: false
+teardown: true

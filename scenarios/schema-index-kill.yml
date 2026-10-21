@@ -42,6 +42,8 @@
 # i7 in four across five schema-leader moves, i8 in three, i9 in two. i7 repeated i5's shape, a node that had just
 # restarted winning the schema partition, and that node resumed the job 5 s later. Each attempt number appears once on
 # one node; the only failures are resumes cancelled by a lost leadership, each picked up by the next leader.
+# RUN i10 (2026-10-21, PASS, image startfix1): ledger reconciled, 110 probes in the window and none short, the index
+# build resumed to Public on camus2 (attempt 1), schema verify converged on all three nodes.
 name: schema-index-kill
 cluster:
   name: schema-index-kill
@@ -51,7 +53,7 @@ cluster:
   locking: optimistic
   isolation: read_committed
   camusdb_repo: "~/camusdb"
-  image: "caraxes/camusdb:resumefix1"
+  image: "caraxes/camusdb:startfix1"
 workload:
   kind: bank
   database: caraxes

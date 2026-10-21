@@ -56,6 +56,9 @@
 #
 # RUNS p10/p11 (2026-10-21, PASS, image kahuna1131 = CamusDB d4dee0aa + working tree with Kahuna.Core 1.13.1 from NuGet,
 # the release of the p6 fix). 210 probes, none short, camus1 serving 4,096 and 2,805 history-fenced reads.
+#
+# RUN p12 (2026-10-21, PASS, image resumefix1, CamusDB 386c0198): 105 probes, none short, camus3 serving 3,587
+# history-fenced reads; schema verify converged on all three nodes.
 name: schema-preflight
 cluster:
   name: schema-preflight
