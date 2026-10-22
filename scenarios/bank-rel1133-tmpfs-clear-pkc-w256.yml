@@ -1,0 +1,66 @@
+# REGRESSION PROBE ON TODAY'S HEAD (2026-10-21): the same 10-minute 256-worker cleartext tmpfs body as the pkc5 control
+# (bank-rel1119-tmpfs-clear-pkc-w256, 10,744 ops/s on CamusDB 693c61bb = Kahuna.Core 1.11.9 / Kommander 1.10.9, image bankrel1119pkc),
+# built from CamusDB HEAD 9fd98ec0 = Kahuna.Core 1.13.3 (34 commits since the figure: live runtime settings and lock-free snapshot
+# reads, the replication-wait deadline, online schema hardening, the join planner and INLJ work, mutual-TLS peers, PITR seeding, the
+# row-id cache default true, Kahuna 1.12-1.13.3). Image caraxes/camusdb:bank1133, built by this run from the working tree at HEAD.
+# Question: did ops/s, leader CPU-ms/op or the read/commit means move against pkc5? Noise band for this body is about +-3%; a drop
+# past 5% is a regression to bisect. Host caveat: a kind control plane (camusdb-autoscale-test) is running at ~18% of one core and
+# 3.9 GiB; left in place for a 10-minute probe, must be stopped for any 45-minute run.
+# reg1 (2026-10-21 20:52) froze the host: nodes at 7.4-8.2 GB after 8 minutes (pkc5: 5.3-6.4 GB at the same minute) beside the 3.9 GiB kind
+# container exhausted 31 GiB with 976 MB of swap. reg2 runs with the kind container stopped, memory_limit_mb 8192 instead of the body's
+# 9728 (3 x 8 GiB leaves 7 GB of host slack; pkc5 never passed 7.5 GB per node in 10 minutes, so the cap only bites if this stack grows
+# past it, which is then the finding), and a host guard that kills the cluster below 2.5 GB MemAvailable.
+# reg3: same body with kahuna.pitr_window_seconds 60 / base_snapshot_interval_seconds 30 (defaults 3600 / 1800). Since Kahuna a3048453
+# (1.12.x, in 1.13.3) the PITR horizon pins Kommander's retain floor at the first retained index whenever the whole log is younger than
+# now - window - interval, i.e. always under load, so the Raft WAL grew ~300 MB/min per node on tmpfs in reg2 and two nodes hit the cap at
+# minute 11. A 90-s horizon keeps the WAL at a few hundred MB, which is what the 1.11.9 control had, so ops/s compare like for like.
+# Read: ops/s, leader CPU-ms/op, kahuna_kv_read_stage actor mean and path split, lease-miss share and mean, TP work items per op, allocation.
+name: bank-rel1133-tmpfs-clear-pkc-w256
+cluster:
+  name: bankrel1133clearpkcw256
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    # Bound the PITR retention of the Raft WAL (see the header); the production default is 3600 / 1800.
+    pitr_window_seconds: 60
+    base_snapshot_interval_seconds: 30
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:bank1133"
+  camusdb:
+    # The default since edcb9fab, stated so the control and the probe read the same.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
