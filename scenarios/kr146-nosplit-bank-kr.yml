@@ -1,0 +1,48 @@
+# 2026-10-28 control for the Kahuna 1.14.6 verification round on image kr146 = CamusDB a61a627a (Kahuna.Core 1.14.6); unsplit key-range 4,086 vs hash 4,110 ops/s, both PASS.
+# Pass = clean ledger AND 0 'Stale-base veto arrived late' lines (the ledger caught the race only 1 run in 2 on 1.14.3).
+# SPLIT COST control (2026-10-27): the split arm's shape with range_split_threshold 1,000,000, so the table stays one range under key-range routing.
+name: kr146-nosplit-bank-kr
+cluster:
+  name: kr146nosplitbankkr
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  image: "caraxes/camusdb:kr146"
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  kahuna:
+    range_split_threshold: 1000000
+    range_split_min_range_size: 100
+    range_split_load_threshold: 100
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    # Longer than the minimum, so the split cascade from the seeded rows outlasts the seeding.
+    range_split_settle_window_ms: 15000
+    enable_load_reports: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 4000
+  mode: closed
+  workers: 32
+  duration: 10m
+  warmup: 2m
+  connections: 16
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

@@ -1,0 +1,62 @@
+# 2026-10-28 the stock bank-split arm on image kr146 = CamusDB a61a627a (Kahuna.Core 1.14.6): ledger exact, 0 late vetoes, verdict FAIL only on the recovery-hold throughput gate after the kill.
+# Pass = clean ledger AND 0 'Stale-base veto arrived late' lines (the ledger caught the race only 1 run in 2 on 1.14.3).
+# 2026-10-27: the stock bank-split correctness arm on the kr256 image (CamusDB HEAD 898aa2cd, Kahuna.Core 1.14.3), for the key-range default flip.
+# Bank transfers while key ranges split, under partition and kill.
+#
+# Question: is SUM(balance) conserved, through the aggregate and through the full row scan, while ranges
+# split and faults land? This is the bank-invariant companion of append-split: Elle sees isolation
+# anomalies, and the conserved sum sees an atomicity break or a row a split copy lost.
+#
+# How the splits happen. The bank table does not grow during the run, so splits come from the seeded
+# dataset: 4,000 rows over a 300-key threshold need several levels of splits, and each child waits out the
+# settle window before it can split again, so the cascade continues into the measured run. The load branch
+# can add splits on top. The scan probe counts rows on every gateway during the run, which is the check a
+# lost row in a split copy would fail first.
+#
+# checks.require_split fails the run as VACUOUS when no partition appeared in the placement samples. If
+# this arm comes back VACUOUS, the cascade finished during seeding: lower the threshold or raise the rows.
+name: kr146-bank-split
+cluster:
+  name: kr146banksplit
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  image: "caraxes/camusdb:kr146"
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  kahuna:
+    range_split_threshold: 300
+    range_split_min_range_size: 100
+    range_split_load_threshold: 100
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    # Longer than the minimum, so the split cascade from the seeded rows outlasts the seeding.
+    range_split_settle_window_ms: 15000
+    enable_load_reports: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 4000
+  mode: closed
+  workers: 32
+  duration: 120s
+  warmup: 15s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 59
+  events:
+    - { at: 30s, fault: partition, target: random, duration: 20s }
+    - { at: 70s, fault: kill, target: random, duration: 20s }
+checks:
+  max_recovery_seconds: 45
+  require_split: true
+teardown: true
