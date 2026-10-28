@@ -1,0 +1,51 @@
+# 2026-10-28 KEY-RANGE vs HASH on the fanout workload at 3 partitions (3 tables, every transfer a cross-table two-phase commit). Result: key-range 1,055 / 1,055 vs hash 1,520 / 1,534 ops/s = 0.69x, reproduced twice. Cause = seed placement, not routing: the key-range seed (xxHash64 of the group modulo the pool) puts tables 1:1 and 1:2 on partition 1 while jump hash spreads all three, so one partition is idle, the P1 leader carries 2/3 of the rows and every commit decision, and commit p90 doubles (139 vs 62 ms). See kr146-fanout5-* for the pair where both modes spread the tables: there the modes are level.
+# the last workload the key-range benchmark task owes. One image for both arms, caraxes/camusdb:kr146 = CamusDB a61a627a (Kahuna.Core 1.14.6).
+# The arms differ only in cluster.key_range_sharding (stated in both, confirmed from cluster-facts.json). No split settings: CamusDB pins
+# auto-split off, so each table stays one range. Order: kr, hash (tag f1), then hash, kr (tag f2). Read: ops/s, server commit mean, one-phase
+# share and gate outcomes, forwarded one-phase bundles, session registration forwards, leader CPU-ms/op.
+name: kr146-fanout-kr
+cluster:
+  name: kr146fanoutkr
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  key_range_sharding: true
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    # Held constant across both arms.
+    recent_heartbeat_ms: 25
+    # The shipping default as of `529f8611`, stated rather than inherited so the manifest names it.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  # ONE image for both arms: routing is a client-side behaviour, so the server binary must not differ.
+  image: "caraxes/camusdb:kr146"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 10m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  routing_mode: off
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
