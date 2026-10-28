@@ -1,0 +1,55 @@
+# KEY-RANGE vs HASH ROUTING on the figure-of-record body (2026-10-27): the pkc5 shape (10-minute, 256 workers / 64 connections, tmpfs,
+# cleartext, one partition, RF 3, 9,728 MiB nodes) on an image built from CamusDB HEAD 898aa2cd (Kahuna.Core 1.14.3 / Kommander 1.11.x,
+# PITR floor fix included so the Raft WAL compacts at the default keys). This arm: key_range_sharding: true (kr routing).
+# Question: does key-range routing cost anything on the body that holds the 10,284 ops/s figure, before it becomes the cluster default?
+# Controls: pkc5 10,744 and reg3 10,696 ops/s (hash routing, 1.11.9 and 1.13.3). Arms interleaved hash, kr, kr, hash; read ops/s, leader
+# CPU-ms/op, server query / non_query / commit means, forwarded share (kahuna_durable_tx_one_phase_pre_bundle_ms{route=forwarded}),
+# executor client ops per op, and the kr-ab residue (indeterminate outcomes).
+name: kr256-bank-kr
+cluster:
+  name: kr256bankkr
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  # The routing mode under test, stated explicitly so the arm does not depend on the build's default.
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:kr256"
+  camusdb:
+    # The default since edcb9fab, stated so every arm reads the same.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
