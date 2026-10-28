@@ -1,0 +1,48 @@
+# 2026-10-28 VERIFICATION of the Kahuna split-cascade fix: the same arm on image kr145 = CamusDB HEAD 6a140d7d pinned to Kahuna.Core 1.14.5.
+# Pass = clean ledger AND 0 'Stale-base veto arrived late' lines (the ledger caught the race only 1 run in 2 on 1.14.3).
+# SPLIT COST control (2026-10-27): the split arm's shape under hash routing (splits impossible).
+name: kr145-nosplit-bank-hash
+cluster:
+  name: kr145nosplitbankhash
+  nodes: 3
+  partitions: 4
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: false
+  image: "caraxes/camusdb:kr145"
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  kahuna:
+    range_split_threshold: 1000000
+    range_split_min_range_size: 100
+    range_split_load_threshold: 100
+    range_split_load_min_queue_depth: 8
+    range_split_load_window_ms: 15000
+    range_split_load_poll_interval_ms: 5000
+    range_split_load_imbalance_max: 0.8
+    # Longer than the minimum, so the split cascade from the seeded rows outlasts the seeding.
+    range_split_settle_window_ms: 15000
+    enable_load_reports: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 4000
+  mode: closed
+  workers: 32
+  duration: 10m
+  warmup: 2m
+  connections: 16
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
