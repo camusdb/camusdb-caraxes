@@ -75,6 +75,13 @@ the container's memory cgroup, so a tmpfs-backed node needs a `memory_limit_mb` 
 process plus data; pair it with `gc_heap_hard_limit_mb` (the heap budget a 4096 MiB limit derives is
 2458 MiB) so the larger container does not also inflate the heap and CamusDB's proportional caches.
 
+**Heap budget and the storage engine.** With `memory_limit_mb` set and no `gc_heap_hard_limit_mb`, a node
+gets `DOTNET_GCHeapHardLimitPercent` 60%, which leaves the rest of the container to RocksDB's native block
+cache and memtables. A node whose `kahuna:` block puts `storage` or `wal_storage` on `solarium` gets 75%
+instead: Solarium's cache and memtables are managed objects charged to the heap, and under the 60% budget
+a 4096 MiB Solarium leader with 768/256 MiB budgets died of a managed `OutOfMemoryException` 57 minutes into
+a fault soak (sol2); the same node at 75% passed (sol3). An explicit `gc_heap_hard_limit_mb` always wins.
+
 **In-window scan probe.** `workload.scan_probe_interval: 5s` (and optional `scan_probe_timeout` seconds) makes the
 measured run issue `SELECT COUNT(*)` on every gateway at that interval over read-only, routing-pinned connections and
 fail the run's validity on any short count — the check a post-load reconciliation can never make (CamusDB feature

@@ -19,7 +19,9 @@ namespace Caraxes.Tests;
 /// (soak run G). So the generator pairs every <c>mem_limit</c> with an explicit 60% heap
 /// budget (<c>DOTNET_GCHeapHardLimitPercent=3C</c> — GC env vars parse as hexadecimal, and
 /// the 0x prefix is omitted so YAML keeps the value a string), which leaves the remaining
-/// ~40% for native memory.
+/// ~40% for native memory. A Solarium node has no native engine memory and its budgets are
+/// managed objects, so it gets the runtime's 75% (<c>4B</c>) instead; see
+/// <see cref="ClusterSpec.UsesSolarium"/>.
 /// </summary>
 [TestFixture]
 public sealed class MemoryLimitTests
@@ -37,6 +39,56 @@ public sealed class MemoryLimitTests
         Assert.That(plan.Spec.MemoryLimitMb, Is.EqualTo(1536));
         Assert.That(yml, Does.Contain("mem_limit: 1536m"));
         Assert.That(yml, Does.Contain("DOTNET_GCHeapHardLimitPercent: 3C"));
+    }
+
+    [Test]
+    public void SolariumNodesGetTheRuntimeHeapShare()
+    {
+        // Either layer on Solarium moves the budgets into the managed heap; 60% starved the sol2 leader.
+        foreach (string key in new[] { "storage", "wal_storage" })
+        {
+            ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+                "name: mem",
+                "nodes: 3",
+                "memory_limit_mb: 4096",
+                "kahuna:",
+                $"  {key}: solarium")));
+
+            string yml = ComposeGenerator.Generate(plan, "./config");
+
+            Assert.That(plan.Spec.UsesSolarium, Is.True, key);
+            Assert.That(yml, Does.Contain("DOTNET_GCHeapHardLimitPercent: 4B"), key);
+            Assert.That(yml, Does.Not.Contain("DOTNET_GCHeapHardLimitPercent: 3C"), key);
+        }
+
+        // RocksDB stated explicitly, or no engine key at all, keeps the 60%.
+        ClusterPlan rocksDb = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: mem",
+            "nodes: 3",
+            "memory_limit_mb: 4096",
+            "kahuna:",
+            "  storage: rocksdb",
+            "  wal_storage: rocksdb")));
+
+        Assert.That(rocksDb.Spec.UsesSolarium, Is.False);
+        Assert.That(ComposeGenerator.Generate(rocksDb, "./config"), Does.Contain("DOTNET_GCHeapHardLimitPercent: 3C"));
+    }
+
+    [Test]
+    public void AnExplicitHeapPinBeatsTheSolariumShare()
+    {
+        ClusterPlan plan = ClusterPlan.FromSpec(ClusterSpecReader.Read(string.Join('\n',
+            "name: mem",
+            "nodes: 3",
+            "memory_limit_mb: 4096",
+            "gc_heap_hard_limit_mb: 2458",
+            "kahuna:",
+            "  storage: solarium")));
+
+        string yml = ComposeGenerator.Generate(plan, "./config");
+
+        Assert.That(yml, Does.Contain("DOTNET_GCHeapHardLimit: " + (2458L * 1024 * 1024).ToString("X")));
+        Assert.That(yml, Does.Not.Contain("DOTNET_GCHeapHardLimitPercent"));
     }
 
     [Test]
