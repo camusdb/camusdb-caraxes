@@ -198,17 +198,16 @@ public static class ComposeGenerator
         // emitting only one keeps the compose file unambiguous. This is how a tmpfs-backed run
         // keeps the node's heap budget and proportional cache sizing identical to a volume-backed
         // one while the container limit grows to hold the data (see ClusterSpec.GcHeapHardLimitMb).
-        // A Solarium node (ClusterSpec.UsesSolarium) has no native RocksDB memory to leave room for, and its
-        // cache and memtable budgets are managed objects charged to the heap, so the 60% budget starved it:
-        // the leader of the sol2 soak died of a managed OutOfMemoryException at 57 minutes with the heap at
-        // 2,420 of 2,458 MiB. It gets the runtime's own 75% (4B hex) instead, the value the sol3 soak passed
-        // with as an explicit 3,072 MiB pin on a 4096 MiB node.
+        // The 60% applies to Solarium nodes too: since SolariumDb 0.1.4 the engine keeps its memtables and
+        // cached data blocks in native memory, outside the heap, as RocksDB does. (On 0.1.3 they were managed
+        // objects, the 60% budget starved the sol2 leader, and the generator derived 75% for such nodes for
+        // one day; a 0.1.3 node needs an explicit gc_heap_hard_limit_mb instead.)
         if (spec.MemoryLimitMb > 0)
         {
             if (spec.GcHeapHardLimitMb > 0)
                 environment["DOTNET_GCHeapHardLimit"] = ((long)spec.GcHeapHardLimitMb * 1024 * 1024).ToString("X");
             else
-                environment["DOTNET_GCHeapHardLimitPercent"] = spec.UsesSolarium ? "4B" : "3C";
+                environment["DOTNET_GCHeapHardLimitPercent"] = "3C";
         }
 
         // CamusDB calls ClearProviders() and then installs explicit AddFilter rules for

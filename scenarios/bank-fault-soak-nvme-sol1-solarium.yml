@@ -10,8 +10,9 @@
 # rocksdb_shared_memory applies to RocksDB only and is a no-op for Solarium, so it is stated on the control arm only.
 # HEAP BUDGET: runs sol1 and sol2 took the harness's then-default 60% heap budget (2,458 MiB) and the sol2 leader died of a
 # managed OutOfMemoryException at 57 min, because Solarium's cache and memtables are managed objects (see the -heap arm).
-# Since 2026-10-29 the harness derives 75% (3,072 MiB) for a Solarium node, so this arm now runs at the budget the -heap arm
-# pinned explicitly; a rerun at 60% must state gc_heap_hard_limit_mb: 2458.
+# For part of 2026-10-29 the harness derived 75% (3,072 MiB) for a Solarium node; SolariumDb 0.1.4 moved the memtables and the
+# cached data blocks to native memory the same day and the harness is back to 60% for every node. This arm is the 0.1.3 record:
+# rerun it on 0.1.3 with gc_heap_hard_limit_mb: 3072, or see the sol4 pair for 0.1.4 at 60%.
 # Default shape: durable_materialize_on_resolve on (default since 6a081848), point_read_row_id_cache_enabled on (default since
 # edcb9fab), both stated. Acceptance = the pk1 bar: conservation exact, versions in band, 0 lost rows, 0 apply divergence,
 # 0 late vetoes, unresolved 0, every kill-restart repaired by backfill or one first-attempt install (skips only with a rule),

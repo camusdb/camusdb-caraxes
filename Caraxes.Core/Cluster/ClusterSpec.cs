@@ -150,23 +150,10 @@ public sealed class ClusterSpec
     /// <c>memory_limit_mb</c> to make room for the data, and without this pin that larger limit would
     /// also inflate the heap budget and every proportional cache. A 4096 MiB limit derives
     /// 0x99999999 bytes, i.e. 2457.6 MiB; 2458 rounds to the same integer-MiB cache sizes.
-    /// 0 (the default) keeps the derived percentage: 60%, or 75% when <see cref="UsesSolarium"/>.</summary>
+    /// 0 (the default) keeps the derived 60%, on every storage engine: a Solarium node on SolariumDb 0.1.4
+    /// holds its memtables and cached data blocks in native memory as RocksDB does, so the same share fits
+    /// it (a 0.1.3 node, whose budgets were managed objects, needs a pin such as 3072 on a 4096 MiB node).</summary>
     public int GcHeapHardLimitMb { get; set; }
-
-    /// <summary>True when the <c>kahuna:</c> passthrough puts the key-value store or the Raft WAL on the
-    /// Solarium engine (<c>storage: solarium</c> or <c>wal_storage: solarium</c>). Solarium keeps its cache
-    /// and memtables as managed objects, so a Solarium node has none of the ~350-400 MiB of native RocksDB
-    /// memory the 60% heap budget leaves room for, and the budgets it was given count against the heap
-    /// instead: a 4096 MiB node with 768/256 MiB budgets under the 60% budget ran its heap at 2,140 MiB
-    /// median / 2,420 MiB peak of 2,458 and the leader died of a managed OutOfMemoryException 57 minutes
-    /// into a fault soak. The same node under a 3,072 MiB heap budget (75%, the runtime's own default
-    /// inside a limited container) passed with a 3,336-3,570 MiB container peak. The generator therefore
-    /// derives 75% for a Solarium node when <see cref="GcHeapHardLimitMb"/> is unset.</summary>
-    public bool UsesSolarium =>
-        IsSolarium(Kahuna.GetValueOrDefault("storage")) || IsSolarium(Kahuna.GetValueOrDefault("wal_storage"));
-
-    private static bool IsSolarium(object? engine) =>
-        engine is string name && string.Equals(name, "solarium", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Enables CamusDB's backup and point-in-time-recovery admin API on every node. Each node
     /// gets a host bind mount at <c>/backups</c> (under the run directory, one sub-directory per node, so
@@ -303,7 +290,7 @@ public sealed class ClusterSpec
                 "native memory (RocksDB) alone uses ~350-400 MiB per node");
 
         if (GcHeapHardLimitMb < 0)
-            throw new ClusterSpecException($"'gc_heap_hard_limit_mb' must be >= 0 (0 = 60% of memory_limit_mb, 75% on solarium), got {GcHeapHardLimitMb}");
+            throw new ClusterSpecException($"'gc_heap_hard_limit_mb' must be >= 0 (0 = 60% of memory_limit_mb), got {GcHeapHardLimitMb}");
 
         // The pin only means something under a container limit, and a heap allowed to grow to the
         // whole container leaves nothing for native memory: the node would be OOM-killed under load

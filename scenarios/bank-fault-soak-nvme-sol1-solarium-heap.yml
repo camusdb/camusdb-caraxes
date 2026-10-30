@@ -1,7 +1,7 @@
 # SOLARIUM ARM, HEAP BUDGET RAISED (2026-10-29, tag sol3). Same body and image as bank-fault-soak-nvme-sol1-solarium, plus
 # gc_heap_hard_limit_mb: 3072 (75% of the 4,096 MiB container) in place of the harness default of 60% (2,458 MiB) at the time.
-# (Since 2026-10-29 the harness derives 75% for any node with kahuna.storage or wal_storage on solarium, so the pin equals the
-# default; it stays explicit so this arm's heap budget is fixed whatever the harness default becomes.)
+# (The harness default is 60% for every node; it derived 75% for Solarium nodes for part of 2026-10-29, before SolariumDb 0.1.4
+# moved the memtables and cached data blocks to native memory. The pin keeps this arm's heap budget fixed either way.)
 # Why: in the sol2 run the leader camus2 died at 57 min with a managed OutOfMemoryException (FailFast by Kahuna's
 # ProcessFaults.Escalate) while gRPC serialized a Raft message to the peer that had just come back from a 30-s pause.
 # The 60% heap budget was derived for RocksDB, whose block cache and memtables are native memory outside the managed
