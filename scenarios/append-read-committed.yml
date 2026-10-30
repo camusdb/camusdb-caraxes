@@ -20,4 +20,12 @@ workload:
   read_percent: 20
   write_percent: 80
   append_keys: 8
+  # 8 appends per list, not the default 64. Since CamusDB 13354546 and 898aa2cd a pessimistic Read
+  # Committed statement reads at its own snapshot, so the dependency graph of this history is dense
+  # with the rw cycles read committed permits. At 64 the nightly of 2026-10-29 (run 40865231878) produced
+  # SCCs of 138 to 505 transactions that Elle's G-single-item search could not finish (verdict 'unknown'),
+  # and a 120 s budget per SCC still left 24 unfinished. Local reruns on the same CamusDB commit: 16 left
+  # one SCC of 117 transactions, close to what the hosted runner could not search; 8 keeps every SCC
+  # under 40 and Elle answers in about 10 s. The cap counts issued appends, so a list holds about 4.
+  append_max_writes_per_key: 8
 teardown: true
