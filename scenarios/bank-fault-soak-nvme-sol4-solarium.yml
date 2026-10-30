@@ -1,6 +1,6 @@
 # SOLARIUM 0.1.4 NATIVE-MEMORY SOAK PAIR (2026-10-29), arm = solarium. Image caraxes/camusdb:sol4 = CamusDB HEAD with
 # SolariumDb.Kahuna 0.1.4 pinned (Solarium commit 5c2e36e "Move memtables and cached data blocks to native memory"), Kahuna.Core
-# 1.14.6. Same body, faults and kahuna stanza as the sol1 pair; the two arms differ only in kahuna.storage / kahuna.wal_storage.
+# 1.14.7 (the pin in CamusDB at the time; the sol1 pair ran 1.14.6). Same body, faults and kahuna stanza as the sol1 pair; the two arms differ only in kahuna.storage / kahuna.wal_storage.
 # Why rerun: on 0.1.3 the cache and the memtables were managed objects. With explicit 768/256 MiB budgets under the harness's
 # 60% heap budget (2,458 MiB) the sol2 leader died of a managed OutOfMemoryException at 57 min; the same node passed at 3,072 MiB
 # (sol3, 7,753 ops/s) with GC pause time 387 s against the RocksDB control's 186 s. 0.1.4 moves the memtable entries into native

@@ -1,5 +1,5 @@
 # SOLARIUM 0.1.4 NATIVE-MEMORY SOAK PAIR (2026-10-29), arm = rocksdb. Image caraxes/camusdb:sol4 = CamusDB HEAD with
-# SolariumDb.Kahuna 0.1.4 pinned, Kahuna.Core 1.14.6. The control: the RocksDB pair on the same image, body and faults as the
+# SolariumDb.Kahuna 0.1.4 pinned, Kahuna.Core 1.14.7 (the sol1 pair ran 1.14.6). The control: the RocksDB pair on the same image, body and faults as the
 # solarium arm, so the Solarium arm's throughput, latency, memory and fault windows have a same-image reference (any regression
 # here is the CamusDB stack since the sol1 pair, not the engine). Same stanza as bank-fault-soak-nvme-sol1-rocksdb.
 # Shared memory: the two budget keys size the cache and the memtable budget for both engines (768/256 MiB, the fs2 bundle);
