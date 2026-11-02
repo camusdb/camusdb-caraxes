@@ -29,6 +29,9 @@ public sealed class MatrixSpec
 
     public ChecksSpec Checks { get; set; } = new();
 
+    /// <summary>The Elle check every cell runs when the workload is an Elle shape; see <see cref="ElleSpec"/>.</summary>
+    public ElleSpec Elle { get; set; } = new();
+
     public MatrixAxes Axes { get; set; } = new();
 
     public bool Teardown { get; set; } = true;
@@ -47,7 +50,18 @@ public sealed class MatrixSpec
         Cluster.Validate();
         Workload.Validate();
         Checks.Validate();
+        Elle.Validate();
         Axes.Validate();
+
+        if (Axes.TxnMode.Count > 0 && !Workload.IsElleKind)
+            throw new ScenarioException(
+                $"'axes.txn_mode' varies the wire mode of an Elle shape, but 'workload.kind' is '{Workload.Kind}'");
+
+        // The pipelined cell of a secondary-column arm would be refused by the workload after the
+        // cluster is up; refuse it here, before any container starts.
+        if (Workload.Kind == "rw" && Axes.TxnMode.Contains("pipeline") && Workload.RwAccess is "secondary" or "index")
+            throw new ScenarioException(
+                $"'axes.txn_mode' includes pipeline, which 'workload.rw_access: {Workload.RwAccess}' cannot run; use pk or join");
     }
 }
 
@@ -55,6 +69,15 @@ public sealed class MatrixSpec
 public sealed class MatrixAxes
 {
     public List<string> Locking { get; set; } = [];
+
+    /// <summary>Cluster isolation levels (<c>read_committed</c>, <c>serializable</c>); the workload
+    /// inherits the cell's level unless the base sets its own. Labelled <c>rc</c> and <c>ser</c> in cell
+    /// names.</summary>
+    public List<string> Isolation { get; set; } = [];
+
+    /// <summary>Wire modes of the Elle shapes (<c>explicit</c>, <c>autocommit</c>, <c>pipeline</c>); see
+    /// <see cref="WorkloadSpec.TxnMode"/>. The base workload must be an Elle kind.</summary>
+    public List<string> TxnMode { get; set; } = [];
 
     public List<int> Nodes { get; set; } = [];
 
@@ -82,6 +105,14 @@ public sealed class MatrixAxes
         foreach (string l in Locking)
             if (l is not ("optimistic" or "pessimistic"))
                 throw new ScenarioException($"'axes.locking' values must be 'optimistic' or 'pessimistic', got '{l}'");
+
+        foreach (string i in Isolation)
+            if (i is not ("read_committed" or "serializable"))
+                throw new ScenarioException($"'axes.isolation' values must be 'read_committed' or 'serializable', got '{i}'");
+
+        foreach (string m in TxnMode)
+            if (m is not ("explicit" or "autocommit" or "pipeline"))
+                throw new ScenarioException($"'axes.txn_mode' values must be 'explicit', 'autocommit' or 'pipeline', got '{m}'");
 
         foreach (int n in Nodes)
             if (n < 1)

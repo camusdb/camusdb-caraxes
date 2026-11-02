@@ -1,0 +1,27 @@
+# Elle list-append as pipelined transactions, no faults. The transaction travels as two frames: BEGIN,
+# every read and every append UPDATE in the first; the INSERTs for the UPDATEs that matched no list
+# and the commit in the second. The same history Elle checks in append-smoke, through the batch path.
+name: append-pipeline
+cluster:
+  name: appendpipe
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+  append_max_writes_per_key: 16
+  txn_mode: pipeline
+checks:
+  min_committed_txns: 1000
+teardown: true

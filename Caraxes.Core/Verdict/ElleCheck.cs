@@ -31,7 +31,7 @@ public sealed record ElleResult(
 }
 
 /// <summary>
-/// Runs elle-cli's list-append checker on an append run's <c>history.edn</c>.
+/// Runs elle-cli's list-append or rw-register checker on an Elle run's <c>history.edn</c>.
 ///
 /// <para>The check runs in a JDK container, like the workload, so the host needs Docker and nothing
 /// else. The run directory is mounted at <c>/work</c>: Elle reads the history there and writes its
@@ -47,9 +47,11 @@ public static class ElleCheck
 
     private const string ContainerJar = "/elle/elle-cli.jar";
 
-    /// <summary>The <c>docker</c> argument list. Separate from the run so it is testable without Docker.</summary>
+    /// <summary>The <c>docker</c> argument list. Separate from the run so it is testable without Docker.
+    /// <paramref name="model"/> is elle-cli's <c>--model</c>: <c>list-append</c> or <c>rw-register</c>
+    /// (<see cref="ElleSpec.ModelFor"/>).</summary>
     public static IReadOnlyList<string> BuildDockerArgs(
-        ElleSpec spec, string isolation, string hostRunDir, string hostJar, string containerName)
+        ElleSpec spec, string isolation, string model, string hostRunDir, string hostJar, string containerName)
     {
         List<string> args = ["run", "--rm", "--name", containerName];
         args.AddRange(WorkloadRunner.BuildUserArgs());
@@ -67,7 +69,7 @@ public static class ElleCheck
         args.AddRange(
         [
             "-jar", ContainerJar,
-            "--model", "list-append",
+            "--model", model,
             "--output", "json",
             "--consistency-models", spec.EffectiveConsistencyModels(isolation),
             "--directory", $"{ContainerWorkDir}/elle",
@@ -102,7 +104,7 @@ public static class ElleCheck
     /// that could not run; that becomes a result with an <see cref="ElleResult.Error"/>.
     /// </summary>
     public static async Task<ElleResult> RunAsync(
-        ElleSpec spec, string isolation, string runDir, string containerName, CancellationToken cancellationToken)
+        ElleSpec spec, string isolation, string model, string runDir, string containerName, CancellationToken cancellationToken)
     {
         string history = Path.Combine(runDir, "history.edn");
         if (!File.Exists(history))
@@ -120,7 +122,7 @@ public static class ElleCheck
         try
         {
             result = await ProcessRunner.RunAsync(
-                "docker", BuildDockerArgs(spec, isolation, runDir, jar, containerName),
+                "docker", BuildDockerArgs(spec, isolation, model, runDir, jar, containerName),
                 cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (Exception e) when (e is not OperationCanceledException)

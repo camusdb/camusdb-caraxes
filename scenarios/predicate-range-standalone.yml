@@ -1,0 +1,29 @@
+# Predicate reads by primary-key range on one node at replication factor 1: SELECT k, v FROM elle_pred
+# WHERE k BETWEEN @lo AND @hi, a range scan of the primary key, with COUNT(*) over the same range in the
+# same transaction. Same recording and checks as predicate-smoke, on the engine alone.
+name: predicate-range-standalone
+cluster:
+  name: pred1
+  nodes: 1
+  partitions: 3
+  replication_factor: 1
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: predicate
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 30
+  write_percent: 70
+  predicate_groups: 6
+  predicate_group_size: 8
+  predicate_max_writes_per_group: 12
+  predicate_max_txn_length: 3
+  predicate_read: range
+checks:
+  min_committed_txns: 1000
+teardown: true

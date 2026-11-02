@@ -35,9 +35,29 @@ public sealed class MatrixRunner
         matrixDir = Path.Combine(this.runRoot, "matrix", matrix.Name);
     }
 
-    public async Task<IReadOnlyList<MatrixCellResult>> RunAsync(CancellationToken cancellationToken = default)
+    /// <summary>The names of every cell the matrix expands to, in run order, for a driver that runs one
+    /// cell per job (<see cref="RunAsync"/> with <c>onlyCells</c>).</summary>
+    public static IReadOnlyList<string> ListCells(MatrixSpec matrix)
+        => MatrixExpander.Expand(matrix).Select(c => c.Name).ToList();
+
+    /// <summary>
+    /// Runs the sweep, or only the named cells. A name that is not a cell of this matrix is refused
+    /// before anything starts: a misspelt cell would otherwise run nothing and report a sweep of zero
+    /// cells as passed.
+    /// </summary>
+    public async Task<IReadOnlyList<MatrixCellResult>> RunAsync(
+        CancellationToken cancellationToken = default, IReadOnlyCollection<string>? onlyCells = null)
     {
         IReadOnlyList<MatrixCell> cells = MatrixExpander.Expand(matrix);
+        if (onlyCells is { Count: > 0 })
+        {
+            HashSet<string> known = cells.Select(c => c.Name).ToHashSet();
+            List<string> unknown = onlyCells.Where(n => !known.Contains(n)).ToList();
+            if (unknown.Count > 0)
+                throw new ScenarioException(
+                    $"no such cell(s) in matrix '{matrix.Name}': {string.Join(", ", unknown)}; cells are: {string.Join(", ", known.OrderBy(k => k))}");
+            cells = cells.Where(c => onlyCells.Contains(c.Name)).ToList();
+        }
         Directory.CreateDirectory(matrixDir);
 
         Console.WriteLine($"==> matrix '{matrix.Name}': {cells.Count} cell(s)");
@@ -98,12 +118,12 @@ public sealed class MatrixRunner
         sb.Append("| cell |");
         foreach (string k in axisKeys)
             sb.Append($" {k} |");
-        sb.AppendLine(" verdict | max recovery (s) | latency inflation | notes |");
+        sb.AppendLine(" verdict | committed txns | measured (s) | elle | max recovery (s) | latency inflation | notes |");
 
         sb.Append("|---|");
         foreach (string _ in axisKeys)
             sb.Append("---|");
-        sb.AppendLine("---|---|---|---|");
+        sb.AppendLine("---|---|---|---|---|---|---|");
 
         foreach (MatrixCellResult r in results)
         {
@@ -111,13 +131,19 @@ public sealed class MatrixRunner
             foreach (string k in axisKeys)
                 sb.Append($" {(r.Coordinates.TryGetValue(k, out string? v) ? v : "-")} |");
 
+            // Per-cell counts, not only verdicts: an Elle arm's evidence is how many transactions it
+            // committed and how long that took, and a sweep that reports PASS alone hides a vacuous cell.
+            string committed = r.Verdict.CommittedTxns is long txns ? txns.ToString("N0") : "-";
+            string measured = r.Verdict.MeasuredSeconds is double seconds ? seconds.ToString("N0") : "-";
+            string elle = r.Verdict.ElleVerdict ?? "-";
             string recovery = r.Verdict.Analysis is null ? "-" : $"{r.Verdict.Analysis.MaxRecoverySeconds:N1}";
             string inflation = r.Verdict.Analysis is null ? "-" : $"{r.Verdict.Analysis.LatencyInflation:N1}x";
             string note = r.Verdict.Passed
                 ? "ok"
                 : FirstFailureNote(r.Verdict);
 
-            sb.AppendLine($" {(r.Verdict.Passed ? "PASS" : "FAIL")} | {recovery} | {inflation} | {Escape(note)} |");
+            sb.AppendLine(
+                $" {(r.Verdict.Passed ? "PASS" : "FAIL")} | {committed} | {measured} | {elle} | {recovery} | {inflation} | {Escape(note)} |");
         }
 
         File.WriteAllText(Path.Combine(matrixDir, "matrix-report.md"), sb.ToString());
@@ -149,6 +175,9 @@ public sealed class MatrixRunner
                 r.Verdict.ReconciliationPassed,
                 maxRecoverySeconds = r.Verdict.Analysis?.MaxRecoverySeconds,
                 latencyInflation = r.Verdict.Analysis?.LatencyInflation,
+                committedTxns = r.Verdict.CommittedTxns,
+                measuredSeconds = r.Verdict.MeasuredSeconds,
+                elleVerdict = r.Verdict.ElleVerdict,
                 r.Verdict.Notes,
             }),
         };

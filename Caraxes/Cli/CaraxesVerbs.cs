@@ -84,6 +84,18 @@ public sealed class MatrixOptions
     [Option("matrix", Required = true, HelpText = "Path to the matrix YAML")]
     public string Matrix { get; set; } = "";
 
+    [Option("cell", Required = false, Separator = ',',
+        HelpText = "Run only these cells of the matrix (names as --list-cells prints them; repeatable or comma-separated). A CI driver uses this to run one cell per job.")]
+    public IEnumerable<string> Cells { get; set; } = Array.Empty<string>();
+
+    [Option("list-cells", Required = false, Default = false,
+        HelpText = "Print the name of every cell the matrix expands to, one per line, and exit without running anything.")]
+    public bool ListCells { get; set; }
+
+    [Option("correctness-only", Required = false, Default = false,
+        HelpText = "As for run: report the recovery-time and throughput-recovery rules as NOT GRADED instead of failing a cell on them, for a machine whose speed is not known.")]
+    public bool CorrectnessOnly { get; set; }
+
     [Option("run-root", Required = false,
         HelpText = "Directory holding run artifacts (default: ./runs)")]
     public string? RunRoot { get; set; }

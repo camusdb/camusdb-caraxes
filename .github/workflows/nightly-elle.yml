@@ -1,0 +1,237 @@
+name: nightly-elle
+
+# Nightly + manual dispatch: the no-fault Elle matrix against CamusDB main. Every cell runs the engine
+# with no nemesis, so a red cell is the engine, not a fault. Three shapes (list-append, rw-register,
+# predicate reads) x two topologies (one node at replication factor 1, three nodes at factor 3) x every
+# isolation level x locking mode x wire mode (explicit, autocommit, pipelined): 72 cells of 60 s, in six
+# jobs of twelve sequential cells, plus the four single-node kill arms, one per durability setting.
+#
+# Why the campaign exists: black-box isolation testing of other databases found most defects on one node
+# with one client and no faults, and one published analysis saw a stale read once in about 300,000
+# transactions. The nightly is the short
+# arm (ten nights = ten checker-valid runs per cell); weekly-elle-volume.yml is the long arm, a million
+# committed transactions per cell.
+#
+# What fails a cell: an Elle anomaly its isolation level forbids, an Elle verdict of unknown, a
+# final-state finding (a lost acknowledged append, a refused write that is visible, a duplicate primary
+# key, an access path that disagrees with the primary key), a predicate COUNT(*) that disagrees with
+# its SELECT under serializable isolation, a same-revision divergent apply, a node that stopped
+# answering, or a VACUOUS run under the committed-transaction floor. The recovery-time rules are NOT
+# GRADED here (--correctness-only), as in nightly-append.yml.
+#
+# Before any cell runs, the checker build is validated against histories whose verdicts are known
+# (tools/elle/validate.sh): a checker that passes a lost update, or fails a clean history, would make
+# every green cell meaningless, so that job gates the rest.
+on:
+  schedule:
+    # 06:00 UTC nightly, one hour after nightly-append.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      camusdb_repo:
+        description: 'CamusDB repository'
+        default: 'camusdb/camusdb'
+      camusdb_ref:
+        description: 'CamusDB git ref to test'
+        default: 'main'
+
+concurrency:
+  group: nightly-elle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CAMUSDB_REPO: ${{ inputs.camusdb_repo || 'camusdb/camusdb' }}
+  CAMUSDB_REF:  ${{ inputs.camusdb_ref  || 'main' }}
+  RUN_TAG: ci
+
+jobs:
+  # The checker must find what it must find before its verdicts count for anything.
+  validate-checker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache the elle-cli build
+        uses: actions/cache@v4
+        with:
+          path: tools/elle/elle-cli-*-elle*-standalone.jar
+          key: elle-cli-build-${{ hashFiles('tools/elle/build.sh') }}
+      - name: Build elle-cli (Elle 0.2.8)
+        run: bash tools/elle/build.sh
+      - name: Validate the checker against the known histories
+        run: bash tools/elle/validate.sh
+      - name: Keep the jar for the cells
+        uses: actions/upload-artifact@v6
+        with:
+          name: elle-cli-jar
+          path: tools/elle/elle-cli-*-elle*-standalone.jar
+          retention-days: 1
+
+  matrix:
+    needs: validate-checker
+    runs-on: ubuntu-latest
+    # Twelve cells of about 4 minutes each (bring-up, 10 s warm-up, 60 s run, final reads, teardown,
+    # Elle) plus one image build.
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        matrix:
+          - elle-append-n1
+          - elle-append-n3
+          - elle-rw-n1
+          - elle-rw-n3
+          - elle-predicate-n1
+          - elle-predicate-n3
+
+    defaults:
+      run:
+        working-directory: caraxes
+
+    steps:
+      - name: Check out Caraxes
+        uses: actions/checkout@v5
+        with:
+          path: caraxes
+
+      - name: Check out CamusDB
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CAMUSDB_REPO }}
+          ref: ${{ env.CAMUSDB_REF }}
+          path: camusdb
+
+      # Scenarios read the CamusDB checkout from cluster.camusdb_repo, which defaults to ~/camusdb.
+      - name: Link CamusDB checkout to ~/camusdb
+        run: |
+          ln -s "$GITHUB_WORKSPACE/camusdb" "$HOME/camusdb"
+          git -C "$HOME/camusdb" log --oneline -1
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Fetch the validated elle-cli jar
+        uses: actions/download-artifact@v6
+        with:
+          name: elle-cli-jar
+          path: caraxes/tools/elle
+
+      - name: Run matrix ${{ matrix.matrix }}
+        run: |
+          set -o pipefail
+          dotnet run --project Caraxes -c Release -- matrix \
+            --matrix "scenarios/matrix-${{ matrix.matrix }}.yml" \
+            --correctness-only \
+            2>&1 | tee caraxes.log
+
+      - name: Write the matrix report to the job summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.matrix }}"
+            echo
+            echo "CamusDB \`$CAMUSDB_REPO@$(git -C "$HOME/camusdb" rev-parse --short HEAD)\`"
+            echo
+            report="runs/matrix/${{ matrix.matrix }}/matrix-report.md"
+            if [ -f "$report" ]; then cat "$report"; else echo "no matrix-report.md was written; see caraxes.log"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The per-cell directories hold each cell's Elle history and verdict, final-state result, node logs
+      # and divergent-apply matches, and the matrix report lines them up.
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: caraxes-${{ matrix.matrix }}-${{ github.run_attempt }}
+          path: |
+            caraxes/runs/matrix/${{ matrix.matrix }}/
+            caraxes/caraxes.log
+          retention-days: 14
+          if-no-files-found: warn
+
+  kill-rf1:
+    needs: validate-checker
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          # One node at replication factor 1, SIGKILL twice, one arm per durability setting. The two
+          # arms with synchronous WAL writes off are measured, not gated: their contract allows loss.
+          - rw-kill-rf1-sync
+          - rw-kill-rf1-sync-single-fsync
+          - rw-kill-rf1-nosync
+          - rw-kill-rf1-nosync-single-fsync
+
+    defaults:
+      run:
+        working-directory: caraxes
+
+    steps:
+      - name: Check out Caraxes
+        uses: actions/checkout@v5
+        with:
+          path: caraxes
+
+      - name: Check out CamusDB
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CAMUSDB_REPO }}
+          ref: ${{ env.CAMUSDB_REF }}
+          path: camusdb
+
+      - name: Link CamusDB checkout to ~/camusdb
+        run: |
+          ln -s "$GITHUB_WORKSPACE/camusdb" "$HOME/camusdb"
+          git -C "$HOME/camusdb" log --oneline -1
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Fetch the validated elle-cli jar
+        uses: actions/download-artifact@v6
+        with:
+          name: elle-cli-jar
+          path: caraxes/tools/elle
+
+      - name: Run ${{ matrix.scenario }}
+        run: |
+          set -o pipefail
+          dotnet run --project Caraxes -c Release -- run \
+            --scenario "scenarios/${{ matrix.scenario }}.yml" \
+            --tag "$RUN_TAG" \
+            --correctness-only \
+            2>&1 | tee caraxes.log
+
+      - name: Write verdict to the job summary
+        if: always()
+        run: |
+          if [ ! -f caraxes.log ]; then
+            echo "The run did not start." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "### ${{ matrix.scenario }}"
+            echo
+            echo "CamusDB \`$CAMUSDB_REPO@$(git -C "$HOME/camusdb" rev-parse --short HEAD)\`"
+            echo
+            echo '```'
+            sed -n '/^scenario verdict:/,$p' caraxes.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: caraxes-${{ matrix.scenario }}-${{ github.run_attempt }}
+          path: |
+            caraxes/runs/scenarios/${{ matrix.scenario }}-${{ env.RUN_TAG }}/
+            caraxes/caraxes.log
+          retention-days: 14
+          if-no-files-found: warn

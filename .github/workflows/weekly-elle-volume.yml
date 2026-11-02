@@ -1,0 +1,166 @@
+name: weekly-elle-volume
+
+# The long arm of the no-fault Elle campaign: one cell per job, each running until a million transactions
+# committed (or four hours), then Elle over the whole history with a 12 GiB heap. A published analysis of
+# another database saw a stale read once in about 300,000 transactions; a cell that stops short of the million
+# fails as VACUOUS, so a green cell is a bounded statement about a known count, not a hope.
+#
+# Budget: a cell is one runner for one to three hours, and there are 72 cells. The schedule therefore
+# rotates: each Sunday runs one matrix file (twelve cells, in parallel), chosen by the ISO week number,
+# so every cell gets its million-transaction run once in six weeks. A dispatch runs the file you name,
+# or one cell of it. The matrix files are scenarios/matrix-elle-volume-*.yml.
+on:
+  schedule:
+    # 02:00 UTC on Sundays.
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: 'Volume matrix to run (elle-volume-{append,rw,predicate}-n{1,3}); empty = the week''s rotation'
+        default: ''
+      cell:
+        description: 'Run only this cell of the matrix (a name from caraxes matrix --list-cells); empty = every cell'
+        default: ''
+      camusdb_repo:
+        description: 'CamusDB repository'
+        default: 'camusdb/camusdb'
+      camusdb_ref:
+        description: 'CamusDB git ref to test'
+        default: 'main'
+
+concurrency:
+  group: weekly-elle-volume-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CAMUSDB_REPO: ${{ inputs.camusdb_repo || 'camusdb/camusdb' }}
+  CAMUSDB_REF:  ${{ inputs.camusdb_ref  || 'main' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      cells: ${{ steps.pick.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Cache the elle-cli build
+        uses: actions/cache@v4
+        with:
+          path: tools/elle/elle-cli-*-elle*-standalone.jar
+          key: elle-cli-build-${{ hashFiles('tools/elle/build.sh') }}
+      - name: Build elle-cli (Elle 0.2.8)
+        run: bash tools/elle/build.sh
+      - name: Validate the checker against the known histories
+        run: bash tools/elle/validate.sh
+      - name: Keep the jar for the cells
+        uses: actions/upload-artifact@v6
+        with:
+          name: elle-cli-jar
+          path: tools/elle/elle-cli-*-elle*-standalone.jar
+          retention-days: 1
+      - name: Pick the matrix and list its cells
+        id: pick
+        run: |
+          files=(elle-volume-append-n1 elle-volume-append-n3 elle-volume-rw-n1 elle-volume-rw-n3 elle-volume-predicate-n1 elle-volume-predicate-n3)
+          chosen="${{ inputs.matrix }}"
+          if [ -z "$chosen" ]; then
+            week=$(date -u +%V)
+            chosen="${files[$(( 10#$week % ${#files[@]} ))]}"
+          fi
+          echo "matrix=$chosen" >> "$GITHUB_OUTPUT"
+          only="${{ inputs.cell }}"
+          if [ -n "$only" ]; then
+            cells="[\"$only\"]"
+          else
+            cells=$(dotnet run --project Caraxes -c Release -- matrix --matrix "scenarios/matrix-$chosen.yml" --list-cells \
+              | grep -E '^elle-' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
+          echo "cells=$cells" >> "$GITHUB_OUTPUT"
+          echo "matrix $chosen, cells $cells"
+
+  cell:
+    needs: plan
+    runs-on: ubuntu-latest
+    # Up to four hours of load, then final reads and an Elle check over a million transactions.
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        cell: ${{ fromJSON(needs.plan.outputs.cells) }}
+
+    defaults:
+      run:
+        working-directory: caraxes
+
+    steps:
+      - name: Check out Caraxes
+        uses: actions/checkout@v5
+        with:
+          path: caraxes
+
+      - name: Check out CamusDB
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.CAMUSDB_REPO }}
+          ref: ${{ env.CAMUSDB_REF }}
+          path: camusdb
+
+      - name: Link CamusDB checkout to ~/camusdb
+        run: |
+          ln -s "$GITHUB_WORKSPACE/camusdb" "$HOME/camusdb"
+          git -C "$HOME/camusdb" log --oneline -1
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Fetch the validated elle-cli jar
+        uses: actions/download-artifact@v6
+        with:
+          name: elle-cli-jar
+          path: caraxes/tools/elle
+
+      - name: Run cell ${{ matrix.cell }} of ${{ needs.plan.outputs.matrix }}
+        run: |
+          set -o pipefail
+          dotnet run --project Caraxes -c Release -- matrix \
+            --matrix "scenarios/matrix-${{ needs.plan.outputs.matrix }}.yml" \
+            --cell "${{ matrix.cell }}" \
+            --correctness-only \
+            2>&1 | tee caraxes.log
+
+      - name: Write the cell's verdict to the job summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ matrix.cell }}"
+            echo
+            echo "CamusDB \`$CAMUSDB_REPO@$(git -C "$HOME/camusdb" rev-parse --short HEAD)\`"
+            echo
+            report="runs/matrix/${{ needs.plan.outputs.matrix }}/matrix-report.md"
+            if [ -f "$report" ]; then cat "$report"; fi
+            echo
+            echo '```'
+            sed -n '/^scenario verdict:/,/^=====/p' caraxes.log | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The history of a million transactions is large; the artifact keeps it for a week so an anomaly can
+      # be re-checked by hand with a longer search budget.
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: caraxes-${{ matrix.cell }}-${{ github.run_attempt }}
+          path: |
+            caraxes/runs/matrix/${{ needs.plan.outputs.matrix }}/
+            caraxes/caraxes.log
+          retention-days: 7
+          if-no-files-found: warn

@@ -145,12 +145,26 @@ public sealed class ChecksSpec
     /// </summary>
     public bool RequireReplicaMove { get; set; }
 
+    /// <summary>
+    /// Fail an Elle run as vacuous when fewer than this many transactions committed (the history's
+    /// <c>:ok</c> count). 0 (the default) turns it off.
+    ///
+    /// <para>A correctness run has no throughput rule, so a cluster that is wedged for the whole window
+    /// passes with three completed operations and a valid history of nothing: two such nights were
+    /// recorded as green. A volume arm sets this to the count it claims, a million, and
+    /// <see cref="WorkloadSpec.StopAfterCompleted"/> to the same number, so the run ends when it has the
+    /// count and fails when the duration ran out first.</para>
+    /// </summary>
+    public long MinCommittedTxns { get; set; }
+
     /// <summary>An independent copy, field for field. Memberwise for the reason given on
     /// <see cref="WorkloadSpec.Clone"/>: a hand-written list silently drops the next field added.</summary>
     public ChecksSpec Clone() => (ChecksSpec)MemberwiseClone();
 
     public void Validate()
     {
+        if (MinCommittedTxns < 0)
+            throw new ScenarioException($"'checks.min_committed_txns' must be >= 0 (0 = off), got {MinCommittedTxns}");
         if (MaxRecoverySeconds <= 0)
             throw new ScenarioException($"'checks.max_recovery_seconds' must be > 0, got {MaxRecoverySeconds}");
         if (MinRecoveredThroughputFraction is < 0 or > 1)

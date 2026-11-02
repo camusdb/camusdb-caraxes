@@ -100,14 +100,19 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Cache elle-cli
+      # Built, not downloaded: the last elle-cli release bundles Elle 0.2.7, before the rw-register fix of
+      # Jepsen 0.3.15; tools/elle/build.sh builds the commit that moved to Elle 0.2.8 and checks what it bundles.
+      - name: Cache the elle-cli build
         uses: actions/cache@v4
         with:
-          path: caraxes/tools/elle/*.jar
-          key: elle-cli-${{ hashFiles('caraxes/tools/elle/fetch.sh') }}
+          path: caraxes/tools/elle/elle-cli-*-elle*-standalone.jar
+          key: elle-cli-build-${{ hashFiles('caraxes/tools/elle/build.sh') }}
 
-      - name: Fetch elle-cli
-        run: bash tools/elle/fetch.sh
+      - name: Build elle-cli (Elle 0.2.8)
+        run: bash tools/elle/build.sh
+
+      - name: Validate the checker against the known histories
+        run: bash tools/elle/validate.sh
 
       # The slow fault uses tc netem inside the node containers, which needs the host kernel's sch_netem module.
       - name: Load netem

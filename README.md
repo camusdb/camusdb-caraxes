@@ -459,9 +459,19 @@ cluster is torn down, elle-cli checks the history for dependency cycles. That fi
 skew, read skew, and aborted or dirty reads, which no conserved sum can see.
 
 ```bash
-tools/elle/fetch.sh     # once: downloads the pinned elle-cli jar (needs no local Java)
+tools/elle/build.sh     # once: builds the pinned elle-cli jar with Leiningen in Docker (needs no local Java)
+tools/elle/validate.sh  # checks that build against histories whose verdicts are known
 dotnet run --project Caraxes -- run --scenario scenarios/append-smoke.yml
 ```
+
+The checker is built, not downloaded. The last elle-cli release (0.1.11, 2026-09-01) bundles Elle
+0.2.7 and Bifurcan 0.2.0-alpha7; Jepsen 0.3.15 (2026-10-16) fixed a safety defect in Elle's
+rw-register checker that came from two Bifurcan defects, and the fix is Elle 0.2.8 with the repaired
+Bifurcan. `build.sh` builds elle-cli at the commit that moved to Elle 0.2.8 and refuses a jar that
+bundles anything else. `validate.sh` then runs it over `tools/elle/fixtures/`: a clean rw-register
+history, an aborted read (G1a), an intermediate read (G1b), a lost update (G2-item), a write skew and
+a phantom recorded the way the predicate workload records them, a clean list-append history, a G1c
+and an incompatible order. Every verdict must match; the nightly workflows run it before any cell.
 
 The check runs `java` from the `eclipse-temurin:21-jdk` image, so the host needs Docker only. It
 must be a JDK image: the JRE image has no `jdk.random` module, and elle-cli cannot load without it.
@@ -491,6 +501,95 @@ The default model is `serializable`, not `strict-serializable`. A read-only snap
 that already returned. Set `consistency_models: strict-serializable` when real-time order is the claim
 under test. The seeded dataset is still created and reconciled, and the append shape leaves it
 untouched. See `scenarios/append-*.yml`.
+
+### Elle without faults: rw-register, predicate reads, every wire mode (`rw`, `predicate`)
+
+Black-box isolation testing of other databases found most defects on one node, with one client and no
+faults, and one published analysis saw a stale read once in about 300,000 transactions. These arms run the engine alone, with no nemesis, and
+record every attempt for Elle:
+
+- `workload.kind: rw` is Elle's **rw-register** workload: blind writes and point reads of single rows.
+  It reaches the point-read and point-write paths that list-append does not. `rw_key_type` puts the
+  key in an `INT64`, `STRING` or `NUMERIC` primary key (a table each); `rw_access` chooses the access
+  path: `pk`, `secondary` (an unindexed copy of the key, a scan with a filter), `index` (an indexed
+  copy) or `join` (through a reference table). Writes are blind `UPSERT`s on the `pk` and `join` paths
+  and an `UPDATE` located by the copy column, with an `INSERT` when it matched nothing, on the others.
+- `workload.kind: predicate` reads whole **groups of rows by a predicate** (`WHERE grp = @g` on an
+  index, `WHERE grp2 = @g` on a scan, or `WHERE k BETWEEN lo AND hi` on the primary key;
+  `predicate_read`) and writes single rows into groups. A group owns a known universe of
+  `predicate_group_size` keys, so a group read is recorded as one register read per key: the value of a
+  present key, `nil` for an absent one. That is what lets the point-key checker see a phantom (a key
+  absent, then present, inside one transaction) and write skew (two transactions that each saw the
+  other's key absent and inserted). Inside an explicit or pipelined transaction every group read also
+  runs `COUNT(*)` with the same predicate; under serializable isolation the count must equal the rows
+  selected, and a difference fails the run. Rows are never deleted (`tokens` covers deletes).
+- `workload.txn_mode` runs any Elle shape through a different server path: `explicit` (BEGIN, one
+  round trip per statement, COMMIT), `autocommit` (no BEGIN; every statement its own transaction, so
+  every Elle transaction is one step) or `pipeline` (the statements as pipelined frames, BEGIN first
+  and the commit last). `rw_access` `secondary` and `index` cannot be pipelined.
+- `workload.elle_key_distribution: exponential` makes the first active key take about half the steps
+  (Jepsen's default); `rw` and `predicate` use it unless told otherwise, `append` is uniform.
+
+**What rw-register can infer.** Every written value is unique across the run; every register starts as
+`nil`, and a read of `nil` is a read of the initial version; the steps inside a transaction are ordered,
+so a transaction that reads `k` and then writes `k` fixes the order of those two versions. Elle's
+`:linearizable-keys?`, `:sequential-keys?` and `:wfr-keys?` options are not used (elle-cli does not
+expose them, and Elle 0.2.7 documented a defect in them), so the checker never assumes a per-key order
+from real time or from the client's process. A stale read of an older version with no other link is
+therefore not an Elle finding on these arms; it is for the final-state check below and for the
+strict-serializable arm.
+
+**The final-state check.** After the writers stop, the workload reads every key it touched back and
+judges it against its ledger of every attempted write, then folds the verdict into
+`reconciliation.json`. A list must hold every acknowledged append exactly once (a missing one was lost
+for good); a register must hold a value some acknowledged or unresolved write produced, never one the
+server refused and never one no write produced. Every key is read by primary key and by the indexed
+copy (and by the join on the join arm); a disagreement is an access-path mismatch. A row count over the
+run's key range catches an extra row that no point read reaches, such as a duplicate primary key.
+An unresolved (`:info`) write may or may not be there and is never classed as aborted. The count of
+**real-time stale finals** (a final value that a later-started acknowledged write should have replaced)
+is reported, and fails the run only under a `strict-serializable` claim: serializability allows it.
+
+**Forbidden anomaly sets, by level.** Read committed: G0, G1a, G1b, G1c (Elle's `read-committed`
+model); G-single, G2-item, non-repeatable reads (Elle's `internal`) and the predicate `COUNT(*)` rule
+are reported, not failed. Serializable: everything above plus G-single, G2-item, G2, `internal`, lost
+update and the `COUNT(*)` rule; real-time order is allowed. Every level: the final-state findings.
+`elle.gated: false` turns an Elle finding, the count rule and the real-time rule into
+`MEASURED, NOT GATED` notes for an arm whose claim CamusDB does not make.
+
+**Vacuous runs and volume.** `checks.min_committed_txns` fails a run whose history holds fewer
+committed transactions than the floor (a wedged cluster passed two nights with three completed
+operations). `workload.stop_after_completed` ends the measured window once that many operations
+completed, so an arm is defined by a count instead of by a guess at the runner's speed; the rates are
+computed over the time actually measured, and `elle.json` records the count, the rate and the wire mode.
+
+```yaml
+workload:
+  kind: rw                        # or predicate
+  rw_keys: 8                      # registers active at one time (default 10)
+  rw_max_writes_per_key: 16       # writes before a slot moves to a new key (default 32)
+  rw_max_txn_length: 4            # steps per transaction (default 4; 1 under autocommit)
+  rw_key_type: int64              # int64 | string | numeric
+  rw_access: pk                   # pk | secondary | index | join
+  txn_mode: explicit              # explicit | autocommit | pipeline
+  elle_key_distribution: ""       # uniform | exponential
+  stop_after_completed: 0         # 0 = run the whole duration
+checks:
+  min_committed_txns: 1000        # VACUOUS under this many committed transactions
+elle:
+  gated: true                     # false = measured, not gated
+```
+
+The matrix files `scenarios/matrix-elle-{append,rw,predicate}-n{1,3}.yml` sweep locking × isolation
+× wire mode (12 cells of 60 s each) on one node at replication factor 1 and on three nodes at factor
+3; `.github/workflows/nightly-elle.yml` runs all six nightly, plus the four single-node kill arms
+(`scenarios/rw-kill-rf1-*.yml`, one per `wal_sync_writes` × `wal_single_fsync_commit` setting; the
+two with synchronous writes off are measured, not gated). The volume twins
+`scenarios/matrix-elle-volume-*.yml` run each cell to a million committed transactions;
+`.github/workflows/weekly-elle-volume.yml` runs one matrix file a week in rotation, one cell per job
+(`caraxes matrix --matrix <file> --cell <name>`; `--list-cells` prints the names). The matrix report
+carries each cell's committed transactions, measured seconds and Elle verdict beside its pass/fail.
+The strict-serializable arm belongs to the consistency evidence campaign and is not repeated here.
 
 ### Performance evidence (per-node metrics, cluster facts, comparability)
 

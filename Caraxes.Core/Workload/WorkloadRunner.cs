@@ -220,10 +220,48 @@ public sealed class WorkloadRunner
             AppendIfPositive(workloadArgs, "--append-max-txn-length", scenario.Workload.AppendMaxTxnLength);
         }
 
+        if (scenario.Workload.Kind == "rw")
+        {
+            AppendIfPositive(workloadArgs, "--rw-keys", scenario.Workload.RwKeys);
+            AppendIfPositive(workloadArgs, "--rw-max-writes-per-key", scenario.Workload.RwMaxWritesPerKey);
+            AppendIfPositive(workloadArgs, "--rw-max-txn-length", scenario.Workload.RwMaxTxnLength);
+            AppendIfSet(workloadArgs, "--rw-key-type", scenario.Workload.RwKeyType);
+            AppendIfSet(workloadArgs, "--rw-access", scenario.Workload.RwAccess);
+        }
+
+        if (scenario.Workload.Kind == "predicate")
+        {
+            AppendIfPositive(workloadArgs, "--predicate-groups", scenario.Workload.PredicateGroups);
+            AppendIfPositive(workloadArgs, "--predicate-group-size", scenario.Workload.PredicateGroupSize);
+            AppendIfPositive(workloadArgs, "--predicate-max-writes-per-group", scenario.Workload.PredicateMaxWritesPerGroup);
+            AppendIfPositive(workloadArgs, "--predicate-max-txn-length", scenario.Workload.PredicateMaxTxnLength);
+            AppendIfSet(workloadArgs, "--predicate-read", scenario.Workload.PredicateRead);
+        }
+
+        // The Elle shapes' wire mode and key distribution, passed only when set so an older workload
+        // build that lacks the flags still runs the explicit, default-distribution arm.
+        if (scenario.Workload.IsElleKind)
+        {
+            AppendIfSet(workloadArgs, "--txn-mode", scenario.Workload.TxnMode);
+            AppendIfSet(workloadArgs, "--elle-key-distribution", scenario.Workload.ElleKeyDistribution);
+        }
+
+        AppendIfPositive(workloadArgs, "--stop-after-completed", scenario.Workload.StopAfterCompleted);
+
         if (scenario.Workload.Kind == "tokens")
             AppendIfPositive(workloadArgs, "--tokens", scenario.Workload.Tokens);
 
         List<string> notes = [];
+
+        if (scenario.Workload.IsElleKind && scenario.Workload.TxnMode is "autocommit" or "pipeline")
+            notes.Add(scenario.Workload.TxnMode == "autocommit"
+                ? "Elle transactions run as autocommit statements (no BEGIN; one statement per transaction); a separate server path from the explicit arm"
+                : "Elle transactions sent as pipelined frames (BEGIN in the first frame, commit in the last); a separate server path from the explicit arm");
+
+        if (scenario.Workload.StopAfterCompleted > 0)
+            notes.Add(
+                $"the measured window ends after {scenario.Workload.StopAfterCompleted:N0} completed operations or " +
+                $"{scenario.Workload.Duration}, whichever comes first; rates are over the time actually measured");
 
         // Said out loud because it changes what the number means: a single-gateway run is not
         // comparable to a pooled one, and the endpoint string is otherwise buried in a command line
@@ -299,6 +337,14 @@ public sealed class WorkloadRunner
             return;
         args.Add(flag);
         args.Add(value.ToString());
+    }
+
+    private static void AppendIfSet(List<string> args, string flag, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+        args.Add(flag);
+        args.Add(value.Trim());
     }
 
     /// <summary>

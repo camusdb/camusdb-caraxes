@@ -1,0 +1,27 @@
+# Elle list-append as autocommit statements, no faults. No BEGIN: every statement is its own
+# transaction, so every Elle transaction is one step, a list read or one append. This is the
+# per-statement path; the history is still a list-append history and Elle still checks it.
+name: append-autocommit
+cluster:
+  name: appendauto
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: append
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  append_keys: 8
+  append_max_writes_per_key: 16
+  txn_mode: autocommit
+checks:
+  min_committed_txns: 1000
+teardown: true

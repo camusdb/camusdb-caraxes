@@ -1,0 +1,28 @@
+# Elle rw-register on one node at replication factor 1, no faults: the engine alone, with no
+# replication, no leader change and no placement in the way. Black-box isolation testing of other
+# databases found most defects in exactly this setting, so this is the arm that isolates the engine. Same shape and
+# checks as rw-smoke.
+name: rw-standalone
+cluster:
+  name: rw1
+  nodes: 1
+  partitions: 3
+  replication_factor: 1
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_max_txn_length: 4
+checks:
+  min_committed_txns: 1000
+teardown: true

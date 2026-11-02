@@ -77,7 +77,7 @@ public sealed class ElleCheckTests
     public void DockerArgsRunListAppendAsJsonOnTheHistory()
     {
         ElleSpec spec = new() { Anomalies = "G1a, G1b", CycleSearchTimeoutMs = 5000, HeapMb = 2048 };
-        IReadOnlyList<string> args = ElleCheck.BuildDockerArgs(spec, "serializable", "/tmp/run", "/tmp/elle.jar", "c-elle");
+        IReadOnlyList<string> args = ElleCheck.BuildDockerArgs(spec, "serializable", "list-append", "/tmp/run", "/tmp/elle.jar", "c-elle");
 
         Assert.That(args.Take(4), Is.EqualTo(new[] { "run", "--rm", "--name", "c-elle" }));
         Assert.That(args, Does.Contain("/tmp/run:/work"));
@@ -100,9 +100,30 @@ public sealed class ElleCheckTests
     public void PlotsOnLeavesElleItsDefaultPlotLimit()
     {
         IReadOnlyList<string> args = ElleCheck.BuildDockerArgs(
-            new ElleSpec { Plots = true }, "serializable", "/tmp/run", "/tmp/elle.jar", "c-elle");
+            new ElleSpec { Plots = true }, "serializable", "list-append", "/tmp/run", "/tmp/elle.jar", "c-elle");
 
         Assert.That(args, Does.Not.Contain("--max-plot-bytes"));
+    }
+
+    [Test]
+    public void RegisterShapesRunTheRwRegisterModel()
+    {
+        Assert.That(ElleSpec.ModelFor("append"), Is.EqualTo("list-append"));
+        Assert.That(ElleSpec.ModelFor("rw"), Is.EqualTo("rw-register"));
+        Assert.That(ElleSpec.ModelFor("predicate"), Is.EqualTo("rw-register"));
+
+        IReadOnlyList<string> args = ElleCheck.BuildDockerArgs(
+            new ElleSpec(), "read_committed", "rw-register", "/tmp/run", "/tmp/elle.jar", "c-elle");
+        Assert.That(ValueAfter(args, "--model"), Is.EqualTo("rw-register"));
+        Assert.That(ValueAfter(args, "--consistency-models"), Is.EqualTo("read-committed"));
+    }
+
+    [Test]
+    public void DefaultJarIsTheElle028Build()
+    {
+        // The 0.1.11 release bundles Elle 0.2.7, before the rw-register fix of Jepsen 0.3.15.
+        Assert.That(ElleSpec.DefaultJar, Does.Contain("elle0.2.8"));
+        Assert.That(new ElleSpec().Gated, Is.True);
     }
 
     [Test]
@@ -167,7 +188,7 @@ public sealed class ElleCheckTests
         Directory.CreateDirectory(dir);
         try
         {
-            ElleResult result = await ElleCheck.RunAsync(new ElleSpec(), "serializable", dir, "unused", CancellationToken.None);
+            ElleResult result = await ElleCheck.RunAsync(new ElleSpec(), "serializable", "list-append", dir, "unused", CancellationToken.None);
             Assert.That(result.Passed, Is.False);
             Assert.That(result.Error, Does.Contain("history.edn"));
         }

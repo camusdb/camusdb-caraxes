@@ -40,7 +40,7 @@ public static class ScenarioSpecReader
 
     private static readonly HashSet<string> AllowedElleKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "enabled", "jar", "image", "plots", "consistency_models", "anomalies", "cycle_search_timeout_ms", "heap_mb",
+        "enabled", "jar", "image", "plots", "consistency_models", "anomalies", "cycle_search_timeout_ms", "heap_mb", "gated",
     };
 
     private static readonly HashSet<string> AllowedChecksKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -49,7 +49,7 @@ public static class ScenarioSpecReader
         "require_no_divergent_apply", "grade_recovery",
         "min_recovered_throughput_fraction", "min_throughput_under_fault_fraction",
         "require_client_headroom", "require_cluster_facts", "require_quiet_host", "require_spread_leadership",
-        "require_split", "require_replica_move",
+        "require_split", "require_replica_move", "min_committed_txns",
     };
 
     private static readonly HashSet<string> AllowedNemesisKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -67,6 +67,9 @@ public static class ScenarioSpecReader
         "connection_options", "pipeline",
         "scan_probe_timeout",
         "append_keys", "append_max_writes_per_key", "append_max_txn_length",
+        "txn_mode", "elle_key_distribution", "stop_after_completed",
+        "rw_keys", "rw_max_writes_per_key", "rw_max_txn_length", "rw_key_type", "rw_access",
+        "predicate_groups", "predicate_group_size", "predicate_max_writes_per_group", "predicate_max_txn_length", "predicate_read",
         "tokens",
     };
 

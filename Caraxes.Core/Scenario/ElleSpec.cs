@@ -8,23 +8,47 @@
 namespace Caraxes.Core.Scenario;
 
 /// <summary>
-/// The Elle check of a <c>workload.kind: append</c> run: elle-cli, in a JRE container, reads the
-/// workload's <c>history.edn</c> and searches it for dependency cycles. It applies to the append shape
-/// only; the other shapes write no history.
+/// The Elle check of an Elle shape's run (<c>workload.kind</c> <c>append</c>, <c>rw</c> or
+/// <c>predicate</c>): elle-cli, in a JDK container, reads the workload's <c>history.edn</c> and
+/// searches it for dependency cycles. The append shape is checked by the list-append model, the rw
+/// and predicate shapes by the rw-register model. The other shapes write no history.
 ///
 /// <para>The check runs after the cluster is gone and needs nothing from it. It gates the verdict: a
 /// history Elle calls invalid fails the scenario, and so does one it could not decide
 /// (<c>unknown</c>) or could not read, because each of those leaves the run's isolation claim
-/// unproven.</para>
+/// unproven. <see cref="Gated"/> turns a finding into a measurement for an arm whose claim is not
+/// made, such as strict serializability.</para>
 /// </summary>
 public sealed class ElleSpec
 {
-    /// <summary>Default elle-cli build; <c>tools/elle/fetch.sh</c> downloads this one.</summary>
-    public const string DefaultJar = "tools/elle/elle-cli-0.1.11-standalone.jar";
+    /// <summary>
+    /// Default elle-cli build; <c>tools/elle/build.sh</c> builds it. It is elle-cli at the commit that
+    /// moved to Elle 0.2.8 (2026-10-16), which carries the rw-register fix of Jepsen 0.3.15 and the
+    /// repaired Bifurcan. The 0.1.11 release of 2026-09-01 bundles Elle 0.2.7, before that fix.
+    /// </summary>
+    public const string DefaultJar = "tools/elle/elle-cli-0.1.11-elle0.2.8-standalone.jar";
 
-    /// <summary>Run the check. Default true. Turning it off leaves an append run with no isolation
+    /// <summary>Run the check. Default true. Turning it off leaves an Elle run with no isolation
     /// verdict at all, and the scenario says so in its notes.</summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Fail the run on an Elle finding, a predicate count mismatch, or a real-time stale final value.
+    /// Default true. When false, each of those is reported as <c>MEASURED, NOT GATED</c> and the run
+    /// passes on its other checks.
+    ///
+    /// <para>For an arm that measures a claim CamusDB does not make. A strict-serializable arm records
+    /// how far real-time order is violated, and a sudden change in that measurement is a regression
+    /// signal even when the claim is absent; a durability arm with synchronous WAL writes off measures
+    /// what a kill costs under a setting whose contract allows loss. The workload's own final-state
+    /// check (lost appends, refused-but-visible values, duplicate rows) is never affected: those fail
+    /// reconciliation under every claim.</para>
+    /// </summary>
+    public bool Gated { get; set; } = true;
+
+    /// <summary>The checker model for a workload kind: <c>list-append</c> for the append shape,
+    /// <c>rw-register</c> for the rw and predicate shapes.</summary>
+    public static string ModelFor(string kind) => kind == "append" ? "list-append" : "rw-register";
 
     /// <summary>Path to the elle-cli standalone jar. A relative path resolves against the directory
     /// Caraxes runs from, as <c>runs/</c> does.</summary>
@@ -70,6 +94,10 @@ public sealed class ElleSpec
     /// <summary>JVM heap for the check, in MiB (<c>-Xmx</c>). 0 leaves the JVM default, a quarter of
     /// the container's memory. Elle holds the whole history in memory, so a long soak needs more.</summary>
     public int HeapMb { get; set; }
+
+    /// <summary>An independent copy, field for field, memberwise for the reason given on
+    /// <see cref="WorkloadSpec.Clone"/>. Every field is a value type or a string.</summary>
+    public ElleSpec Clone() => (ElleSpec)MemberwiseClone();
 
     /// <summary>The models to pass, the explicit setting first, else the one derived from isolation.</summary>
     public string EffectiveConsistencyModels(string isolation)

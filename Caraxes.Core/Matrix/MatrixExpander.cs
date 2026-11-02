@@ -30,6 +30,8 @@ public static class MatrixExpander
         // column; the name prefix (possibly empty, when the value is self-descriptive) shapes the cell
         // name — so `locking: optimistic` reads as "optimistic" while `nodes: 3` reads as "n3".
         List<AxisOption> locking = Axis("locking", "", matrix.Axes.Locking, v => v, (s, v) => s.Cluster.Locking = v);
+        List<AxisOption> isolation = Axis("isolation", "", matrix.Axes.Isolation, v => v == "read_committed" ? "rc" : "ser", (s, v) => s.Cluster.Isolation = v);
+        List<AxisOption> txnMode = Axis("txn_mode", "", matrix.Axes.TxnMode, v => v, (s, v) => s.Workload.TxnMode = v);
         List<AxisOption> nodes = Axis("nodes", "n", matrix.Axes.Nodes, v => v.ToString(), (s, v) => s.Cluster.Nodes = v);
         List<AxisOption> sharding = Axis("sharding", "shard", matrix.Axes.Sharding, v => v ? "on" : "off", (s, v) => s.Cluster.KeyRangeSharding = v);
         List<AxisOption> parallelism = Axis("parallelism", "par", matrix.Axes.Parallelism, v => v.ToString(), (s, v) => s.Cluster.MaxQueryParallelism = v);
@@ -46,12 +48,14 @@ public static class MatrixExpander
 
         List<MatrixCell> cells = [];
         foreach (AxisOption l in locking)
-            foreach (AxisOption n in nodes)
-                foreach (AxisOption sh in sharding)
-                    foreach (AxisOption par in parallelism)
-                        foreach (AxisOption w in workers)
-                            foreach (AxisOption nem in nemesis)
-                                cells.Add(BuildCell(matrix, sharedImage, [l, n, sh, par, w, nem]));
+            foreach (AxisOption iso in isolation)
+                foreach (AxisOption mode in txnMode)
+                    foreach (AxisOption n in nodes)
+                        foreach (AxisOption sh in sharding)
+                            foreach (AxisOption par in parallelism)
+                                foreach (AxisOption w in workers)
+                                    foreach (AxisOption nem in nemesis)
+                                        cells.Add(BuildCell(matrix, sharedImage, [l, iso, mode, n, sh, par, w, nem]));
 
         return cells;
     }
@@ -64,6 +68,7 @@ public static class MatrixExpander
             Cluster = CloneCluster(matrix.Cluster),
             Workload = matrix.Workload.Clone(),
             Checks = matrix.Checks.Clone(),
+            Elle = matrix.Elle.Clone(),
             Teardown = matrix.Teardown,
             SettleSeconds = matrix.SettleSeconds,
         };

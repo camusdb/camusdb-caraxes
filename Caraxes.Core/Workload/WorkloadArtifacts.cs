@@ -86,6 +86,103 @@ public sealed class ReconciliationSummary
 
     /// <summary>The token workload's verdict on its own table, or null for every other shape.</summary>
     public TokenSummary? Tokens { get; set; }
+
+    /// <summary>An Elle shape's verdict on the final state of its own table, or null for every other shape.</summary>
+    public QuiescentSummary? Elle { get; set; }
+}
+
+/// <summary>
+/// The subset of an Elle shape's final-state verdict the scenario reports (the workload's
+/// <c>quiescent</c> check in <c>reconciliation.json</c>). The pass/fail is already folded into
+/// <see cref="ReconciliationSummary.Passed"/>; <see cref="RealtimeStaleFinals"/> is the one count that
+/// is not a failure there, because serializability allows it, and the verdict grades it only under a
+/// strict-serializable claim.
+/// </summary>
+public sealed class QuiescentSummary
+{
+    public string Status { get; set; } = "";
+
+    public string Model { get; set; } = "";
+
+    public long Keys { get; set; }
+
+    public long KeysRead { get; set; }
+
+    public long OkWrites { get; set; }
+
+    public long InfoWrites { get; set; }
+
+    public long FailWrites { get; set; }
+
+    public long RowsPresent { get; set; }
+
+    public long LostWrites { get; set; }
+
+    public long AbortedVisible { get; set; }
+
+    public long GarbageValues { get; set; }
+
+    public long DuplicateRows { get; set; }
+
+    public long PathMismatches { get; set; }
+
+    public long RealtimeStaleFinals { get; set; }
+
+    public long CountMismatches { get; set; }
+
+    public List<string> Failures { get; set; } = [];
+
+    public bool Passed { get; set; }
+}
+
+/// <summary>
+/// What the workload wrote to <c>elle.json</c> about the history it recorded: the model, the wire
+/// mode, the counts and the measured seconds. This is the per-arm evidence the verdict prints and the
+/// vacuous-run rule reads; it is not Elle's verdict, which comes from the check that runs afterwards.
+/// </summary>
+public sealed class ElleFacts
+{
+    public string Model { get; set; } = "";
+
+    public string Shape { get; set; } = "";
+
+    public string TxnMode { get; set; } = "";
+
+    public string Isolation { get; set; } = "";
+
+    public string Locking { get; set; } = "";
+
+    public string KeyDistribution { get; set; } = "";
+
+    public double MeasuredSeconds { get; set; }
+
+    public long Invocations { get; set; }
+
+    public long Ok { get; set; }
+
+    public long Fail { get; set; }
+
+    public long Info { get; set; }
+
+    public long OpenAtClose { get; set; }
+
+    public long Processes { get; set; }
+
+    public double OkPerSecond { get; set; }
+
+    public long KeysUsed { get; set; }
+
+    public long GroupsUsed { get; set; }
+
+    public long GroupReadsWithCount { get; set; }
+
+    public long CountMismatches { get; set; }
+
+    public long AcknowledgedWrites { get; set; }
+
+    public long UnresolvedWrites { get; set; }
+
+    public long FailedWrites { get; set; }
 }
 
 /// <summary>
@@ -280,6 +377,11 @@ public static class WorkloadArtifacts
 
     public static ReconciliationSummary? ReadReconciliation(string outputDir) =>
         ReadJson<ReconciliationSummary>(Path.Combine(outputDir, "reconciliation.json"));
+
+    /// <summary>Null when the run wrote no <c>elle.json</c>: not an Elle shape, or a workload that
+    /// stopped before the history closed.</summary>
+    public static ElleFacts? ReadElleFacts(string outputDir) =>
+        ReadJson<ElleFacts>(Path.Combine(outputDir, "elle.json"));
 
     /// <summary>Null when the run did not capture cluster facts (the scenario turned them off, or the
     /// workload predates them) — which is itself worth reporting, since the run then cannot say what

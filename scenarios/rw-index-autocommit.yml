@@ -1,0 +1,32 @@
+# Elle rw-register by an indexed copy of a STRING key, as autocommit statements. Every statement is its
+# own transaction (no BEGIN), so every Elle transaction is one step: a point read through the secondary
+# index, or an UPDATE located by the index with an INSERT when it matched nothing. This is the
+# per-statement path, where a point read or write commits on its own, and it is the arm where a
+# secondary index that lags its row shows up: the final-state check reads every key by primary key and
+# by the index and fails on any disagreement.
+name: rw-index-autocommit
+cluster:
+  name: rwidx
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_key_type: string
+  rw_access: index
+  txn_mode: autocommit
+checks:
+  min_committed_txns: 1000
+teardown: true

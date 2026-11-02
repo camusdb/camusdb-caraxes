@@ -1,0 +1,35 @@
+# Elle rw-register through a join, as pipelined transactions. Each register row is reached through a
+# reference row (SELECT r.v FROM elle_rw_i64_ref j JOIN elle_rw_i64 r ON r.k = j.target WHERE j.k = @k),
+# and both rows are written by blind UPSERTs. The whole transaction travels as one pipelined frame with
+# BEGIN first and the commit last, so the server runs it from a single exchange: the batch path.
+#
+# First run 2026-11-02: NOT serializable (lost updates, non-repeatable reads, G-single, G2-item). The
+# explicit twin rw-join-explicit fails the same way and the pipelined primary-key arm passes, so the
+# finding is the join read path, not the pipeline; see rw-join-explicit.yml. Kept out of the nightly
+# matrix until the engine fix lands.
+name: rw-join-pipeline
+cluster:
+  name: rwjoin
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_max_txn_length: 4
+  rw_access: join
+  txn_mode: pipeline
+checks:
+  min_committed_txns: 1000
+teardown: true

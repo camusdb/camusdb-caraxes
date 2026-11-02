@@ -1,0 +1,47 @@
+# Process kill on a single node at replication factor 1, with Elle rw-register running through it:
+# wal_sync_writes: true, wal_single_fsync_commit: false. The cluster's standing durability posture: every WAL write is synchronous and the client is acknowledged after the leader's own commit fsync. An acknowledged write must survive the kill, so this arm is gated.
+#
+# The one node is killed twice with SIGKILL and restarted; while it is down nothing can commit, so the
+# availability rule is off and the recovery rule is the one that matters. Elle checks the whole
+# history under the serializable model, and the final-state check reads every register back after the
+# second restart: an acknowledged write that is gone, a refused write that is visible, or a duplicate
+# row each fail it. Published single-node kill tests of other databases found nil reads, G-single and P4
+# under exactly this fault.
+name: rw-kill-rf1-sync
+cluster:
+  name: rwkillrf1sync
+  nodes: 1
+  partitions: 3
+  replication_factor: 1
+  locking: pessimistic
+  isolation: serializable
+  kahuna:
+    wal_sync_writes: true
+    wal_single_fsync_commit: false
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 90s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_max_txn_length: 4
+  request_timeout: 10
+nemesis:
+  seed: 7
+  events:
+    - { at: 20s, fault: kill, target: camus1, duration: 10s }
+    - { at: 55s, fault: kill, target: camus1, duration: 10s }
+checks:
+  min_committed_txns: 500
+  require_progress_under_fault: false
+  require_recovery: true
+  max_recovery_seconds: 60
+elle:
+  gated: true
+teardown: true

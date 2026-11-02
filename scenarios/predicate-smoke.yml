@@ -1,0 +1,35 @@
+# Predicate reads under Elle, no faults, three nodes. A transaction reads whole groups of rows by an
+# indexed predicate (SELECT k, v FROM elle_pred WHERE grp = @g, with COUNT(*) beside it in the same
+# transaction) and writes single rows into groups by blind UPSERT. Each group owns a known universe of 8
+# keys, so a group read is recorded for Elle's rw-register checker as 8 register reads: the value of
+# each present key and nil for each absent one. That is what lets a point-key checker see a phantom (a
+# key absent, then present, inside one transaction) and write skew (two transactions that each saw the
+# other's key absent and inserted). Under serializable isolation the COUNT(*) must equal the rows the
+# same transaction selected; a difference fails the run as an intra-transaction inconsistency.
+#
+# Rows are never deleted: nil is always the initial version. tokens-*.yml covers deletes.
+name: predicate-smoke
+cluster:
+  name: pred
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: predicate
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 30
+  write_percent: 70
+  predicate_groups: 6
+  predicate_group_size: 8
+  predicate_max_writes_per_group: 12
+  predicate_max_txn_length: 3
+checks:
+  min_committed_txns: 1000
+teardown: true

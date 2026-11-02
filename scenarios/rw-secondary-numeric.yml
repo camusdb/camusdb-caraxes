@@ -1,0 +1,30 @@
+# Elle rw-register by an unindexed copy of a NUMERIC key, at read committed with optimistic locking.
+# Every read and every write locates its row by a column with no index, so each is a scan with a
+# filter; the key type exercises the NUMERIC encoding in the primary key and in the parameters. Elle
+# checks the read-committed model (G0, G1a, G1b, G1c); write skew, read skew and non-repeatable reads
+# are allowed at this level. The final-state check is the same at every level.
+name: rw-secondary-numeric
+cluster:
+  name: rwsec
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_key_type: numeric
+  rw_access: secondary
+checks:
+  min_committed_txns: 500
+teardown: true

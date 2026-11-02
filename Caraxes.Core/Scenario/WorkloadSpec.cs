@@ -50,6 +50,83 @@ public sealed class WorkloadSpec
     /// 0 leaves the workload default (4).</summary>
     public int AppendMaxTxnLength { get; set; }
 
+    /// <summary>
+    /// Elle shapes (<c>append</c>, <c>rw</c>, <c>predicate</c>): how a transaction reaches the server
+    /// (<c>--txn-mode</c>). <c>explicit</c> is BEGIN, one round trip per statement, COMMIT;
+    /// <c>autocommit</c> runs every statement as its own transaction with no BEGIN, so every Elle
+    /// transaction is one step long; <c>pipeline</c> sends the statements as pipelined frames with the
+    /// BEGIN in the first and the commit in the last. Empty passes nothing, which is the workload's
+    /// <c>explicit</c>. Each mode is a separate server path and a separate arm of the no-fault matrix.
+    /// </summary>
+    public string TxnMode { get; set; } = "";
+
+    /// <summary>Elle shapes: how a step picks among the active keys (<c>--elle-key-distribution</c>):
+    /// <c>uniform</c>, or <c>exponential</c>, where the first active slot takes about half the steps and
+    /// each later slot half of the rest. The hot key is what makes a rare anomaly show in a bounded
+    /// run. Empty leaves the workload's own default: uniform for append, exponential for rw and
+    /// predicate.</summary>
+    public string ElleKeyDistribution { get; set; } = "";
+
+    /// <summary><c>rw</c> only: registers active at one time (<c>--rw-keys</c>). 0 leaves the workload
+    /// default (10).</summary>
+    public int RwKeys { get; set; }
+
+    /// <summary><c>rw</c> only: writes a register takes before its slot moves to a new key
+    /// (<c>--rw-max-writes-per-key</c>). 0 leaves the workload default (32).</summary>
+    public int RwMaxWritesPerKey { get; set; }
+
+    /// <summary><c>rw</c> only: most steps in one transaction (<c>--rw-max-txn-length</c>). 0 leaves the
+    /// workload default (4).</summary>
+    public int RwMaxTxnLength { get; set; }
+
+    /// <summary><c>rw</c> only: SQL type of the key column, each on a table of its own
+    /// (<c>--rw-key-type</c>): <c>int64</c>, <c>string</c> or <c>numeric</c>. Empty leaves the
+    /// workload default (int64).</summary>
+    public string RwKeyType { get; set; } = "";
+
+    /// <summary><c>rw</c> only: the access path of reads and writes (<c>--rw-access</c>): <c>pk</c>,
+    /// <c>secondary</c> (an unindexed copy of the key), <c>index</c> (an indexed copy) or <c>join</c>
+    /// (through a reference table). Empty leaves the workload default (pk). The pipelined mode needs
+    /// <c>pk</c> or <c>join</c>, because a write located by a secondary column needs the UPDATE's row
+    /// count before it can INSERT.</summary>
+    public string RwAccess { get; set; } = "";
+
+    /// <summary><c>predicate</c> only: groups active at one time (<c>--predicate-groups</c>). 0 leaves
+    /// the workload default (8).</summary>
+    public int PredicateGroups { get; set; }
+
+    /// <summary><c>predicate</c> only: keys in a group's universe (<c>--predicate-group-size</c>); a
+    /// group read is recorded as this many register reads. 0 leaves the workload default (8).</summary>
+    public int PredicateGroupSize { get; set; }
+
+    /// <summary><c>predicate</c> only: writes a group takes before its slot moves on
+    /// (<c>--predicate-max-writes-per-group</c>). 0 leaves the workload default (12).</summary>
+    public int PredicateMaxWritesPerGroup { get; set; }
+
+    /// <summary><c>predicate</c> only: most steps in one transaction (<c>--predicate-max-txn-length</c>).
+    /// 0 leaves the workload default (3).</summary>
+    public int PredicateMaxTxnLength { get; set; }
+
+    /// <summary><c>predicate</c> only: the predicate a group read uses (<c>--predicate-read</c>):
+    /// <c>index</c> (an indexed column), <c>scan</c> (an unindexed column, a table scan) or
+    /// <c>range</c> (a primary-key range). Empty leaves the workload default (index).</summary>
+    public string PredicateRead { get; set; } = "";
+
+    /// <summary>
+    /// End the measured window early once this many operations completed successfully
+    /// (<c>--stop-after-completed</c>), or at <see cref="Duration"/>, whichever comes first. 0 (the
+    /// default) runs the whole duration.
+    ///
+    /// <para>This is how an arm is defined by a count instead of by a guess at the machine's speed: a
+    /// million-transaction run sets this to a million and a duration long enough on any runner, and
+    /// <see cref="ChecksSpec.MinCommittedTxns"/> then fails the run as vacuous when the duration ran out
+    /// first. For an Elle shape every completed operation is one committed transaction.</para>
+    /// </summary>
+    public long StopAfterCompleted { get; set; }
+
+    /// <summary>True for the shapes that write an Elle history and get an Elle verdict.</summary>
+    public bool IsElleKind => Kind is "append" or "rw" or "predicate";
+
     /// <summary>Database the workload seeds and drives; <c>init</c> creates it if absent.</summary>
     public string Database { get; set; } = "caraxes";
 
@@ -231,8 +308,63 @@ public sealed class WorkloadSpec
 
     public void Validate()
     {
-        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "tokens"))
-            throw new ScenarioException($"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append' or 'tokens', got '{Kind}'");
+        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "rw" or "predicate" or "tokens"))
+            throw new ScenarioException(
+                $"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append', 'rw', 'predicate' or 'tokens', got '{Kind}'");
+
+        if (TxnMode is not ("" or "explicit" or "autocommit" or "pipeline"))
+            throw new ScenarioException($"'workload.txn_mode' must be 'explicit', 'autocommit' or 'pipeline', got '{TxnMode}'");
+
+        if (!string.IsNullOrEmpty(TxnMode) && !IsElleKind)
+            throw new ScenarioException($"'workload.txn_mode' applies only to the append, rw and predicate kinds, but kind is '{Kind}'");
+
+        if (ElleKeyDistribution is not ("" or "uniform" or "exponential"))
+            throw new ScenarioException($"'workload.elle_key_distribution' must be 'uniform' or 'exponential', got '{ElleKeyDistribution}'");
+
+        if (!string.IsNullOrEmpty(ElleKeyDistribution) && !IsElleKind)
+            throw new ScenarioException(
+                $"'workload.elle_key_distribution' applies only to the append, rw and predicate kinds, but kind is '{Kind}'");
+
+        if (RwKeys < 0 || RwMaxWritesPerKey < 0 || RwMaxTxnLength < 0)
+            throw new ScenarioException(
+                "'workload.rw_keys', 'workload.rw_max_writes_per_key' and 'workload.rw_max_txn_length' " +
+                $"must be >= 0 (0 = workload default), got {RwKeys}, {RwMaxWritesPerKey}, {RwMaxTxnLength}");
+
+        if (RwKeyType is not ("" or "int64" or "string" or "numeric"))
+            throw new ScenarioException($"'workload.rw_key_type' must be 'int64', 'string' or 'numeric', got '{RwKeyType}'");
+
+        if (RwAccess is not ("" or "pk" or "secondary" or "index" or "join"))
+            throw new ScenarioException($"'workload.rw_access' must be 'pk', 'secondary', 'index' or 'join', got '{RwAccess}'");
+
+        bool rwSettings = RwKeys > 0 || RwMaxWritesPerKey > 0 || RwMaxTxnLength > 0
+            || !string.IsNullOrEmpty(RwKeyType) || !string.IsNullOrEmpty(RwAccess);
+        if (Kind != "rw" && rwSettings)
+            throw new ScenarioException($"'workload.rw_*' settings apply only to 'workload.kind: rw', but kind is '{Kind}'");
+
+        if (Kind == "rw" && TxnMode == "pipeline" && RwAccess is "secondary" or "index")
+            throw new ScenarioException(
+                "'workload.txn_mode: pipeline' sends every statement before any answer returns, so a write located by a " +
+                $"secondary column cannot be pipelined; use 'workload.rw_access' pk or join, got '{RwAccess}'");
+
+        if (PredicateGroups < 0 || PredicateGroupSize < 0 || PredicateMaxWritesPerGroup < 0 || PredicateMaxTxnLength < 0)
+            throw new ScenarioException(
+                "'workload.predicate_groups', 'workload.predicate_group_size', 'workload.predicate_max_writes_per_group' and " +
+                $"'workload.predicate_max_txn_length' must be >= 0 (0 = workload default), got {PredicateGroups}, {PredicateGroupSize}, " +
+                $"{PredicateMaxWritesPerGroup}, {PredicateMaxTxnLength}");
+
+        if (PredicateGroupSize == 1)
+            throw new ScenarioException("'workload.predicate_group_size' must be >= 2 (a predicate needs keys to select among), got 1");
+
+        if (PredicateRead is not ("" or "index" or "scan" or "range"))
+            throw new ScenarioException($"'workload.predicate_read' must be 'index', 'scan' or 'range', got '{PredicateRead}'");
+
+        bool predicateSettings = PredicateGroups > 0 || PredicateGroupSize > 0 || PredicateMaxWritesPerGroup > 0
+            || PredicateMaxTxnLength > 0 || !string.IsNullOrEmpty(PredicateRead);
+        if (Kind != "predicate" && predicateSettings)
+            throw new ScenarioException($"'workload.predicate_*' settings apply only to 'workload.kind: predicate', but kind is '{Kind}'");
+
+        if (StopAfterCompleted < 0)
+            throw new ScenarioException($"'workload.stop_after_completed' must be >= 0 (0 = run the whole duration), got {StopAfterCompleted}");
 
         if (Tokens < 0)
             throw new ScenarioException($"'workload.tokens' must be >= 0 (0 = workload default), got {Tokens}");

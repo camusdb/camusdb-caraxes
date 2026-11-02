@@ -25,6 +25,17 @@ public sealed record ScenarioVerdict(
 {
     /// <summary>Fault-window correlation for a run that had a nemesis; null for a fault-free baseline.</summary>
     public Caraxes.Core.Verdict.FaultAnalysis? Analysis { get; init; }
+
+    /// <summary>An Elle run's committed transactions (the history's <c>:ok</c> count); null for every
+    /// other shape, and for a run that wrote no history statistics.</summary>
+    public long? CommittedTxns { get; init; }
+
+    /// <summary>Seconds the Elle run measured; null as for <see cref="CommittedTxns"/>.</summary>
+    public double? MeasuredSeconds { get; init; }
+
+    /// <summary>Elle's <c>valid?</c> for an Elle run (<c>true</c>, <c>false</c>, <c>unknown</c>), or why
+    /// there is none; null for every other shape.</summary>
+    public string? ElleVerdict { get; init; }
 }
 
 /// <summary>
@@ -215,11 +226,13 @@ public sealed class ScenarioRunner
         }
 
         // After teardown: Elle needs only the history, and a long check should not hold a fleet up.
-        if (scenario.Workload.Kind == "append" && scenario.Elle.Enabled && run is not null)
+        if (scenario.Workload.IsElleKind && scenario.Elle.Enabled && run is not null)
         {
-            Console.WriteLine($"==> checking the history with Elle ({scenario.Elle.EffectiveConsistencyModels(scenario.EffectiveIsolation)})");
+            string model = ElleSpec.ModelFor(scenario.Workload.Kind);
+            Console.WriteLine(
+                $"==> checking the history with Elle ({model}, {scenario.Elle.EffectiveConsistencyModels(scenario.EffectiveIsolation)})");
             elleResult = await ElleCheck.RunAsync(
-                scenario.Elle, scenario.EffectiveIsolation, Path.Combine(artifactsDir, "run"),
+                scenario.Elle, scenario.EffectiveIsolation, model, Path.Combine(artifactsDir, "run"),
                 $"{plan.ProjectName}-elle", cancellationToken).ConfigureAwait(false);
         }
 
@@ -577,6 +590,20 @@ public sealed class ScenarioRunner
         else if (scenario.Workload.Kind == "tokens")
             notes.Add("tokens: NO VERDICT — reconciliation.json carries no token result");
 
+        // The Elle shapes' final-state verdict. Its failures already fail reconciliation; this says what
+        // was read and what was found, so a reader sees a lost append or a duplicate row by name.
+        if (reconciliation?.Elle is QuiescentSummary quiescent)
+            notes.Add(
+                $"elle final state: {(quiescent.Passed ? "PASS" : "FAIL")}" +
+                (quiescent.Status == "verified" ? "" : $" ({quiescent.Status})") +
+                $" — {quiescent.KeysRead:N0} key(s) read back ({quiescent.Keys:N0} with writes), {quiescent.RowsPresent:N0} present; " +
+                $"{quiescent.OkWrites:N0} acknowledged / {quiescent.InfoWrites:N0} unresolved / {quiescent.FailWrites:N0} refused write(s); " +
+                $"{quiescent.LostWrites:N0} lost, {quiescent.AbortedVisible:N0} refused-but-visible, {quiescent.GarbageValues:N0} garbage, " +
+                $"{quiescent.DuplicateRows:N0} duplicate row(s), {quiescent.PathMismatches:N0} access-path mismatch(es), " +
+                $"{quiescent.RealtimeStaleFinals:N0} real-time stale final(s)");
+        else if (scenario.Workload.IsElleKind && reconciliation is not null)
+            notes.Add("elle final state: NO VERDICT — reconciliation.json carries no final-state result (older workload build?)");
+
         // A scenario passes when the workload accepted the run AND reconciliation held — that is the
         // real consistency guard (versions, row count, accounting all balanced). Internal errors get
         // graded by context: with NO fault injected, an internal error is unexplained and damns the
@@ -605,7 +632,7 @@ public sealed class ScenarioRunner
                 WriteAnalysisReport(analysis);
         }
 
-        GradeElle(notes, ref passed);
+        ElleFacts? elleFacts = GradeElle(outputDir, reconciliation, notes, ref passed);
         GradeAddNode(notes, ref passed);
         GradeBackupVerify(notes, ref passed);
         GradeSqlStatements(notes, ref passed);
@@ -625,6 +652,11 @@ public sealed class ScenarioRunner
         return new ScenarioVerdict(passed, run.ExitCode, summary.Valid, reconciliationPassed, runDir, notes)
         {
             Analysis = analysis,
+            CommittedTxns = elleFacts?.Ok,
+            MeasuredSeconds = elleFacts?.MeasuredSeconds,
+            ElleVerdict = scenario.Workload.IsElleKind
+                ? elleResult?.Valid ?? (elleResult?.Error is null ? "not run" : "no verdict")
+                : null,
         };
     }
 
@@ -828,47 +860,115 @@ public sealed class ScenarioRunner
     }
 
     /// <summary>
-    /// Fails an append run unless Elle called its history valid. Reconciliation only proves the seeded
-    /// dataset was left alone; for this shape the isolation verdict is Elle's, so a check that did not
-    /// run, did not finish, or found a cycle each fail the scenario.
+    /// Grades an Elle run: the evidence line (committed transactions, rate, keys, wire mode), the
+    /// vacuous-run floor, the predicate shape's intra-transaction count rule, the real-time rule of the
+    /// final state, and Elle's own verdict. Reconciliation only proves the seeded dataset was left alone
+    /// and the shape's own table ended consistent; the isolation verdict is Elle's, so a check that did
+    /// not run, did not finish, or found a cycle each fail the scenario unless <c>elle.gated</c> is off.
+    /// Returns the facts for the verdict record, or null when the workload wrote none.
     /// </summary>
-    private void GradeElle(List<string> notes, ref bool passed)
+    private ElleFacts? GradeElle(string outputDir, ReconciliationSummary? reconciliation, List<string> notes, ref bool passed)
     {
-        if (scenario.Workload.Kind != "append")
-            return;
+        if (!scenario.Workload.IsElleKind)
+            return null;
+
+        string model = ElleSpec.ModelFor(scenario.Workload.Kind);
+        string models = scenario.Elle.EffectiveConsistencyModels(scenario.EffectiveIsolation);
+        ElleFacts? facts = WorkloadArtifacts.ReadElleFacts(outputDir);
+
+        // The per-arm evidence, said in every case: a verdict with no count behind it is not evidence.
+        if (facts is null)
+            notes.Add("elle evidence: NONE — the workload wrote no elle.json, so this run has no committed-transaction count");
+        else
+            notes.Add(
+                $"elle evidence: {facts.Ok:N0} committed txns ({facts.OkPerSecond:N0}/s over {facts.MeasuredSeconds:N0}s), " +
+                $"{facts.Fail:N0} failed, {facts.Info:N0} unresolved, {facts.OpenAtClose:N0} open at close; " +
+                $"{(facts.GroupsUsed > 0 ? $"{facts.GroupsUsed:N0} groups / " : "")}{facts.KeysUsed:N0} keys; " +
+                $"{model} via {(string.IsNullOrEmpty(facts.TxnMode) ? "explicit" : facts.TxnMode)} transactions, " +
+                $"{facts.KeyDistribution} keys, {facts.Isolation}/{facts.Locking}");
+
+        if (scenario.Checks.MinCommittedTxns > 0)
+        {
+            long ok = facts?.Ok ?? 0;
+            if (ok < scenario.Checks.MinCommittedTxns)
+            {
+                notes.Add(
+                    $"  CHECK FAILED: VACUOUS — {ok:N0} committed transaction(s), under the checks.min_committed_txns floor of " +
+                    $"{scenario.Checks.MinCommittedTxns:N0}; the history is too short to be the evidence this arm claims");
+                passed = false;
+            }
+            else
+            {
+                notes.Add($"committed transactions: {ok:N0}, at or over the {scenario.Checks.MinCommittedTxns:N0} floor");
+            }
+        }
+
+        // A predicate group read runs COUNT(*) beside its SELECT in one transaction. One snapshot per
+        // transaction (serializable) must give equal answers; one snapshot per statement (read
+        // committed) may not, and the count is then a measurement of how often the two differed.
+        if (facts is { CountMismatches: > 0 })
+        {
+            string finding =
+                $"{facts.CountMismatches:N0} of {facts.GroupReadsWithCount:N0} group read(s) saw a COUNT(*) that disagreed with the rows " +
+                "the same transaction selected";
+            if (scenario.EffectiveIsolation == "serializable")
+                GradeElleFinding(notes, ref passed, finding + " — an intra-transaction inconsistency under serializable isolation");
+            else
+                notes.Add($"{finding} — allowed at read committed, where each statement reads its own snapshot");
+        }
+
+        // A final value that an acknowledged write started after is a real-time order violation of the
+        // end state. Serializability permits it; a strict-serializable arm is the one that forbids it.
+        if (reconciliation?.Elle is { RealtimeStaleFinals: > 0 } quiescent && models.Contains("strict-serializable"))
+            GradeElleFinding(notes, ref passed,
+                $"{quiescent.RealtimeStaleFinals:N0} key(s) ended on a value that a later-started acknowledged write should have replaced " +
+                "— a real-time order violation of the final state under the strict-serializable claim");
 
         if (!scenario.Elle.Enabled)
         {
-            notes.Add("elle: NOT RUN (elle.enabled: false) — this append run has no isolation verdict");
-            return;
+            notes.Add($"elle: NOT RUN (elle.enabled: false) — this {scenario.Workload.Kind} run has no isolation verdict");
+            return facts;
         }
 
         if (elleResult is null)
         {
-            notes.Add("  CHECK FAILED: elle: the check did not run");
-            passed = false;
-            return;
+            GradeElleFinding(notes, ref passed, "elle: the check did not run");
+            return facts;
         }
 
-        string models = scenario.Elle.EffectiveConsistencyModels(scenario.EffectiveIsolation);
         if (elleResult.Passed)
         {
-            notes.Add($"elle: PASS — history is {models} (list-append, see elle-result.json)");
-            return;
+            notes.Add($"elle: PASS — history is {models} ({model}, see elle-result.json)");
+            return facts;
         }
 
-        passed = false;
         if (elleResult.Error is string error)
-            notes.Add($"  CHECK FAILED: elle: no verdict — {error}");
+            GradeElleFinding(notes, ref passed, $"elle: no verdict — {error}");
         else if (elleResult.Valid == "false")
-            notes.Add(
-                $"  CHECK FAILED: elle: history is NOT {models}; anomalies: {string.Join(", ", elleResult.AnomalyTypes)}" +
+            GradeElleFinding(notes, ref passed,
+                $"elle: history is NOT {models}; anomalies: {string.Join(", ", elleResult.AnomalyTypes)}" +
                 (elleResult.NotModels.Count > 0 ? $"; not {string.Join(", ", elleResult.NotModels)}" : "") +
                 " (explanations under run/elle/)");
         else
-            notes.Add(
-                $"  CHECK FAILED: elle: verdict '{elleResult.Valid}' — the search did not finish, so {models} is unproven; " +
+            GradeElleFinding(notes, ref passed,
+                $"elle: verdict '{elleResult.Valid}' — the search did not finish, so {models} is unproven; " +
                 "raise elle.cycle_search_timeout_ms or elle.heap_mb");
+        return facts;
+    }
+
+    /// <summary>An Elle finding fails the run, or is recorded as a measurement when the arm's claim is
+    /// not made (<c>elle.gated: false</c>). The prefix differs so a report can tell the two apart.</summary>
+    private void GradeElleFinding(List<string> notes, ref bool passed, string finding)
+    {
+        if (scenario.Elle.Gated)
+        {
+            notes.Add($"  CHECK FAILED: {finding}");
+            passed = false;
+        }
+        else
+        {
+            notes.Add($"  MEASURED, NOT GATED: {finding}");
+        }
     }
 
     /// <summary>

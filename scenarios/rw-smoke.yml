@@ -1,0 +1,37 @@
+# Elle rw-register, no faults, three nodes at replication factor 3: blind writes and point reads of
+# single rows by primary key, in explicit transactions. The register shape reaches the point-read and
+# point-write paths that list-append does not: a lost update on a blind write, a point read served
+# from an older version, or a secondary index that lags its row. Elle checks the history under the
+# serializable model; after the run the workload reads every register back and judges it against the
+# ledger of every write it attempted (no refused value visible, no duplicate row, every access path in
+# agreement). PASS needs both.
+#
+# What the rw-register checker can and cannot infer is documented on RegisterKeySpace in
+# CamusDB.Workload: unique values, nil as the initial version, the order of steps inside a transaction.
+# It does not assume a per-key real-time order, so a stale read with no other link is for the final-state
+# check and the strict-serializable arm, not for this one.
+name: rw-smoke
+cluster:
+  name: rw
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_max_txn_length: 4
+checks:
+  # A wedged cluster would pass a correctness run with a history of nothing; a minute must commit more.
+  min_committed_txns: 1000
+teardown: true

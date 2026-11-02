@@ -1,0 +1,41 @@
+# No-fault Elle matrix for the rw shape on 1 node(s): every isolation level x locking mode x wire
+# mode, 60 s each, no nemesis. Each cell checks the history under its level's model (read-committed or
+# serializable), reads its table back after the run, and fails as VACUOUS under 1,000 committed
+# transactions. The volume twin, matrix-elle-volume-rw-n1.yml, runs the same cells to a million.
+#
+# Forbidden anomaly sets, per cell (Elle's model for the level, plus the final-state check):
+#   read_committed: G0 (dirty write), G1a (aborted read), G1b (intermediate read), G1c (cyclic
+#     information flow). Allowed and so not failed: G-single, G2-item, non-repeatable reads (Elle's
+#     "internal"), real-time order. The predicate COUNT(*) rule is reported, not failed.
+#   serializable: everything read_committed forbids, plus G-single, G2-item, G2, internal, lost update,
+#     and the predicate COUNT(*) rule. Allowed: real-time order (CamusDB claims serializability, not
+#     strict serializability); the final-state check counts real-time stale finals without failing.
+#   every cell: a lost acknowledged append, a refused write that is visible, a value no write produced,
+#     a duplicate primary key, an access path that disagrees with the primary key.
+name: elle-rw-n1
+cluster:
+  name: ellerwn1
+  nodes: 1
+  partitions: 3
+  replication_factor: 1
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 8
+  rw_max_txn_length: 4
+
+checks:
+  min_committed_txns: 1000
+axes:
+  locking: [pessimistic, optimistic]
+  isolation: [read_committed, serializable]
+  txn_mode: [explicit, autocommit, pipeline]
+teardown: true

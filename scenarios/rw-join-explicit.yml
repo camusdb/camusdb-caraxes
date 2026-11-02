@@ -1,0 +1,37 @@
+# Elle rw-register through a join, in explicit transactions. Each register row is reached through a
+# reference row (SELECT r.v FROM elle_rw_i64_ref j JOIN elle_rw_i64 r ON r.k = j.target WHERE j.k = @k),
+# and both rows are written by blind UPSERTs. Same shape as rw-join-pipeline without the pipelined frames.
+#
+# FINDING, first run 2026-11-02 (CamusDB 0.17.0, Kahuna.Core 1.14.9, pessimistic, serializable): the
+# history is not serializable. 63 lost updates, 22 non-repeatable reads inside one transaction, 13
+# G-single and 69 G2-item cycles in 60 s. Two committed transactions each read key 0 = 12 through the
+# join and both overwrote it; others read a key as absent through the join, then saw it present later in
+# the same transaction. The same shape by primary key (rw-smoke, rw-standalone, rw-pk-pipeline) is clean
+# with thousands of lock conflicts, so a read through a join takes none of the locks a direct point read
+# takes. The pipelined twin fails the same way, and pipelining by primary key passes, so the join path is
+# the cause. Kept out of the nightly matrix until the engine fix lands; run it by hand to confirm the fix.
+name: rw-join-explicit
+cluster:
+  name: rwjoinexp
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: pessimistic
+  isolation: serializable
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 60s
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 16
+  rw_max_txn_length: 4
+  rw_access: join
+checks:
+  min_committed_txns: 1000
+teardown: true

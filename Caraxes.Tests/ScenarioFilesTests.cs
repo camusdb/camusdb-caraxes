@@ -47,6 +47,26 @@ public sealed class ScenarioFilesTests
         Assert.That(validated, Is.GreaterThan(0), "no scenario-shaped files were validated");
     }
 
+    [Test]
+    public void EveryMatrixFileParsesAndValidates()
+    {
+        string dir = FindScenariosDirectory();
+        int validated = 0;
+        foreach (string file in Directory.GetFiles(dir, "*.yml"))
+        {
+            string yml = File.ReadAllText(file);
+            if (!HasTopLevelKey(yml, "axes"))
+                continue;
+
+            Assert.DoesNotThrow(
+                () => Caraxes.Core.Matrix.MatrixReader.Read(yml),
+                $"matrix file '{Path.GetFileName(file)}' does not parse/validate");
+            validated++;
+        }
+
+        Assert.That(validated, Is.GreaterThan(0), "no matrix-shaped files were validated");
+    }
+
     private static bool HasTopLevelKey(string yml, string key)
     {
         foreach (string line in yml.Split('\n'))

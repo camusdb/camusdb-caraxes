@@ -123,8 +123,19 @@ static async Task<int> RunMatrixAsync(MatrixOptions options, CancellationToken c
     try
     {
         MatrixSpec matrix = MatrixReader.ReadFile(options.Matrix);
+        if (options.ListCells)
+        {
+            foreach (string cell in MatrixRunner.ListCells(matrix))
+                Console.WriteLine(cell);
+            return 0;
+        }
+
+        if (options.CorrectnessOnly)
+            matrix.Checks.GradeRecovery = false;
+
         MatrixRunner runner = new(matrix, options.RunRoot);
-        IReadOnlyList<MatrixCellResult> results = await runner.RunAsync(cancellationToken).ConfigureAwait(false);
+        List<string> onlyCells = options.Cells.Select(c => c.Trim()).Where(c => c.Length > 0).ToList();
+        IReadOnlyList<MatrixCellResult> results = await runner.RunAsync(cancellationToken, onlyCells).ConfigureAwait(false);
         // Non-zero when any cell failed, so CI can gate on a whole sweep.
         return results.All(r => r.Verdict.Passed) ? 0 : 1;
     }

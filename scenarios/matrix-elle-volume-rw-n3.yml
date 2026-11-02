@@ -1,0 +1,48 @@
+# Volume arms of the no-fault Elle matrix for the rw shape on 3 node(s): every cell runs until a
+# million transactions committed (or 4 hours, whichever comes first) and fails as VACUOUS when it did not
+# reach the million. A published analysis of another database saw a stale read once in about 300,000 transactions, so
+# a bounded run has to be this long before a clean verdict is evidence of anything; a clean run is still
+# a bound, not a proof. Run one cell per CI job (caraxes matrix --cell <name>): a cell can take hours.
+#
+# Forbidden anomaly sets, per cell (Elle's model for the level, plus the final-state check):
+#   read_committed: G0 (dirty write), G1a (aborted read), G1b (intermediate read), G1c (cyclic
+#     information flow). Allowed and so not failed: G-single, G2-item, non-repeatable reads (Elle's
+#     "internal"), real-time order. The predicate COUNT(*) rule is reported, not failed.
+#   serializable: everything read_committed forbids, plus G-single, G2-item, G2, internal, lost update,
+#     and the predicate COUNT(*) rule. Allowed: real-time order (CamusDB claims serializability, not
+#     strict serializability); the final-state check counts real-time stale finals without failing.
+#   every cell: a lost acknowledged append, a refused write that is visible, a value no write produced,
+#     a duplicate primary key, an access path that disagrees with the primary key.
+name: elle-volume-rw-n3
+cluster:
+  name: ellevolumerwn3
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+workload:
+  kind: rw
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 16
+  duration: 4h
+  warmup: 10s
+  read_percent: 20
+  write_percent: 80
+  rw_keys: 8
+  rw_max_writes_per_key: 8
+  rw_max_txn_length: 4
+  stop_after_completed: 1000000
+
+checks:
+  min_committed_txns: 1000000
+elle:
+  # A million-transaction history needs most of a 16 GiB runner once the cluster is gone, and a
+  # per-SCC search budget above elle-cli's one second; an unknown verdict still fails the cell.
+  heap_mb: 12288
+  cycle_search_timeout_ms: 30000
+axes:
+  locking: [pessimistic, optimistic]
+  isolation: [read_committed, serializable]
+  txn_mode: [explicit, autocommit, pipeline]
+teardown: true
