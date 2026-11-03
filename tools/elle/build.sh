@@ -43,8 +43,11 @@ if ! grep -q "\[elle \"$ELLE_VERSION\"\]" "$TMP/src/project.clj"; then
 fi
 
 # Leiningen writes its dependency cache under $HOME; the container's own home keeps the host clean.
+# On Linux the container runs as root and writes target/ as root, so the host user could neither
+# rename the jar out of it nor remove it; the chown hands the build output to the host user.
 echo "building with $LEIN_IMAGE (downloads the Clojure dependencies; a few minutes)"
-docker run --rm -v "$TMP/src:/build" -w /build "$LEIN_IMAGE" lein uberjar
+docker run --rm -v "$TMP/src:/build" -w /build "$LEIN_IMAGE" \
+  sh -c "lein uberjar && chown -R $(id -u):$(id -g) /build"
 
 BUILT="$(ls "$TMP"/src/target/elle-cli-*-standalone.jar | head -1)"
 if [[ -z "$BUILT" ]]; then
