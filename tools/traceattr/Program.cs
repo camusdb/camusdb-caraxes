@@ -3,6 +3,7 @@
 //                  [--callers <substring>]   (who calls frames matching substring, one level up, in the selected samples)
 //        traceattr <file.nettrace> --components [--cpu-ms-per-op X]   (running samples by component and request kind)
 //        traceattr <file.nettrace> --alloc [--kb-per-op X]            (gc-verbose trace: AllocationTick bytes by component, kind, site)
+//        traceattr <file.nettrace> --gc                              (GC-keyword trace: per-collection budget, promoted bytes, pause, heap count)
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
@@ -11,7 +12,7 @@ string path = args[0];
 int topFrames = 40;
 string? roleFilter = null, grep = null, callers = null;
 string stateFilter = "running";
-bool components = false, alloc = false; double? cpuMsPerOp = null, kbPerOp = null;
+bool components = false, alloc = false, gcReport = false; double? cpuMsPerOp = null, kbPerOp = null;
 for (int i = 1; i < args.Length; i++)
 {
     if (args[i] == "--frames") topFrames = int.Parse(args[++i]);
@@ -21,6 +22,7 @@ for (int i = 1; i < args.Length; i++)
     else if (args[i] == "--callers") callers = args[++i];
     else if (args[i] == "--components") components = true;
     else if (args[i] == "--alloc") alloc = true;
+    else if (args[i] == "--gc") gcReport = true;
     else if (args[i] == "--cpu-ms-per-op") cpuMsPerOp = double.Parse(args[++i]);
     else if (args[i] == "--kb-per-op") kbPerOp = double.Parse(args[++i]);
 }
@@ -29,6 +31,7 @@ string etlx = Path.ChangeExtension(path, ".etlx");
 if (!File.Exists(etlx)) TraceLog.CreateFromEventPipeDataFile(path, etlx);
 using TraceLog log = new(etlx);
 if (alloc) { Attribution.Alloc(log, path, kbPerOp, topFrames > 0 ? Math.Min(topFrames, 25) : 10); return; }
+if (gcReport) { GcReport.Run(log); return; }
 TraceLogEventSource source = log.Events.GetSource();
 
 var threadSamples = new Dictionary<int, List<string[]>>(); // tid -> stacks (leaf first)
