@@ -1,0 +1,54 @@
+# REGRESSION CHECK reg5 (2026-11-04), arm = head. Image caraxes/camusdb:reg5 = CamusDB HEAD with Kahuna.Core 1.15.2 pinned
+# (Kahuna.Shared 1.15.2, Kommander 1.13.0: proposal entries released at commit completion, fsynced term and vote, WAL
+# fail-stop on corruption) on top of e77b084b (the reg4 head). Body = kr256-bank-hash unchanged: 2,000 rows, 256 workers over
+# 64 connections, 50/50, 10 min after 6 min warmup, tmpfs data, cleartext, hash routing stated, row-id cache on.
+# Reference points on this body: reg4 (e77b084b, Kahuna 1.14.9) 11,321 and 11,410 ops/s; sol5 control 11,474 and 11,412.
+# The control arm (reg5-bank-control) runs the sol5 image (fc0a4630, Kahuna 1.14.7) on the same body the same day.
+name: reg5-bank-head
+cluster:
+  name: reg5bankhead
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  # The routing mode under test, stated explicitly so the arm does not depend on the build's default.
+  key_range_sharding: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 9728
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg5"
+  camusdb:
+    # The default since edcb9fab, stated so every arm reads the same.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
