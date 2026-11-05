@@ -56,7 +56,8 @@ backup on the node, see below), `add-node` (boot a replacement that joins the cl
 `partition` (iptables-isolate a node from all peers), `slow` / `loss` (tc netem latency / packet
 loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-capped tmpfs data mount, see
 below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
-below), `clock-skew` (move one node's wall clock forward or back, see below), `remove-node`
+below), `disk-corrupt` (damage one data file of a SIGKILLed node, restart on heal, see below), `clock-skew` (move one
+node's wall clock forward or back, see below), `remove-node`
 (drain via `/v1/cluster/leave`, a one-way scale-down), and `sql` (an online schema change or bulk write, see
 below). Targets are a node name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
 applies to each, so `kill` of a zone kills the whole zone together). Every healable fault still in
@@ -125,6 +126,25 @@ nemesis:
     - { at: 4m, fault: slow-disk, target: camus1, duration: 30s }              # pause
     - { at: 7m, fault: slow-disk, target: camus2, duration: 60s, write_bps: 2097152 }  # 2 MiB/s
 ```
+
+**Storage corruption.** `disk-corrupt` sends SIGKILL to the node, never a graceful stop, and damages one
+file on its volume. A heal restarts the node, and that is when the damage is judged. It needs a volume, because
+a `data_tmpfs_mb` mount is gone once the container stops.
+
+| Key | Values | Default |
+|---|---|---|
+| `damage` | `bit-flip`, `truncate-tail`, `truncate-middle`, `chunk-shuffle`, `chunk-duplicate`, `chunk-replace` | required |
+| `damage_layer` | `store` (key-value store), `wal` (Raft log) | `store` |
+| `damage_file` | `sst` (the largest), `live-log`, `closed-log`, `manifest` | `sst` |
+| `damage_seed` | any integer; the same seed gives the same damage | `1` |
+| `damage_count` | bits for `bit-flip`, chunks for `chunk-shuffle` | `2` |
+
+A RocksDB store holds no SST until a memtable flushes, so a scenario normally kills and restarts the node first:
+the restart writes the recovered rows to an SST. If the file does not exist, the fault fails and damages nothing.
+
+Each damage appends one line to `storage-damage/storage-damage.jsonl` in the cluster run directory with the file, its length
+and SHA-256 before and after, and the seed. The runner only logs a fault's error, so **a run without this line
+tested nothing, whatever its verdict says**. The fault does not cover damage during a run or lost unsynced writes.
 
 **Clock skew (`clock-skew`).** Moves one node's wall clock by `offset_ms` (positive is ahead, negative
 is behind; default +10 s, limit ±12 h) and moves it back to real time on heal. Containers share the host

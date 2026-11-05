@@ -49,6 +49,13 @@ public sealed class ClusterOrchestrator
     /// <summary>The crash-dump bind mounts, one sub-directory per node.</summary>
     public string DumpsDir => Path.Combine(runDir, "dumps");
 
+    /// <summary>Where the <c>disk-corrupt</c> fault works on a copy of a node's file.</summary>
+    public string StorageDamageDir => Path.Combine(runDir, "storage-damage");
+
+    /// <summary>One line for each damage that reached a node's volume. A storage-corruption cell without
+    /// its line tested nothing.</summary>
+    public string StorageDamageLogPath => Path.Combine(StorageDamageDir, "storage-damage.jsonl");
+
     /// <summary>The compose file of the disaster-recovery rehearsal fleet (<see cref="UpRestoredAsync"/>):
     /// the same project, nodes and addresses, with every <c>/data</c> bind-mounted from a restored root.</summary>
     public string RestoredComposeFilePath => Path.Combine(runDir, "compose-restored.yml");

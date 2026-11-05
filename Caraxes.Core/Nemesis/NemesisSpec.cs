@@ -47,7 +47,7 @@ public sealed class NemesisSpec
 /// </summary>
 public sealed class NemesisEvent
 {
-    /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | remove-node |
+    /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | disk-corrupt | remove-node |
     /// leader-transfer | clock-skew | backup | add-node | sql.</summary>
     public string Fault { get; set; } = "";
 
@@ -117,6 +117,25 @@ public sealed class NemesisEvent
     /// start empty. Default true.</summary>
     public bool SeedFromBackup { get; set; } = true;
 
+    /// <summary>What the <c>disk-corrupt</c> fault does to the file: one of <see cref="StorageDamage.Kinds"/>.
+    /// Required for that fault, refused for every other kind.</summary>
+    public string? Damage { get; set; }
+
+    /// <summary>Which of the node's engines the <c>disk-corrupt</c> fault damages: <c>store</c> (the key-value
+    /// store) or <c>wal</c> (the Raft log). Default <c>store</c>.</summary>
+    public string DamageLayer { get; set; } = StorageDamage.LayerStore;
+
+    /// <summary>Which file of that engine: <c>sst</c> (the largest), <c>live-log</c>, <c>closed-log</c> or
+    /// <c>manifest</c>. Default <c>sst</c>.</summary>
+    public string DamageFile { get; set; } = StorageDamage.FileSst;
+
+    /// <summary>Seed of the damage, so a cell reproduces exactly. Default 1.</summary>
+    public int DamageSeed { get; set; } = 1;
+
+    /// <summary>Bits for <c>bit-flip</c>, chunks for <c>chunk-shuffle</c>; other damages ignore it. Default 2,
+    /// the smallest count a shuffle can use.</summary>
+    public int DamageCount { get; set; } = 2;
+
     /// <summary>The statement the <c>sql</c> fault runs on the target node: DDL (an online schema change)
     /// or a bulk write. Required for <c>sql</c>, refused for every other kind.</summary>
     public string? Sql { get; set; }
@@ -176,6 +195,27 @@ public sealed class NemesisEvent
         if (!BackupFault.Kinds.Contains(BackupKind.ToLowerInvariant()))
             throw new NemesisException(
                 $"nemesis event '{Fault}': backup_kind must be one of {string.Join(", ", BackupFault.Kinds)}, got '{BackupKind}'");
+
+        if (Fault == "disk-corrupt")
+        {
+            if (string.IsNullOrWhiteSpace(Damage))
+                throw new NemesisException("nemesis event 'disk-corrupt': 'damage' is required");
+            if (!StorageDamage.Kinds.Contains(Damage))
+                throw new NemesisException(
+                    $"nemesis event 'disk-corrupt': damage must be one of {string.Join(", ", StorageDamage.Kinds)}, got '{Damage}'");
+            if (!StorageDamage.Layers.Contains(DamageLayer))
+                throw new NemesisException(
+                    $"nemesis event 'disk-corrupt': damage_layer must be one of {string.Join(", ", StorageDamage.Layers)}, got '{DamageLayer}'");
+            if (!StorageDamage.Files.Contains(DamageFile))
+                throw new NemesisException(
+                    $"nemesis event 'disk-corrupt': damage_file must be one of {string.Join(", ", StorageDamage.Files)}, got '{DamageFile}'");
+            if (DamageCount < 1 || (Damage == StorageDamage.ChunkShuffle && DamageCount < 2))
+                throw new NemesisException($"nemesis event 'disk-corrupt': damage_count is too small for {Damage}, got {DamageCount}");
+        }
+        else if (Damage is not null)
+        {
+            throw new NemesisException($"nemesis event '{Fault}': 'damage' is only meaningful for the disk-corrupt fault");
+        }
 
         if (Fault == "clock-skew" && (OffsetMs == 0 || Math.Abs(OffsetMs) > MaxOffsetMs))
             throw new NemesisException(

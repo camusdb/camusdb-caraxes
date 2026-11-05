@@ -20,6 +20,14 @@ public sealed class NodeHealth
     public string LocalRole { get; set; } = "";
 
     public int HostedPartitions { get; set; }
+
+    /// <summary>The storage engine's message when the node's store is fail-stopped or was found empty at
+    /// start, or null. Clears <see cref="Ready"/>.</summary>
+    public string? StorageFault { get; set; }
+
+    /// <summary>One line per hosted partition with a storage verdict, or null. Any entry clears
+    /// <see cref="Ready"/>.</summary>
+    public List<string>? PartitionStorageFaults { get; set; }
 }
 
 /// <summary>Answer of CamusDB's <c>GET /v1/cluster/placement</c>.</summary>

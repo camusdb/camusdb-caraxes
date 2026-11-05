@@ -1,0 +1,52 @@
+# STORAGE CORRUPTION, RF 3: one flipped bit in the largest SST of a follower's key-value store.
+#
+# The kill at 1m is not a fault under test. A store holds no SST until a memtable flushes, and the restart
+# writes the recovered rows to one, so the damage at 3m has a file to reach.
+#
+# Expected when a read reaches the damage: the statement fails with CADB0837, never a retry and never "no
+# rows"; /v1/cluster/health on camus2 answers ready false with storageFault set; camus2 withholds its candidacy
+# and steps down. The two healthy nodes keep a quorum, so the ledger must reconcile exactly: no acknowledged
+# write is lost or changed.
+#
+# If the bank's rows stay in the block cache or memtables, no read reaches the damage and camus2 stays
+# ready. That is not a pass of the detection: read node logs and storage-damage/storage-damage.jsonl
+# together. A run with no line in that file tested nothing.
+name: corrupt-store-sst-bitflip-rf3
+cluster:
+  name: corruptsstbitfliprf3
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 2048
+  kahuna:
+    storage: rocksdb
+    wal_storage: rocksdb
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:corrupt1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 16
+  connections: 16
+  duration: 6m
+  warmup: 20s
+  drain: 60s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  cluster_facts: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 1m, fault: kill, target: camus2, duration: 30s }
+    - { at: 3m, fault: disk-corrupt, target: camus2, duration: 30s, damage: bit-flip, damage_layer: store, damage_file: sst, damage_seed: 1, damage_count: 1 }
+checks:
+  max_recovery_seconds: 60
+  require_cluster_facts: true
+teardown: false
