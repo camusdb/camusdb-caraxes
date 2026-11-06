@@ -1,0 +1,60 @@
+# REGRESSION CHECK reg9 (2026-11-06), arm = head: Kahuna.Core 1.16.0 against 1.15.6 on the RocksDB tmpfs body. Image
+# caraxes/camusdb:reg9 = CamusDB HEAD with Kahuna.Core 1.16.0 / SolariumDb.Kahuna 0.1.7 (the inst5 build); the control image
+# caraxes/camusdb:reg8 = Kahuna.Core 1.15.6 / SolariumDb.Kahuna 0.1.6 (the inst4 build). Body = the reg4/reg5 pair unchanged
+# (kr256-bank-hash: 2,000 rows, 256 workers over 64 connections, 50/50, 10 min after 6 min warmup, tmpfs data, cleartext, hash
+# routing stated, row-id cache on). RocksDB store and WAL, so SolariumDb does not run here: the pair prices Kahuna 1.16.0 alone
+# (the point-read and range-scan allocation cut, LocateAndTryGetValue as a ValueTask). Reference points on this body: reg5
+# head (Kahuna 1.15.2) and control (1.14.7) 2026-11-04, reg4 11,321 / 11,410, sol5 control 11,474 / 11,412. Same-build repeats
+# differ by about 0.5%. The NVMe Solarium pair of the same day (reg9-solarium-nvme-head/control) prices SolariumDb 0.1.7.
+# memory_limit_mb is 8192 here, not the reg5 pair's 9728: three 9.5 GiB nodes plus 3 GB of host slack do not fit the 31 GiB
+# host's budget rule; the reg5 arms peaked at 6.9-7.9 GB per node, so the cap only bites if this stack grows past it, which is
+# then the finding. Both arms carry the same cap, so the pair stays like for like.
+#
+name: reg9-bank-head
+cluster:
+  name: reg9bankhead
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  # The routing mode under test, stated explicitly so the arm does not depend on the build's default.
+  key_range_sharding: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg9"
+  camusdb:
+    # The default since edcb9fab, stated so every arm reads the same.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
