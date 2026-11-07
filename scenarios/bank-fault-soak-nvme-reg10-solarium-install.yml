@@ -1,0 +1,321 @@
+# KAHUNA 1.16.1 / KOMMANDER 1.14.0 / SOLARIUMDB 0.1.8 ACCEPTANCE ARM of the forced-install fault soak (2026-11-07). Image
+# caraxes/camusdb:reg10 = CamusDB 74f1fa2c with Kahuna.Core 1.16.1 (3538a59a), Kommander 1.14.0 (1f851c5), Grpc 2.85.0 and
+# Google.Protobuf 3.36.2 unchanged, SolariumDb.Kahuna 0.1.8 (542d206). Body identical to the reg9 arm below (inst5, 2026-11-06:
+# PASS, 6,300 ops/s, one install on the 4-min kill, 2-min kill by backfill, 113 zero-ops seconds, 0.322 device write IOs per op).
+# The three releases answer the inst5 findings; the quick arms of the same morning (reg10p) verified one and could not reach the
+# other two, which is what this body is for:
+# (1) Kahuna 1.16.1 spaces the inter-node batcher's stream re-opens to a dead peer (per-peer backoff 100 ms doubling to 2 s)
+#     and logs them as one episode per peer: verified under a 2-min kill (25-27 stream opens per survivor, 1/22/14 batcher lines
+#     per node over 20 min). Read here: the same under the 4-min kill at 96m and the 2-min kill at 72m, node logs well under the
+#     117-270 MB of inst5, kahuna_internode_stream_opens_total per peer in the tens per outage, channels back within seconds.
+# (2) Kommander 1.14.0 withholds the NoProgressProbe snapshot escalation when the peer's commit frontier already reaches the
+#     checkpoint and only its durable frontier lags (on 1.13.4 every 30-s pause of camus3 at 80m under 0.1.7 drew a transfer the
+#     follower skipped as already covered). A 12-min-old store never tripped the probe, so this is unverified. Read here, after the
+#     80m pause: raft_snapshot_transfers_started_total{trigger="NoProgressProbe"} absent on the leader, and
+#     raft_snapshot_transfers_withheld_peer_reaches_checkpoint_total present (its log line is Information and CamusDB logs
+#     Kommander at Warning, so the counter is the evidence), no "skipped as already covered" line on camus3.
+# (3) SolariumDb 0.1.8 attests the write group's last sequence with at most one sync-ledger flush per write group and flushes
+#     with fdatasync. The no-fault pair showed 0.53 attestations per WAL batch and 0.30 device write IOs per op, unchanged from
+#     0.1.7, because Kommander already hands Solarium one write per batch. Read here: raft_wal_sync_ledger_flushes_total against
+#     raft_wal_batches_total per node over the 2 h, write IOs per op from host-io.csv beside inst5's 0.322 and inst4's 0.246, and
+#     whether the heavier commit still turns a 30-s slow-disk into an install (inst5 stock arm) or drags a restart's catch-up.
+# Acceptance = reconciliation PASS, no node dying on its own, no manual intervention, every leader kill and pause failed over
+# within seconds, every long-kill restart repaired by at most one install under 60 s, no NoProgressProbe transfer on the pauses,
+# batcher lines in the tens per outage. The recovery gate (max_recovery_seconds 60) is still expected to go red on the two long
+# kills; host-wide write stalls make fault windows inadmissible, keep the host idle.
+#
+# History: KAHUNA 1.16.0 / SOLARIUMDB 0.1.7 REGRESSION ARM of the forced-install fault soak (2026-11-06). Image caraxes/camusdb:reg9 =
+# CamusDB HEAD with Kahuna.Core 1.16.0 (Kommander 1.13.4, Grpc 2.85.0 and Google.Protobuf 3.36.2 unchanged from the reg8 pin)
+# and SolariumDb.Kahuna 0.1.7. Body identical to the reg8 arm below, which on 2026-11-06 (tag inst4) PASSED as the acceptance
+# run for the stuck-channel fix: reconciliation PASS, 7,808 ops/s, 0 self-deaths, every leader kill failed over in 2-4 s,
+# both long-kill restarts repaired by one install (4.7 s and 8.5 s), channels back within 12 s of every return, 95 zero-ops
+# seconds in all (5 s per kill, 9 s per leader pause, the rest host-wide write stalls).
+# What changed under this arm: Kahuna 1.16.0 (b821fbf5) cuts the allocation of a range-scan page and of a point read (the
+# in-memory backend hands out exact-size row lists, the scan merge returns a verdict per key, the as-of projection keeps the raw
+# page when no row is past the snapshot, a batched read awaits its pending keys with one state machine, the resume message of a
+# backend read is pooled) and IKahuna.LocateAndTryGetValue returns a ValueTask, so a read the published head answers allocates
+# only its entry; CamusDB's hot-path retry takes that ValueTask as it is and its metadata readers convert it once. SolariumDb
+# 0.1.7 (8a9af79) implements Kommander's and Kahuna's storage-damage contracts in the Solarium adapters (fail-stop Corruption
+# answers, SSTable block checksums bound to table and offset, data blocks checked against their index entries, each block's
+# last entry named in its trailer), keeps an application's temporary files at open and tests a store lost under a compacted
+# log at RF 1 and RF 3. Nothing in either release targets the install, transport or failover paths this body measures, so the
+# expectation is the inst4 result again: this arm guards against a regression hiding in the read-path and adapter rewrites.
+# What to read: the inst4 figures must hold within the same-build noise (ops/s, zero-ops seconds, 2-4 s failovers, one install
+# per long-kill restart under 60 s with a ~0 drain, channels back within seconds of a return, no watchdog rebuild needed, node
+# logs in the tens to hundreds of MB), plus anything new at Error from Solarium (a Corruption answer would now stop the node:
+# "Corrupt", "quarantin", "fail-fast" in the node logs) and the GC figures (gen0 count, allocated bytes per op) against inst4,
+# which is what the 1.16.0 read-path change should move. Acceptance = reconciliation PASS, no node dying on its own, no manual
+# intervention, every leader kill and pause failed over within seconds, every long-kill restart repaired by at most one install
+# under 60 s, no zero-ops span outside the failovers and the host stalls. The recovery gate (max_recovery_seconds 60) is still
+# expected to go red on the two long kills; host-wide write stalls make fault windows inadmissible, keep the host idle.
+#
+# History: KAHUNA 1.15.6 / KOMMANDER 1.13.4 ACCEPTANCE ARM for the stuck-channel finding of the inst3 run (2026-11-05). Image
+# caraxes/camusdb:reg8 = CamusDB b7448202 with Kahuna.Core 1.15.6, Kommander 1.13.4, Grpc.Net.Client / Grpc.AspNetCore 2.85.0,
+# Google.Protobuf 3.36.2, SolariumDb.Kahuna 0.1.6. Body identical to the reg7 arm below (image reg7 = Kahuna 1.15.5 / Kommander
+# 1.13.3), which on 2026-11-05 (tag inst3) showed the three inst2 findings fixed (three whole-partition installs of 3.7-6 s with
+# a 1-2 ms drain, no second install, no re-anchor, no eviction, reconciliation PASS, 7,896 ops/s) but FAILED two checks: after
+# the 72m 2-min kill of the leader, the new leader's Grpc.Net.Client channel to the restarted node stayed in TransientFailure for
+# the remaining 53 min ("Error connecting to subchannel" with a cached "No route to host", ~45,000 log lines a minute, a 1.14 GB
+# node log) while ARP, a raw TCP connect from the leader's own network namespace, the reverse direction and the other follower's
+# channel to the same peer all worked. Follower acks, votes and SWIM pings are RPCs the follower makes, so the one-way failure
+# removed that pair from each other's quorum whenever the third voter was down: the 96m 4-min kill was a 245-s total outage
+# (~47 election terms per survivor) and the 112m 30-s kill a 36-s one.
+# Fixes under test: Kommander 1.13.4 (a7a9078) moves Grpc.Net.Client, Grpc.AspNetCore and Grpc.Tools to 2.85.0 and
+# Google.Protobuf to 3.36.2 (2.83.0 carries the upstream fix for grpc-dotnet #2734: the subchannel connect loop left through its
+# OperationCanceled catch with the state still TransientFailure and nothing restarted it) and adds a per-slot watchdog in
+# SharedChannels: a pooled channel that reports TransientFailure continuously for 30 s is rebuilt, the stale channel disposed and
+# the ordered AppendLogs stream pinned to the slot re-opened on the replacement ("[SharedChannels] Rebuilt channel" at Warning,
+# raft.transport.channel_rebuilds_total, raft.transport.channels_in_transient_failure per peer). Transport failures are now
+# logged as episodes per peer (first failure at Error with the stack, one "still failing" Warning summary per 10 s, one
+# "sends recovered" Information line, the rest at Debug) and the stream fault log is limited the same way. Kahuna 1.15.6
+# (ab665a2e) takes Kommander 1.13.4 and the same Grpc versions. CamusDB moves its own Grpc.AspNetCore / Grpc.Net.Client /
+# Grpc.Core.Api / Grpc.Tools to 2.85.0 and Google.Protobuf to 3.36.2 in the pin commit, so the SQL gRPC server and client, the
+# Kahuna inter-node client and the Raft transport share one Grpc.Net.Client.
+# What to read: after every kill's restart, each survivor's channels to the returned node must reconnect: no "Error connecting
+# to subchannel" lines past the node's return, raft.transport.channel_rebuilds_total 0 if 2.85.0 alone fixes the loop, or the
+# "Rebuilt channel" line plus the counter if the watchdog had to act (either is acceptance; a sustained flood is not), and
+# raft.transport.channels_in_transient_failure back to 0. Node logs should be tens to hundreds of MB, not 1.14 GB. The 96m 4-min
+# kill and the 112m kill must fail over in 2-4 s and keep two-node throughput for the whole downtime (no zero-ops span beyond
+# the failover); the inst3 results for the inst2 findings must hold (each long-kill restart repaired by backfill or ONE install
+# under 60 s, drain ~0, no second install, no eviction, 10-min grace). Acceptance for this arm = reconciliation PASS, no node
+# dying on its own, no manual intervention, every leader kill and pause failed over within seconds, no zero-ops span outside
+# the failovers, every long-kill restart repaired by at most one install under 60 s. The recovery gate (max_recovery_seconds 60)
+# is still expected to go red on the two long kills. inst3 had 7/14 fault windows inadmissible on host-wide write stalls (device
+# moved); keep the host idle so the admissibility rule does not hide a regression.
+#
+# History: KAHUNA 1.15.5 / KOMMANDER 1.13.3 ACCEPTANCE ARM for the three findings of the inst2 run (2026-11-05). Image
+# caraxes/camusdb:reg7 = CamusDB HEAD e9c73dfd with Kahuna.Core 1.15.5, Kommander 1.13.3, SolariumDb.Kahuna 0.1.6. Body identical
+# to the reg6 arm below (image reg6 = Kahuna 1.15.4 / Kommander 1.13.2), which on 2026-11-04 (tag inst2) survived with no
+# self-death and showed the append-flood fix working, but (1) the 4-min-kill restart's first whole-partition install took 205 s,
+# 174 s of it in the drain phase: the install drained the background writer with the periodic flush's message, whose turn runs the
+# targeted revision cleanup, which read-indexes the meta partition and waits for local application with no deadline; the node
+# had been evicted from the roster (dead > 2 min) and received no meta entries until its join committed; (2) the sender
+# re-anchored the transfer after the 120-s step timeout and the seeding retention hold moved with it, so when the first install
+# landed the leader had compacted 2.4 M entries past the boundary and a second install (21 s) followed; (3) the eviction plus the
+# learner re-admission left a 2-voter roster for ~7 min, inside which the scheduled 104m pause of the leader was a 29-s outage
+# (the run's only failed check).
+# Fixes under test: Kahuna 1.15.5 (53edc178) drains the install with BackgroundWriteType.FlushForStateTransfer (full flush, no
+# revision cleanup, no catch-up confirmation), bounds the prune's confirmation at 1 s (kahuna.snapshot_floor.prune_confirm_timed_out_total),
+# logs how many pages the purge scanned, and exposes RaftDeadMemberEvictionGrace on the embedded options. Kommander 1.13.3
+# (6ebb69d) holds retention from the lower of the in-flight seeding index and the remembered unresolved install across transfer
+# attempts, lets followers name their install in every ack (SeedIndex) so a successor leader holds and exempts it, keeps waiting
+# when the staged-bytes figure stalls instead of re-anchoring (raft.snapshot.install_waits_past_step_timeout_total), raises
+# DeadMemberEvictionGrace to 10 minutes and logs promotions and the roster at Warning.
+# What to read: the 72m (2-min) and 96m (4-min) kills must no longer evict the killed node (grace 10 min), so each restart
+# rejoins as a voter and is repaired by backfill or ONE install; for an install, the "Slow whole-partition install" phase line
+# (if any) should show drain ~0 s and the total in the tens of seconds (the ~20-30 s purge-rows phase is the next item), no
+# second install and no re-anchor (raft_snapshot_transfers_started_total, raft.compaction.seeded_peer_retention_holds_total,
+# raft.snapshot.install_waits_past_step_timeout_total in node-metrics.csv); the 104m leader pause must fail over to the two
+# remaining voters within seconds (no zero-ops span); every leader kill fails over in 2-4 s. Note that with the 10-min grace this
+# body no longer exercises the install-as-non-member path the drain fix was written for; that path is covered by the Kahuna test
+# and would need a shorter grace (not exposed by CamusDB yet) to soak. Acceptance for this arm = reconciliation PASS, no node dying
+# on its own, no manual intervention, every long-kill restart repaired by at most one install under 60 s, every leader kill and
+# pause failed over within seconds. The recovery gate (max_recovery_seconds 60) is still expected to go red on the two long kills.
+#
+# History: KAHUNA 1.15.4 / KOMMANDER 1.13.2 ACCEPTANCE ARM for the restarted-replica-cannot-rejoin finding (2026-11-04). Image
+# caraxes/camusdb:reg6 = CamusDB HEAD with Kahuna.Core 1.15.4, Kommander 1.13.2, SolariumDb.Kahuna 0.1.5. Body identical to the
+# reg5 acceptance arm below (image reg5 = Kahuna 1.15.2 / Kommander 1.13.0), which on 2026-11-04 (tag inst1) verified the
+# leaderless-under-kill fix but lost every restarted node: a replica restarted into a ~50-min store took 53-130 s per
+# whole-partition install instead of 4-24 s, the leader streamed appends it could not apply into the executor's unbounded
+# replication queue (1.96 M RaftLog entries buffered), compacted past the follower's anchor while it installed and installed
+# it again in a loop (20:38, 20:40, 20:43), and the node died by out-of-memory fail-fast at every heap cap tried (2,458 MiB,
+# then 3,686 and 6,144 after manual docker update). Four self-deaths, verdict FAIL; reconciliation PASS.
+# Fixes under test: Kommander 1.13.2 (d44cf2f) refuses entry-carrying appends while an install holds the executor
+# (FollowerInstallingSnapshot, counted by raft.follower.appends_refused_while_installing_total), skips entry-carrying sends to a
+# peer being seeded (raft.backfill.seeding_peer_sends_skipped_total) and holds retention from the seeding index past the rate
+# budget (raft.compaction.seeded_peer_retention_holds_total). Kahuna 1.15.4 (c38f66b2) times each install phase
+# (kahuna.partition_install.phase_duration, Warning at >= 10 s with the purge's page count), persists the durability floor at
+# the installed boundary so a restart before the first post-install flush does not read a floor below the compaction floor,
+# releases the old intent slice before building the installed ledger, and trips a restart breaker after three OOM exits.
+# What to read: for the 72m (2-min) and 96m (4-min) kills, the restarted node's install duration and phase breakdown (expect
+# single-digit seconds, like sol6's 4-24 s), one install per restart (no re-install loop), the three new Kommander counters
+# in node-metrics.csv, the node's committed heap across the install (memory-samples.csv; it must stay under the 2,458 MiB cap
+# with no manual docker update), and no crash dumps under /dumps. The 30-s kills before 72m should still heal by backfill or
+# one install. Acceptance for this arm = reconciliation PASS, no node dying on its own, no manual intervention, every long-kill
+# restart rejoined with one install, every leader kill failed over within seconds. The recovery gate (max_recovery_seconds 60)
+# is still expected to go red on the two long kills themselves.
+#
+# History: KOMMANDER 1.13.0 ACCEPTANCE ARM for the leaderless-under-kill finding (2026-11-04). Image caraxes/camusdb:reg5 = CamusDB
+# 70892931 (Kahuna.Core 1.15.2, Kommander 1.13.0, SolariumDb.Kahuna 0.1.5). Body identical to the sol6 forced-install arm
+# (bank-fault-soak-nvme-sol5-solarium-install, image sol5 = Kommander 1.12.0), which on 2026-10-30 survived four whole-partition
+# installs but left partition 1 leaderless for the whole downtime of each later leader kill (127 s, 245 s, 36 s, 0 completed
+# ops) after the 56m leader pause: the new leader's queued replication frames to the unpaused follower were refused at the
+# gRPC receive limit in force (4 MB library default, not the 16 MiB configured), the follower was starved, and the two
+# survivors never elected anyone until the killed node came back. Kommander 1.12.3 (f44fac7) raises the Raft service's
+# receive limit at MapGrpcRaftRoutes, fixes the dispatcher byte-reservation leak and the stream recreate churn, and logs
+# election stalls at Warning; 1.13.0 adds entry release at commit completion and fsynced term/vote.
+# What to read: for every kill after the 56m pause, the time from the kill to the survivors' "Voted to become leader" (expect
+# 2-4 s, as the 30-s kills before the pause showed) and the completed ops per 10-s bucket in intervals.csv during the 72m and
+# 96m long kills (expect two-node throughput, not zero). Also: no "exceeded this node's gRPC receive limit" lines after the
+# pause heals, and the Warning-level election-stall lines if a stall does happen. Acceptance for this arm = reconciliation PASS,
+# no node dying on its own, at least one whole-partition install completed, and every leader kill failed over within seconds.
+# The recovery gate (max_recovery_seconds 60) is still expected to go red on the two long kills themselves.
+#
+# History: SOLARIUM 0.1.5 FORCED-INSTALL ARM (2026-10-30). Image caraxes/camusdb:sol5 (CamusDB with SolariumDb.Kahuna 0.1.5, Kahuna.Core
+# 1.14.7). Identical to bank-fault-soak-nvme-sol5-solarium except two kills keep the leader down for longer: 72m for 2 minutes
+# and 96m for 4 minutes instead of 30 s.
+# Why: the purge-fix acceptance needs a restarted node on a deep-history store to be re-seeded by a whole-partition snapshot
+# install, because that is the only path that runs PartitionStateTransfer.PurgePartitionBackendRowsAsync and so the backend's
+# DeleteKeyValues over millions of revision rows. Whether a 30-s kill ends in a backfill or an install is the leader's call
+# (compaction timing, the backfill no-progress probe): sol5 on 0.1.4 installed once in six kills and died in the purge; the
+# 0.1.5 rerun with the stock schedule installed zero times in six, so the fix was not exercised. A node down for minutes at
+# ~7,000 ops/s loses its backfill anchor to several compaction passes (Kommander: NonContiguousBackfill) and is re-seeded.
+# What to read: each long kill's restart in the node log (KeyValueRestorer restore tally, then "Snapshot installed on" from the
+# leader and the install's duration), the node's working set and GC committed across the install (memory-samples.csv), and
+# that it stays up. The recovery gate (max_recovery_seconds 60) is expected to go red on the two long kills: the acceptance for
+# this arm is reconciliation PASS, no node dying on its own, and at least one install completed on a store with hours of history.
+# Throughput is not a question here: the long kills leave the cluster on two nodes for six minutes.
+# Shared memory: the two budget keys size the cache and the memtable budget for both engines (768/256 MiB, the fs2 bundle);
+# rocksdb_shared_memory applies to RocksDB only and is a no-op for Solarium, so it is stated on the control arm only.
+# Default shape: durable_materialize_on_resolve on (default since 6a081848), point_read_row_id_cache_enabled on (default since
+# edcb9fab), both stated. Acceptance = the pk1 bar: conservation exact, versions in band, 0 lost rows, 0 apply divergence,
+# 0 late vetoes, unresolved 0, every kill-restart repaired by backfill or one first-attempt install (skips only with a rule),
+# no OOM, 14/14 recovered within 60 s, headroom OK on the dwell rule. pk1 flag-on control: 5,485 ops/s (device regime).
+# Everything below is fs4's text, unchanged except name/cluster name/image and the kahuna stanza.
+#
+# TWO-HOUR FAULT SOAK with the bank ledger (CamusDB Phase 5, task 3301b6f8).
+#
+# Done-when this run exists to answer: "the two-hour window completes, the conservation invariant
+# holds exactly, and the ledger resolves every indeterminate outcome." Those three are
+# device-independent, which matters here (see the device note below).
+#
+# Stack: Kahuna.Core 1.9.3+4792ac4d -> Kahuna.Shared 1.9.3 -> Kommander 1.7.6+14b564a2, all from
+# nuget.org; CamusDB commit 883c3426; workload on CamusDB.Client 0.12.3. Same image as lt9/lk16/sd17
+# (caraxes/camusdb:bankrel193, cluster fingerprint sha256:15c44afd14e0b5db), so the soak shares one
+# binary with the three 10-minute rows it extends.
+#
+# FAULT KINDS. The task names "pause, slow, kill, and restart". Read here as the three kinds whose
+# behaviour is already characterised on this pin, so that a soak failure is attributable:
+#   * kill      - SIGKILL the current leader, restart 30 s later (kill AND restart in one event)
+#   * pause     - SIGSTOP/SIGCONT a node's process for 30 s
+#   * slow-disk - cgroup v2 io.max at 4 KiB/s on one node's data device for 30 s
+# Netem "slow" (network delay) is deliberately NOT in this run: it has no recorded 10-minute row yet,
+# and a 2-hour qualification is the wrong place to meet a fault kind for the first time. Row 4 of the
+# fault matrix is where it belongs.
+#
+# SCHEDULE: 14 windows, one every 8 minutes from 8m to 112m, leaving ~10 clean minutes before the
+# window closes so the last tail and the drain can be read. Six kills (the restart path), four pauses,
+# four slow-disk, rotating targets so every node takes each kind; kills and two pauses take 'leader',
+# resolved from the placement at inject time.
+#
+# THE SECOND QUESTION THIS RUN ANSWERS. lk16 failed the held rule on its second kill by a hair: tail
+# median 97% of pre-fault, failing only the "no dip longer than 30 s" clause at exactly 30 s, while
+# kill 1 showed the identical mechanism (the restarted node withholding Raft Success acks while it
+# backfills over its log gap) and passed with a 6-s dip. Two samples cannot say whether 30 s is a
+# stable property or where the sub-bar seconds happened to cluster. Six kills here give a
+# distribution, and that decides whether the item is Kommander's (don't withhold that long during gap
+# backfill) or the harness's (the dip clause treats interleaved and consecutive sub-bar seconds very
+# differently). Read the per-window "longest dip" column in analysis.md together with each restarted
+# node's "Withholding Success ack ... presence frontier ... does not cover it" span.
+#
+# DEVICE NOTE, and why the throughput gates are expected to go inadmissible late. This host's NVMe
+# changes regime after roughly 30-35 GB of sustained writes inside a run; the three 10-minute runs of
+# 2026-09-22 stayed fast end to end precisely because they were short and the host was idle. A
+# 2-hour window will cross that threshold, so later windows will very likely be marked INADMISSIBLE
+# or voided by verdict rules v2/v3. That is expected and is not a failure of this run: the soak's
+# done-when is conservation and ledger resolution, both device-independent. The early windows are the
+# ones to read for the dip distribution above.
+#
+# MEMORY, and the resource gate (task 8a5c7533, "no monotonic collapse"). In the 10-minute runs node
+# memory climbed to 3.3-3.9 GB of the 4,096 MiB limit within ~10 minutes and then plateaued noisily
+# (sd17 camus1 peaked 3,942). memory_limit_mb is deliberately left at 4096 rather than raised: whether
+# that plateau holds for two hours or creeps is exactly what the resource gate asks. A node OOM-killed
+# partway is a finding to record, not a wasted run - memory-samples.csv carries the trajectory either
+# way, and the ledger still resolves the indeterminate set for the part that ran.
+#
+# Log levels at the default (warning). Information costs ~15% throughput and would produce multi-GB
+# node logs over two hours.
+name: bank-fault-soak-nvme-reg10-solarium-install
+cluster:
+  name: bankfaultsoakreg10solinstall
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    durable_materialize_on_resolve: true
+    # fs2: bound RocksDB's native memory. fs1 died of native growth, not the managed heap:
+    # camus2 climbed 248 MB -> 3,615 MB native over two hours while its managed committed
+    # memory FELL to 441 MB, and the container OOM-killed it at 99.6% of 4,096 MiB. Without
+    # this bundle the KV backend and the Raft WAL hold two independent, unbudgeted
+    # block-cache + memtable footprints, while DOTNET_GCHeapHardLimitPercent=60% lets the
+    # managed heap claim 2,458 MiB of the same container - the two budgets overcommit it.
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    # fs3 runs the SAME configuration as fs2 on a Kommander that charges the Raft log's index and
+    # filter blocks to this budget. fs2 proved the budget was ineffective, not wrong: table-reader
+    # memory sat outside it at ~8.9% of live SST bytes (measured), which is where fs1/fs2's ~3 GB of
+    # unexplained native memory per node came from. Local packs Kommander 1.7.7-tablereaders.1 /
+    # Kahuna.Core+Shared 1.9.3-tablereaders.1, the latter packed from the published 1.9.3 commit
+    # (4792ac4d) with only the Kommander reference changed, so the binary delta against fs2 is that
+    # one fix. Watch raft.wal.table_readers_memory (should now stay inside the 768 MiB budget rather
+    # than tracking SST growth) and raft.wal.block_cache_pinned_usage (approaching the budget means
+    # the cache cannot make room and reads go to disk instead).
+  # fs4: cap glibc's secondary malloc arenas. fs1/fs2/fs3 each lost a node to container OOM with
+  # ~3 GB of native memory that no subsystem gauge could account for; /proc/1/smaps on a live fs3 node
+  # found 116 anonymous mappings of 60-70 MB holding 1,227 MB resident, which is glibc's per-thread
+  # arena signature (64 MB arenas, capped at 8 x ncores = 128 on this 16-core host, with 133 threads
+  # in the process). Arenas retain freed memory rather than returning it, so this is retention, not
+  # live data - which is why bounding durable-2PC retention, the block cache, memtables and table
+  # readers in turn each failed to move the total. MALLOC_ARENA_MAX=2 trades allocator contention for
+  # resident memory. Everything else is identical to fs3, so the delta is this one variable.
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg10"
+  camusdb:
+    # The lever under qualification: a primary-key point lookup remembers its row id and skips the index read.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 2h
+  warmup: 3m
+  drain: 60s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 8m,   fault: kill,      target: leader, duration: 30s }
+    - { at: 16m,  fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 24m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 32m,  fault: pause,     target: camus2, duration: 30s }
+    - { at: 40m,  fault: slow-disk, target: camus3, duration: 30s }
+    - { at: 48m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 56m,  fault: pause,     target: leader, duration: 30s }
+    - { at: 64m,  fault: slow-disk, target: camus2, duration: 30s }
+    - { at: 72m,  fault: kill,      target: leader, duration: 2m }   # long kill: the restart should be re-seeded by a snapshot install
+    - { at: 80m,  fault: pause,     target: camus3, duration: 30s }
+    - { at: 88m,  fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 96m,  fault: kill,      target: leader, duration: 4m }   # long kill: deeper store, second install
+    - { at: 104m, fault: pause,     target: leader, duration: 30s }
+    - { at: 112m, fault: kill,      target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
