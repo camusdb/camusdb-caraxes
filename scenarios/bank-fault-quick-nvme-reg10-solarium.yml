@@ -1,0 +1,102 @@
+# reg10 (2026-11-07): Kahuna.Core 1.16.1 (3538a59a, Kommander 1.14.0, Grpc 2.85.0 unchanged) and SolariumDb.Kahuna 0.1.8 (542d206)
+# against the reg9 image (Kahuna.Core 1.16.0 / Kommander 1.13.4 / SolariumDb.Kahuna 0.1.7). The three releases answer the three
+# findings of the inst5 soaks and the reg9p pairs of 2026-11-06: SolariumDb 0.1.8 attests the write group's last sequence in the
+# sync ledger with at most one flush per write group (0.1.7 flushed once per synced write, which showed as 0.29-0.32 device write
+# IOs per op against 0.21-0.25 before it) and flushes with fdatasync on Linux; Kahuna 1.16.1 spaces the inter-node batcher's
+# stream re-opens to a dead peer (per-peer backoff 100 ms doubling to 2 s) and logs them as one episode (1.16.0 logged ~250
+# Warning lines a second per dead peer on the leader); Kommander 1.14.0 no longer seeds a follower whose commit frontier already
+# reaches the checkpoint when only its durable frontier lags (1.13.4 started a snapshot transfer the follower then skipped, on
+# every 30-s pause under 0.1.7). Image caraxes/camusdb:reg10 = CamusDB HEAD with the two pins.
+# This arm: a 20-minute cut of the stock Solarium fault body (same cluster and workload stanza: 3 voters, 4 GiB nodes, Solarium store
+# and WAL on the host NVMe, 128 workers, 3-min warm-up) with three faults, chosen to exercise the two behaviour fixes a no-fault
+# pair cannot: a 2-min leader kill at 6m (on 1.16.0 the leader logged 5,000-6,000 "GrpcServerBatcher key-value stream closed"
+# lines per minute of the outage; read tens, one episode per peer, and the survivors' channels back within seconds of the return
+# as in inst4/inst5), a 30-s pause of follower camus3 at 12m (on 1.13.4 every such pause under 0.1.7 drew a NoProgressProbe
+# snapshot transfer the follower skipped as already covered; read none, and the held-escalation counter or line instead), and a
+# 30-s leader kill at 16m. Acceptance: reconciliation PASS, 0 self-deaths, every kill failed over within seconds, the 2-min kill's
+# restart repaired by backfill or one install, no transfer on the pause. The recovery gate (max_recovery_seconds 60) is expected
+# to go red on the 2-min kill as it does in the soaks.
+#
+name: bank-fault-quick-nvme-reg10-solarium
+cluster:
+  name: bankfaultquickreg10sol
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    durable_materialize_on_resolve: true
+    # fs2: bound RocksDB's native memory. fs1 died of native growth, not the managed heap:
+    # camus2 climbed 248 MB -> 3,615 MB native over two hours while its managed committed
+    # memory FELL to 441 MB, and the container OOM-killed it at 99.6% of 4,096 MiB. Without
+    # this bundle the KV backend and the Raft WAL hold two independent, unbudgeted
+    # block-cache + memtable footprints, while DOTNET_GCHeapHardLimitPercent=60% lets the
+    # managed heap claim 2,458 MiB of the same container - the two budgets overcommit it.
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    # fs3 runs the SAME configuration as fs2 on a Kommander that charges the Raft log's index and
+    # filter blocks to this budget. fs2 proved the budget was ineffective, not wrong: table-reader
+    # memory sat outside it at ~8.9% of live SST bytes (measured), which is where fs1/fs2's ~3 GB of
+    # unexplained native memory per node came from. Local packs Kommander 1.7.7-tablereaders.1 /
+    # Kahuna.Core+Shared 1.9.3-tablereaders.1, the latter packed from the published 1.9.3 commit
+    # (4792ac4d) with only the Kommander reference changed, so the binary delta against fs2 is that
+    # one fix. Watch raft.wal.table_readers_memory (should now stay inside the 768 MiB budget rather
+    # than tracking SST growth) and raft.wal.block_cache_pinned_usage (approaching the budget means
+    # the cache cannot make room and reads go to disk instead).
+  # fs4: cap glibc's secondary malloc arenas. fs1/fs2/fs3 each lost a node to container OOM with
+  # ~3 GB of native memory that no subsystem gauge could account for; /proc/1/smaps on a live fs3 node
+  # found 116 anonymous mappings of 60-70 MB holding 1,227 MB resident, which is glibc's per-thread
+  # arena signature (64 MB arenas, capped at 8 x ncores = 128 on this 16-core host, with 133 threads
+  # in the process). Arenas retain freed memory rather than returning it, so this is retention, not
+  # live data - which is why bounding durable-2PC retention, the block cache, memtables and table
+  # readers in turn each failed to move the total. MALLOC_ARENA_MAX=2 trades allocator contention for
+  # resident memory. Everything else is identical to fs3, so the delta is this one variable.
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg10"
+  camusdb:
+    # The lever under qualification: a primary-key point lookup remembers its row id and skips the index read.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 20m
+  warmup: 3m
+  drain: 60s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 6m,   fault: kill,      target: leader, duration: 2m }    # a dead peer for 2 min: the batcher's re-open episode and backoff, the survivors' channels on the return
+    - { at: 12m,  fault: pause,     target: camus3, duration: 30s }   # a paused follower: no NoProgressProbe transfer when its commit frontier covers the checkpoint
+    - { at: 16m,  fault: kill,      target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
