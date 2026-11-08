@@ -63,6 +63,25 @@ public sealed class NemesisContext
             sqlStatements.Add(outcome);
     }
 
+    private readonly List<SplitOutcome> splitOutcomes = [];
+
+    /// <summary>Every <c>split</c> event's outcome, in completion order. Read by the verdict after the
+    /// workload: a scheduled cutover that did not commit fails the run.</summary>
+    public IReadOnlyList<SplitOutcome> SplitOutcomes
+    {
+        get
+        {
+            lock (sqlGate)
+                return splitOutcomes.ToList();
+        }
+    }
+
+    public void RecordSplit(SplitOutcome outcome)
+    {
+        lock (sqlGate)
+            splitOutcomes.Add(outcome);
+    }
+
     public ClusterOrchestrator? Orchestrator { get; }
 
     /// <summary>Bound on the restore that seeds a joiner; the node aborts a restore whose request is cut off.</summary>

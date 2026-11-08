@@ -636,6 +636,7 @@ public sealed class ScenarioRunner
         GradeAddNode(notes, ref passed);
         GradeBackupVerify(notes, ref passed);
         GradeSqlStatements(notes, ref passed);
+        GradeSplits(notes, ref passed);
         GradeSchemaVerify(outputDir, notes, ref passed);
         GradeDivergentApply(outputDir, notes, ref passed);
         GradeSuspend(notes, ref passed);
@@ -751,6 +752,38 @@ public sealed class ScenarioRunner
         if (outcomes.Count < scheduled)
         {
             notes.Add($"  CHECK FAILED: sql: {scheduled - outcomes.Count} of {scheduled} statement(s) never ran (see timeline.jsonl: a target that did not resolve, or a run that ended first)");
+            passed = false;
+        }
+    }
+
+    /// <summary>
+    /// Fails a run in which a scheduled <c>split</c> did not commit a cutover. The fault exists to place a
+    /// range move at a chosen moment; a run whose move never happened did not test what the scenario claims,
+    /// whatever the ledger says, so it is graded like a verification step.
+    /// </summary>
+    private void GradeSplits(List<string> notes, ref bool passed)
+    {
+        int scheduled = scenario.Nemesis?.Events.Count(e => e.Fault == "split") ?? 0;
+        if (scheduled == 0)
+            return;
+
+        IReadOnlyList<SplitOutcome> outcomes = nemesisContext?.SplitOutcomes ?? [];
+        notes.Add($"split: {scheduled} scheduled, {outcomes.Count} attempted, {outcomes.Count(o => o.Ok)} committed");
+        foreach (SplitOutcome o in outcomes)
+        {
+            if (o.Ok)
+            {
+                notes.Add($"  {o.Describe()}");
+                continue;
+            }
+
+            notes.Add($"  CHECK FAILED: {o.Describe()}");
+            passed = false;
+        }
+
+        if (outcomes.Count < scheduled)
+        {
+            notes.Add($"  CHECK FAILED: split: {scheduled - outcomes.Count} of {scheduled} split(s) never ran (see timeline.jsonl: a target that did not resolve, or a run that ended first)");
             passed = false;
         }
     }

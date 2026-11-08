@@ -48,7 +48,7 @@ public sealed class NemesisSpec
 public sealed class NemesisEvent
 {
     /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | disk-corrupt | remove-node |
-    /// leader-transfer | clock-skew | backup | add-node | sql.</summary>
+    /// leader-transfer | clock-skew | backup | add-node | sql | split.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -153,6 +153,23 @@ public sealed class NemesisEvent
     /// (<c>CADB0502</c>, <c>CADB0504</c>). Default 10; 0 tests the first attempt alone.</summary>
     public int SqlRetries { get; set; } = 10;
 
+    /// <summary>The table whose key space the <c>split</c> fault divides, in the workload's database. Default
+    /// <c>workload_accounts</c>, the bank table.</summary>
+    public string SplitTable { get; set; } = "workload_accounts";
+
+    /// <summary>Which key space of that table the <c>split</c> fault divides: null (the default) for the row
+    /// space, or the name of a readable index (<c>primary</c> and <c>&lt;table&gt;_pkey</c> name the primary index).</summary>
+    public string? SplitIndex { get; set; }
+
+    /// <summary>Bound on one <c>split</c> event, from the host: the asks stop when it runs out. A split under
+    /// write load is refused while a transaction holds a write in the moving range, so the fault keeps asking;
+    /// the default, 60 s, is twice the quiesce a move may hold. Keep it inside the window the split must land in.</summary>
+    public int SplitTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>How many asks the <c>split</c> fault makes before it gives up, across the nodes it tries.
+    /// Default 60, half a second apart.</summary>
+    public int SplitRetries { get; set; } = 60;
+
     /// <summary>The index of a <c>camusN</c> name, or null when the name is not of that form.</summary>
     public static int? ParseNodeIndex(string name)
     {
@@ -188,6 +205,20 @@ public sealed class NemesisEvent
 
         if (NodeName.Length > 0 && Fault != "add-node")
             throw new NemesisException($"nemesis event '{Fault}': 'node_name' is only meaningful for add-node");
+
+        if (Fault == "split")
+        {
+            if (string.IsNullOrWhiteSpace(SplitTable))
+                throw new NemesisException("nemesis event 'split': 'split_table' must name the table whose key space to divide");
+            if (SplitTimeoutSeconds < 1)
+                throw new NemesisException($"nemesis event 'split': split_timeout_seconds must be >= 1, got {SplitTimeoutSeconds}");
+            if (SplitRetries < 0)
+                throw new NemesisException($"nemesis event 'split': split_retries must be >= 0, got {SplitRetries}");
+        }
+        else if (SplitIndex is not null)
+        {
+            throw new NemesisException($"nemesis event '{Fault}': 'split_index' is only meaningful for the split fault");
+        }
 
         if (NodeName.Length > 0 && ParseNodeIndex(NodeName) is null)
             throw new NemesisException($"nemesis event 'add-node': node_name must be camusN, got '{NodeName}'");

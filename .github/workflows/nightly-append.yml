@@ -62,6 +62,10 @@ jobs:
           # scenario above is hash-routed. require_split fails a run as VACUOUS when no range split during it.
           - append-split
           - bank-split
+          # The same bank body with the row-space cutover forced inside the kill window, the shape that lost
+          # acknowledged writes on 2026-11-08 when the cascade happened to land there; the forced split makes it
+          # a check on every run instead of a coincidence.
+          - bank-split-kill-window
           # Replica placement: five nodes at replication factor 3, so the planner has replicas to move, with a
           # kill and a one-way decommission. The three-node scenarios above host every range on every node and
           # never move one. require_replica_move fails a run as VACUOUS when no replica set changed.

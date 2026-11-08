@@ -58,8 +58,8 @@ loss), `fill-disk` (exhaust a node's `/data` until ENOSPC — needs a size-cappe
 below), `slow-disk` (cap one node's block writes with cgroup `io.max` — a slow or paused device, see
 below), `disk-corrupt` (damage one data file of a SIGKILLed node, restart on heal, see below), `clock-skew` (move one
 node's wall clock forward or back, see below), `remove-node`
-(drain via `/v1/cluster/leave`, a one-way scale-down), and `sql` (an online schema change or bulk write, see
-below). Targets are a node name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
+(drain via `/v1/cluster/leave`, a one-way scale-down), `sql` (an online schema change or bulk write, see
+below), and `split` (a range split of the workload's table at a chosen moment, see below). Targets are a node name, `random` (seeded, reproducible), or `zone:<name>` (every node in a failure zone — the fault
 applies to each, so `kill` of a zone kills the whole zone together). Every healable fault still in
 effect when the workload finishes is healed on the way out, so the cluster is never left broken.
 
@@ -195,6 +195,41 @@ See `scenarios/kill-follower.yml`, `partition-and-slow.yml`, `soak-random.yml`. 
 internal errors by context: with no fault injected any internal error fails the run, but under a
 fault a few client-side disposal races are tolerated as long as reconciliation (the real consistency
 guard) still holds.
+
+**Forced range split (`split`).** Divides one key space of the workload's table at its median key through
+CamusDB's `POST /v1/cluster/split-range`, which runs the same quiesce, copy, hand-off and cutover the
+load-based trigger runs. The trigger's timing is a function of load and settle windows, so a scenario that
+needs a cutover inside another fault's window cannot rely on it. The nightly `bank-split` arm lost
+acknowledged writes on 2026-11-08 only because the cascade happened to cut the row space over while one
+node was dead: the restarted node caught up the source and the destination logs out of order, re-installed
+a settled intent as a phantom holder, rejected the later one-phase bundles of those keys and served the rows
+one revision behind once it led. Green nights had the same faults with the cutovers elsewhere.
+`scenarios/bank-split-kill-window.yml` schedules the cutover inside the kill window, so that shape is a check
+and not a coincidence.
+
+Kahuna runs a split only on the node that leads the partition owning the range map, so the fault asks the
+target first and then every other node, following the leader hint when an answer carries one; a dead or
+partitioned target is simply skipped. A refusal that can clear with time (the halves not yet settled, a
+quiesce that did not confirm, a transfer that failed) is asked again every half second until
+`split_timeout_seconds` (default 60) or `split_retries` (default 60) run out; an indeterminate answer is
+judged by the range count the next answer reports. The call is loopback-only without authentication, so it
+runs inside the node's network namespace like `leader-transfer`. The heal is a no-op that closes the window
+`duration` later. Every outcome goes to the timeline and to the verdict, which fails the run when a
+scheduled split did not commit: a cutover that never happened is the scenario's claim not happening.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `split_table` | the table whose key space to divide, in the workload's database | `workload_accounts` |
+| `split_index` | an index name to divide that index's key space; omitted for the row space | row space |
+| `split_timeout_seconds` | bound on the asks of one event | `60` |
+| `split_retries` | asks before giving up, across the nodes tried | `60` |
+
+```yaml
+nemesis:
+  events:
+    - { at: 70s, fault: kill, target: camus1, duration: 20s }
+    - { at: 76s, fault: split, target: camus3, duration: 10s }   # the row-space cutover lands while camus1 is down
+```
 
 ### Fault correlation and resilience checks
 
