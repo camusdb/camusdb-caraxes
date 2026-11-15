@@ -1,0 +1,50 @@
+# Acceptance for the many-spread-holds fixes: 100 branches forked over 10 minutes, then a replica move, reads through the new replica and reads
+# after restarting every node. Driven by tools/branch/holds-repro.py. Longer than branch-holds-100 so the driver finishes those reads: the move
+# itself now completes, and the post-restart reads come after it. Image caraxes/camusdb:fixes is CamusDB with Kahuna.Core built from main plus the
+# working tree, baked with the certificates for nodes + spares = 10. Another count would regenerate them and rebuild the tag from ~/camusdb.
+# The kill at the end only makes the nemesis start its timeline, which the driver reads for its clock.
+name: branch-holds-100-accept-rocksdb
+cluster:
+  name: branchholds
+  nodes: 5
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 3072
+  kahuna:
+    storage: rocksdb
+    wal_storage: rocksdb
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:fixes"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 50000
+  mode: closed
+  workers: 64
+  connections: 32
+  duration: 48m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 1
+  events:
+    - { at: 46m, fault: kill, target: leader, duration: 15s }
+checks:
+  require_recovery: false
+  require_progress_under_fault: false
+teardown: true

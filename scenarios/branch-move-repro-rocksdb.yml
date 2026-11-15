@@ -1,0 +1,52 @@
+# Does moving a replica take away the history a database branch reads? Driven by tools/branch/move-repro.py, which forks the branch,
+# asks a host of the partition to leave and reads the branch through the new replica. This scenario supplies the load. One data
+# partition carries everything, so the bank load moves the log past the fork and the new replica should need an install. The rebalancer
+# is on because the placement scenarios all run with it; with one partition on five nodes it has nothing to smooth, so only the leave
+# changes placement. The leader balancer stays off so leadership stays where the driver puts it.
+# The kill at the end only makes the nemesis start its timeline, which the driver reads for its clock; it lands after the driver has
+# finished. Image heldhistory2 = CamusDB 74f1fa2c with Kahuna.Core built from 53547e45 plus the held-history install fix, baked with the certificates for nodes + spares = 10. Another count would regenerate them and rebuild this tag from ~/camusdb, without the fix.
+name: branch-move-repro-rocksdb
+cluster:
+  name: branchmoverocks
+  nodes: 5
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 3072
+  kahuna:
+    storage: rocksdb
+    wal_storage: rocksdb
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:heldhistory2"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 50000
+  mode: closed
+  workers: 64
+  connections: 32
+  duration: 32m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 1
+  events:
+    - { at: 30m, fault: kill, target: random, duration: 15s }
+checks:
+  require_recovery: false
+  require_progress_under_fault: false
+teardown: true

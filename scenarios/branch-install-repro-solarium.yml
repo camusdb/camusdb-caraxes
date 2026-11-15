@@ -1,0 +1,49 @@
+# Does a snapshot install take away the history a database branch reads? Driven by tools/branch/install-repro.py, which forks
+# the branch, moves leadership and judges the result; this scenario supplies the load and the kills. The leader balancer is off
+# so leadership stays where the driver puts it. Image reg10 = CamusDB 74f1fa2c, Kahuna.Core 1.16.1, SolariumDb.Kahuna 0.1.8.
+name: branch-install-repro-solarium
+cluster:
+  name: branchreprosol
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: false
+  leader_balancer: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg10"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 200000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 24m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 1
+  events:
+    - { at: 5m, fault: kill, target: leader, duration: 30s }   # negative control: a restart that keeps its history
+    - { at: 9m, fault: kill, target: leader, duration: 5m }    # past the 3-min retention window: the restart is re-seeded by an install
+checks:
+  require_recovery: false
+  require_progress_under_fault: false
+teardown: true

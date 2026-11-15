@@ -1,0 +1,58 @@
+# branch-split-repro-rocksdb with more nodes than the replication factor, so a new partition can have a replica that never hosted the
+# source. At three nodes every replica hosts both sides and keeps the old revisions (run spl1). The rebalancer stays off: only the
+# split changes placement, so the driver's view of who hosted what holds for the whole run.
+# Does a range split take away the history a database branch reads? Driven by tools/branch/split-repro.py, which seeds a table
+# just under the split threshold, forks, crosses the threshold and judges the result. This scenario supplies the load and the
+# auto-splitter. workload_accounts stays under the threshold, so it never moves and is the control inside the read after the split.
+# The kill at the end only makes the nemesis start its timeline, which the driver reads for its clock; it lands after the driver
+# has finished. Image heldhistory2 = CamusDB 74f1fa2c with Kahuna.Core built from 53547e45 plus the held-history install fix, baked with the certificates for nodes + spares = 10. Another count would regenerate them and rebuild this tag from ~/camusdb, without the fix.
+name: branch-split-placed-rocksdb
+cluster:
+  name: branchsplitplaced
+  nodes: 5
+  partitions: 2
+  replication_factor: 3
+  placement_rebalancer: false
+  leader_balancer: false
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 3072
+  kahuna:
+    storage: rocksdb
+    wal_storage: rocksdb
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    range_split_threshold: 3900   # the checker samples at most 4,096 keys, so a higher threshold never fires
+    range_split_min_range_size: 100
+    range_split_settle_window_ms: 15000
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:heldhistory2"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 3000
+  mode: closed
+  workers: 32
+  connections: 32
+  duration: 30m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 1
+  events:
+    - { at: 28m, fault: kill, target: random, duration: 15s }
+checks:
+  require_recovery: false
+  require_progress_under_fault: false
+  require_split: true
+teardown: true
