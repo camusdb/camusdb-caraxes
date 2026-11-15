@@ -1,0 +1,48 @@
+# k117 (2026-11-14): Kahuna.Core 1.17.0 (Kommander 1.14.1) and SolariumDb.Kahuna 0.2.1 (image k1170 = CamusDB 43d23698 + the two pins) against the same commit on Kahuna.Core 1.16.10 / SolariumDb.Kahuna 0.1.8 (image k11610). Serializable + optimistic, single-key reads proved at commit. Arm: RocksDB tmpfs throughput body (256 workers, 10 min), head.
+name: k117-ser-tmpfs-head
+cluster:
+  name: k117tmph
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: false
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1170"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+    optimistic_intent_wait_ms: 100
+    serializable_optimistic_point_locks: false
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
