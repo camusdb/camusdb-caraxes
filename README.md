@@ -611,6 +611,71 @@ two with synchronous writes off are measured, not gated). The volume twins
 carries each cell's committed transactions, measured seconds and Elle verdict beside its pass/fail.
 The strict-serializable arm belongs to the consistency evidence campaign and is not repeated here.
 
+### TPC-H-derived analytical workload (`tpch`)
+
+`kind: tpch` is the one read-only, analytical shape: every operation is one of the 22 TPC-H queries
+over the eight TPC-H tables. It measures the latency of each query, and it checks every answer.
+
+```yaml
+workload:
+  kind: tpch
+  tpch_scale: 0.1          # 1 is about 8.66 million rows; default 0.01
+  tpch_queries: 1-16,18,22 # optional; empty runs all 22
+  mode: closed             # required: workers = concurrent query streams
+  workers: 4
+  read_percent: 100        # required
+  write_percent: 0
+  duration: 10m
+```
+
+**Data.** `init` loads the tables from a seeded generator inside `CamusDB.Workload`. It follows the
+specification's row counts, key structure and value distributions, but it is not dbgen, so the results
+are not comparable with published TPC-H numbers or the official answer sets. CamusDB has no bulk
+import: rows go in as multi-row `INSERT` statements over `tpch_load_connections` connections (default
+8). The load records the row count of every table and the exact answers of Q1 and Q6 in a one-row
+`tpch_meta` table, which also marks the load complete. `tpch_scale` must be at least 0.01.
+
+**Check.** The data never changes after the load, so each query has one right answer. Before warm-up
+the run executes every query once on the quiet cluster (the reference pass), compares the table counts
+and the Q1 and Q6 answers with what the load recorded, and keeps the answers. Every later execution is
+compared with its reference: integers, strings and NUMERIC values exactly, float64 values within a
+relative 1e-9, rows as a multiset. The run fails when
+
+- any execution returned different rows, in warm-up, the window or the drain. This is never waived,
+  also under `expect_faults`;
+- an enabled query has no verified execution inside the measured window. The run says nothing about a
+  query it never finished, so give slow queries a long enough `duration` or leave them out.
+
+A query cut by a fault counts as an error, like any other operation. Queries are taken in turn from one
+cursor shared by all workers, so a run reaches every query. Under a nemesis, schedule the first fault
+after the load and the reference pass.
+
+**Artifacts** (under `artifacts/run/`): `tpch.json` (per query: executions, errors, mismatches, mean,
+p50, p95, p99, max, and queries per hour), `tpch-reference.json` (rows, digest and time of each
+reference), `tpch-mismatches.jsonl` (only when there was one), and a `Tpch` object in
+`reconciliation.json`. `scenario.json` carries the `tpch.json` content. `summary.json` and
+`intervals.csv` keep their shape, with all queries in the read figures.
+
+**Timeouts.** The client's default request timeout of 10 seconds is too short for most of the queries;
+the workload uses 600 seconds for this kind unless `request_timeout` is set.
+
+**Deviations from the specification's query text**, each forced by CamusDB's SQL surface:
+
+| Query | Deviation |
+|---|---|
+| all | Fixed validation parameters. Date arithmetic is folded into date literals (`interval '90' day (3)` is not in the grammar). |
+| all | Decimal constants are `NUMERIC '...'` literals. A bare decimal literal is a float64, and Q6's `0.06 + 0.01` would exclude a discount of exactly 0.07. |
+| Q15 | A common table expression instead of `CREATE VIEW`. |
+| Q16 | `COUNT(*)` over a `SELECT DISTINCT` derived table; `COUNT(DISTINCT)` is not supported. |
+| Q19 | The join and the predicates shared by the three branches are stated once, outside the `OR`. |
+| Q22 | `substring(c_phone, 1, 2)`. |
+| Q2, Q3, Q10, Q18, Q21 | A key is appended to `ORDER BY`, so `LIMIT` cuts at the same row every time. |
+
+Money and quantity columns are bare `NUMERIC` (`DECIMAL(15,2)` is refused), keys are `INT64`, and there
+are no foreign keys. Secondary indexes: `lineitem (l_partkey, l_suppkey)`, `orders (o_custkey)`,
+`partsupp (ps_suppkey)`. Not included: the refresh functions RF1/RF2 and randomized substitution
+parameters. See `scenarios/tpch-smoke.yml` and `scenarios/tpch-sf01-*.yml`.
+
 ### Performance evidence (per-node metrics, cluster facts, comparability)
 
 A reliability scenario asks whether the cluster stayed correct. A **capacity** scenario asks how fast

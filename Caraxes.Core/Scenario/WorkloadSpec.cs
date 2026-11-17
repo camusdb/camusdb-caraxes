@@ -31,8 +31,28 @@ public sealed class WorkloadSpec
     /// table holds exactly that many rows at every committed state. After the run each slot must hold
     /// one row at the generation its committed moves account for; a read-only lookup must always find
     /// exactly one; the in-window scan probe counts the table too. Lost deletes, lost inserts, double
-    /// spends and stale index entries each fail the run. The seeded dataset is untouched.</summary>
+    /// spends and stale index entries each fail the run. The seeded dataset is untouched.
+    ///
+    /// <para><c>tpch</c> is read-only and analytical: every operation is one of the 22 TPC-H queries over
+    /// the eight TPC-H tables, which <c>init</c> loads from a seeded generator at <see cref="TpchScale"/>.
+    /// The data never changes after the load, so each query has one right answer; it is recorded before
+    /// warm-up and every execution is compared with it. A different answer fails the run and is never
+    /// waived, and so does a query with no verified execution inside the measured window. It needs
+    /// <c>read_percent: 100</c> and <c>mode: closed</c>, where <c>workers</c> is the number of concurrent
+    /// query streams. It is derived from TPC-H, not an audited run of it.</para></summary>
     public string Kind { get; set; } = "accounts";
+
+    /// <summary><c>tpch</c> only: the scale factor (<c>--tpch-scale</c>). 1 is about 8.66 million rows.
+    /// 0 leaves the workload default (0.01, about 86,000 rows).</summary>
+    public double TpchScale { get; set; }
+
+    /// <summary><c>tpch</c> only: the queries to run, as numbers and ranges such as <c>1,3,6</c> or
+    /// <c>1-16,18,22</c> (<c>--tpch-queries</c>). Empty runs all 22.</summary>
+    public string TpchQueries { get; set; } = "";
+
+    /// <summary><c>tpch</c> only: connections the load spreads its INSERT statements over
+    /// (<c>--tpch-load-connections</c>). 0 leaves the workload default (8).</summary>
+    public int TpchLoadConnections { get; set; }
 
     /// <summary><c>tokens</c> only: tokens in the table (<c>--tokens</c>). Fewer tokens means more moves
     /// racing for the same row. 0 leaves the workload default (2000).</summary>
@@ -308,9 +328,26 @@ public sealed class WorkloadSpec
 
     public void Validate()
     {
-        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "rw" or "predicate" or "tokens"))
+        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "rw" or "predicate" or "tokens" or "tpch"))
             throw new ScenarioException(
-                $"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append', 'rw', 'predicate' or 'tokens', got '{Kind}'");
+                $"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append', 'rw', 'predicate', 'tokens' or 'tpch', got '{Kind}'");
+
+        if (Kind != "tpch" && (TpchScale != 0 || !string.IsNullOrWhiteSpace(TpchQueries) || TpchLoadConnections != 0))
+            throw new ScenarioException($"'workload.tpch_*' settings apply only to 'workload.kind: tpch', but kind is '{Kind}'");
+
+        if (Kind == "tpch")
+        {
+            if (TpchScale != 0 && !(TpchScale >= 0.01))
+                throw new ScenarioException($"'workload.tpch_scale' must be at least 0.01 (0 = workload default), got {TpchScale}");
+            if (TpchLoadConnections < 0)
+                throw new ScenarioException($"'workload.tpch_load_connections' must be >= 0 (0 = workload default), got {TpchLoadConnections}");
+            if (ReadPercent != 100 || WritePercent != 0)
+                throw new ScenarioException(
+                    $"'workload.kind: tpch' is read-only: set 'read_percent: 100' and 'write_percent: 0', got {ReadPercent} + {WritePercent}");
+            if (Mode != "closed")
+                throw new ScenarioException(
+                    $"'workload.kind: tpch' needs 'mode: closed' ('workers' is the number of concurrent query streams), got '{Mode}'");
+        }
 
         if (TxnMode is not ("" or "explicit" or "autocommit" or "pipeline"))
             throw new ScenarioException($"'workload.txn_mode' must be 'explicit', 'autocommit' or 'pipeline', got '{TxnMode}'");

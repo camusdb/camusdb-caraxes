@@ -1,0 +1,23 @@
+# TPC-H-derived analytical smoke, no faults: 3 nodes, RF 3, scale 0.01 (about 86,000 rows in the eight tables). init loads the tables from the seeded generator; the run takes a reference answer of each of the 22 queries before warm-up, then two streams execute the queries in turn for two minutes and every answer is compared with its reference. PASS needs zero mismatches and at least one verified execution of every query inside the window. Proves the load, the 22 query texts and the check end to end; it is not a performance arm.
+name: tpch-smoke
+cluster:
+  name: tpch-smoke
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: serializable
+workload:
+  kind: tpch
+  tpch_scale: 0.01
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 2
+  connections: 2
+  duration: 2m
+  warmup: 15s
+  read_percent: 100
+  write_percent: 0
+  expect_faults: false
+teardown: true

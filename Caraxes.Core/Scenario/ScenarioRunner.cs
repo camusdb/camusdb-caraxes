@@ -590,6 +590,25 @@ public sealed class ScenarioRunner
         else if (scenario.Workload.Kind == "tokens")
             notes.Add("tokens: NO VERDICT — reconciliation.json carries no token result");
 
+        // The TPC-H verdict. A wrong answer and an unverified query are already reconciliation failures;
+        // this says how much was checked, and names the slowest queries so the run reads without tpch.json.
+        if (reconciliation?.Tpch is TpchSummary tpch)
+        {
+            TpchReport? report = WorkloadArtifacts.ReadTpch(outputDir);
+            notes.Add(
+                $"tpch: {(tpch.Passed ? "PASS" : "FAIL")} — {tpch.QueriesChecked} of {tpch.QueriesEnabled} query(ies) verified in the window, " +
+                $"{tpch.Verified:N0} verified execution(s)" +
+                (report is not null ? $" at scale {report.Scale} ({report.QueriesPerHour:N0} per hour)" : "") +
+                $", {tpch.Errors:N0} error(s), {tpch.Mismatches:N0} mismatch(es) (tpch.json)");
+            if (report is not null && report.Queries.Count > 0)
+                notes.Add(
+                    "tpch slowest (p50): " + string.Join(", ", report.Queries
+                        .Where(q => q.Verified > 0).OrderByDescending(q => q.P50Ms).Take(5)
+                        .Select(q => $"{q.Query} {q.P50Ms:N0} ms")));
+        }
+        else if (scenario.Workload.Kind == "tpch" && reconciliation is not null)
+            notes.Add("tpch: NO VERDICT — reconciliation.json carries no TPC-H result (older workload build?)");
+
         // The Elle shapes' final-state verdict. Its failures already fail reconciliation; this says what
         // was read and what was found, so a reader sees a lost append or a duplicate row by name.
         if (reconciliation?.Elle is QuiescentSummary quiescent)
@@ -1413,6 +1432,9 @@ public sealed class ScenarioRunner
                     mode = scenario.Nemesis.Random is not null ? "random" : "events",
                     eventCount = scenario.Nemesis.Events.Count,
                 },
+            tpch = scenario.Workload.Kind == "tpch"
+                ? WorkloadArtifacts.ReadTpch(Path.Combine(runDir, "artifacts", "run"))
+                : null,
             camusdbGitCommit = TryGitCommit(scenario.Cluster.EffectiveCamusdbRepo),
             initExitCode = init?.ExitCode,
             runExitCode = run?.ExitCode,

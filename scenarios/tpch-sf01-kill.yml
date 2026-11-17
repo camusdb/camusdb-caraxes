@@ -1,0 +1,50 @@
+# TPC-H-derived queries under node kills: scale 0.1, Solarium on the host NVMe, image k1172. The data is static, so a query that answers must return the rows of its reference whatever the cluster is doing; a query cut by a kill counts as an error, a different answer fails the run and is never waived. The load and the reference pass take several minutes, so the first kill is at 12 minutes into the workload container's life; move it later if the reference pass is still running then (the reference pass retries a transient failure three times and then gives up).
+name: tpch-sf01-kill
+cluster:
+  name: tpchkill
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    one_phase_apply_time_validation: true
+    # 60 s, not the 10-minute default: the load writes about 30,000 keys a second and the committed-head ledger keeps one entry per written key for this long. With the default, two of three 4 GiB nodes died of a managed OutOfMemoryException in PreparedIntentStore.CaptureLedger right after the load (2026-11-16).
+    staged_base_fence_retention_ms: 60000
+    durable_materialize_on_resolve: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1172"
+workload:
+  kind: tpch
+  tpch_scale: 0.1
+  tpch_load_connections: 4
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 4
+  connections: 4
+  duration: 15m
+  warmup: 1m
+  drain: 30s
+  read_percent: 100
+  write_percent: 0
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+nemesis:
+  seed: 7
+  events:
+    - { at: 12m, fault: kill, target: random, duration: 30s }
+    - { at: 15m, fault: kill, target: random, duration: 30s }
+    - { at: 18m, fault: partition, target: random, duration: 30s }
+teardown: true

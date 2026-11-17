@@ -89,6 +89,76 @@ public sealed class ReconciliationSummary
 
     /// <summary>An Elle shape's verdict on the final state of its own table, or null for every other shape.</summary>
     public QuiescentSummary? Elle { get; set; }
+
+    /// <summary>The TPC-H shape's verdict on its query answers, or null for every other shape.</summary>
+    public TpchSummary? Tpch { get; set; }
+}
+
+/// <summary>
+/// The TPC-H verdict in <c>reconciliation.json</c>: how many of the enabled queries were verified
+/// against their reference inside the measured window, and how many executions of the whole run
+/// returned different rows. The pass/fail is already folded into <see cref="ReconciliationSummary.Passed"/>
+/// and every finding is in its failures; this is the note.
+/// </summary>
+public sealed class TpchSummary
+{
+    public bool Passed { get; set; }
+
+    public bool LoadVerified { get; set; }
+
+    public int QueriesEnabled { get; set; }
+
+    public int QueriesChecked { get; set; }
+
+    public long Executions { get; set; }
+
+    public long Verified { get; set; }
+
+    public long Errors { get; set; }
+
+    public long Mismatches { get; set; }
+}
+
+/// <summary>The measured-window figures of one TPC-H query, from <c>tpch.json</c>.</summary>
+public sealed class TpchQueryStats
+{
+    public string Query { get; set; } = "";
+
+    public int ReferenceRows { get; set; }
+
+    public double ReferenceMs { get; set; }
+
+    public long Executions { get; set; }
+
+    public long Verified { get; set; }
+
+    public long Errors { get; set; }
+
+    public long Mismatches { get; set; }
+
+    public double MeanMs { get; set; }
+
+    public double P50Ms { get; set; }
+
+    public double P95Ms { get; set; }
+
+    public double P99Ms { get; set; }
+
+    public double MaxMs { get; set; }
+}
+
+/// <summary>The content of <c>tpch.json</c>: the scale and the per-query latency of a TPC-H run.</summary>
+public sealed class TpchReport
+{
+    public string Scale { get; set; } = "";
+
+    public double MeasuredSeconds { get; set; }
+
+    public long Verified { get; set; }
+
+    public double QueriesPerHour { get; set; }
+
+    public List<TpchQueryStats> Queries { get; set; } = [];
 }
 
 /// <summary>
@@ -377,6 +447,11 @@ public static class WorkloadArtifacts
 
     public static ReconciliationSummary? ReadReconciliation(string outputDir) =>
         ReadJson<ReconciliationSummary>(Path.Combine(outputDir, "reconciliation.json"));
+
+    /// <summary>Null when the run wrote no <c>tpch.json</c>: not a TPC-H run, or one that stopped before
+    /// its measured window closed.</summary>
+    public static TpchReport? ReadTpch(string outputDir) =>
+        ReadJson<TpchReport>(Path.Combine(outputDir, "tpch.json"));
 
     /// <summary>Null when the run wrote no <c>elle.json</c>: not an Elle shape, or a workload that
     /// stopped before the history closed.</summary>
