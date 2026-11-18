@@ -1,0 +1,53 @@
+# Single-node arm of k117-ser-tmpfs-head (2026-11-18): the same image (k1170), store (RocksDB on tmpfs), isolation and
+# 256-worker bank body, on one node at replication factor 1 and with no nemesis. It measures the throughput of one node
+# that serves every gateway connection and owns the only partition, with no replication round trip, against the
+# three-node arm's 13,434 txn/s (k117-ser-tmpfs-head-k117). Only the topology differs: nodes 1, replication factor 1,
+# balancers off (one node has nothing to balance). No CPU cap, so the node and the workload generator share the host's
+# 16 cores, as the three nodes did.
+name: k117-ser-tmpfs-n1
+cluster:
+  name: k117tmpn1
+  nodes: 1
+  partitions: 1
+  replication_factor: 1
+  placement_rebalancer: false
+  leader_balancer: false
+  key_range_sharding: false
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1170"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+    optimistic_intent_wait_ms: 100
+    serializable_optimistic_point_locks: false
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
