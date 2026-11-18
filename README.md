@@ -676,6 +676,107 @@ are no foreign keys. Secondary indexes: `lineitem (l_partkey, l_suppkey)`, `orde
 `partsupp (ps_suppkey)`. Not included: the refresh functions RF1/RF2 and randomized substitution
 parameters. See `scenarios/tpch-smoke.yml` and `scenarios/tpch-sf01-*.yml`.
 
+### TPC-C-derived transactional workload (`tpcc`)
+
+`kind: tpcc` runs the five TPC-C transactions in the standard mix over the nine TPC-C tables: New-Order
+45 percent, Payment 43, Order-Status 4, Delivery 4, Stock-Level 4. It measures the latency of each
+transaction, and it checks the consistency conditions of the specification before and after the run.
+
+```yaml
+workload:
+  kind: tpcc
+  tpcc_warehouses: 4       # default 1
+  tpcc_scale: 0.1          # fraction of the specified cardinalities, 0.01 to 1; default 1
+  workers: 4               # worker i is bound to warehouse i mod tpcc_warehouses
+  read_percent: 0          # required: the mix is the workload's own
+  write_percent: 100
+  duration: 10m
+```
+
+**Data.** `init` loads the initial population of clause 4.3.3 from a seeded generator inside
+`CamusDB.Workload`, as multi-row `INSERT` statements over `tpcc_load_connections` connections (default
+8). At `tpcc_scale: 1` a warehouse has the specified size: 100,000 stock rows, 3,000 customers and 3,000
+orders in each of ten districts (about 500,000 rows), plus 100,000 items shared by all warehouses.
+`tpcc_scale` shrinks those cardinalities so a test loads in seconds; it is not a TPC-C scale. A one-row
+`tpcc_meta` table records the seed and the size and marks the load complete, and `run` refuses a
+database loaded with another one.
+
+**Not a tpmC.** There are no keying or think times: a worker starts its next transaction when one ends.
+`tpcc.json` reports New-Orders per minute, but that figure is not a tpmC and is not comparable with a
+published TPC-C result. The specification's contention is about one active terminal for each warehouse,
+so `workers` equal to `tpcc_warehouses` is the closest shape. More workers than warehouses put several
+on one warehouse row, which every Payment writes: with 8 workers on 1 warehouse at serializable, 74
+Payments were still in conflict after 30 retries in a two-minute run (2026-11-17).
+
+**Transactions.** The three writing transactions run at the cluster's `isolation` and `locking`, and a
+conflict is retried from a fresh `BEGIN` up to 30 times with a random, growing wait. A conflict that
+outlasts the retries counts like any other conflict: it fails a run without `expect_faults`. Order-Status
+and Stock-Level run on the serializable read-only snapshot at every isolation level.
+
+**Check.** The run fails when
+
+- a consistency condition is broken after the run. The conditions are evaluated on the client from
+  plain reads of each table, once before warm-up (a database that breaks one already is refused) and
+  once after the drain: conditions 1 to 10 and 12 of clause 3.3.2, and three of the same kind (X1 to X3
+  below). Every transaction keeps them true when it commits whole, so they need no allowance for
+  undecided commits; a violation means a commit applied in part, applied twice, or was read half
+  visible. This is never waived, also under `expect_faults`;
+- a ledger band is broken (L1 to L3). The conditions cannot see a commit that was acknowledged and
+  then lost whole, so three counters are compared with what the client was told: each must have grown
+  by at least the acknowledged commits and by at most those plus the undecided ones;
+- a transaction saw, while it ran, a state no interleaving of whole transactions can produce
+  (`tpcc-anomalies.jsonl`): an update of a row it had just read that matched no row, a snapshot in
+  which an order has fewer lines than `o_ol_cnt` or is delivered with undelivered lines, an order id
+  given twice, or a Stock-Level snapshot in which `w_ytd` differs from `SUM(d_ytd)`;
+- a transaction type has no commit inside the measured window.
+
+| Condition | Rule |
+|---|---|
+| C1 | `w_ytd` = `SUM(d_ytd)` of the warehouse |
+| C2 | `d_next_o_id - 1` = `MAX(o_id)` = `MAX(no_o_id)` of the district |
+| C3 | `MAX(no_o_id) - MIN(no_o_id) + 1` = `COUNT(new_order)` of the district |
+| C4 | `SUM(o_ol_cnt)` = `COUNT(order_line)` of the district |
+| C5 | `o_carrier_id` is null exactly when the order has a `new_order` row |
+| C6 | `o_ol_cnt` = `COUNT(order_line)` of the order, and no line without its order |
+| C7 | `ol_delivery_d` is null exactly when `o_carrier_id` is null |
+| C8 | `w_ytd` = `SUM(h_amount)` of the warehouse |
+| C9 | `d_ytd` = `SUM(h_amount)` of the district |
+| C10 | `c_balance` = `SUM(ol_amount)` of the delivered lines - `SUM(h_amount)` of the customer |
+| C12 | `c_balance + c_ytd_payment` = `SUM(ol_amount)` of the delivered lines of the customer |
+| X1 | `c_payment_cnt` = `COUNT(history)` of the customer |
+| X2 | `c_delivery_cnt` = the customer's orders delivered since the load |
+| X3 | `SUM(s_ytd)`, `SUM(s_order_cnt)`, `SUM(s_remote_cnt)` of the warehouse = the order lines added since the load that it supplied |
+| L1 | `d_next_o_id` advanced by the acknowledged New-Order commits of the district |
+| L2 | `w_ytd` grew by the acknowledged Payment amounts of the warehouse |
+| L3 | the delivered orders of the warehouse grew by the acknowledged deliveries |
+
+Condition 11 (`COUNT(orders) - COUNT(new_order)` = 2,100 for each district) holds only until the first
+delivery, so it is not evaluated. Each check reads the tables of every warehouse; at four full-size
+warehouses that is about two million rows, some of them more than once.
+
+**Artifacts** (under `artifacts/run/`): `tpcc.json` (per transaction: executions, commits, intended
+rollbacks, conflicts past the retries, undecided commits, errors, retries, mean, p50, p95, p99, max;
+New-Orders per minute; every condition with its count, its violations and the first five cases),
+`tpcc-anomalies.jsonl` (only when there was one), and a `Tpcc` object in `reconciliation.json`.
+`scenario.json` carries the `tpcc.json` content. `summary.json` and `intervals.csv` keep their shape,
+with every transaction in the write figures.
+
+**Deviations from the specification**, beyond the missing think times:
+
+| Where | Deviation |
+|---|---|
+| schema | Keys and counters are `INT64`, money is bare `NUMERIC` (`DECIMAL(12,2)` is refused), dates are `INT64` milliseconds since the Unix epoch. `history` has a string primary key `h_id` that the client makes unique. No foreign keys. |
+| all writers | Counters are moved with relative updates (`SET x = x + n`), and `s_quantity` with a `CASE` in the `UPDATE`, so the conditions hold at read committed too. |
+| New-Order | `d_next_o_id` is incremented first and read back, so the order id is the transaction's own. The warehouse is read before the district is written, and stock rows are taken in key order. The order lines go in as one multi-row `INSERT`. |
+| Delivery | One database transaction for each district (clause 2.7.4.1 allows it), executed inline, not queued. One transaction over the ten districts almost never commits at optimistic serializable: 2 commits and 957 retries in two minutes. A `new_order` row another delivery took first restarts the district's transaction. |
+| Stock-Level | `COUNT(*)` over a `SELECT DISTINCT` derived table (`COUNT(DISTINCT)` is not supported), with qualified column names in the join. It also reads `w_ytd` and `SUM(d_ytd)` for the snapshot check. The district is drawn at random. |
+| terminals | A worker is bound to a warehouse, not to a district. |
+| `tpcc_scale` below 1 | The NURand constant A is the largest power of two minus one that is at most a third of the range; the specified values (255, 1023, 8191) are used at the specified ranges. |
+
+Scenarios: `tpcc-smoke.yml` (four warehouses at scale 0.1, serializable, two minutes),
+`tpcc-smoke-rc.yml` (the same at read committed), `tpcc-kill.yml` (kills and a partition),
+`tpcc-w4-solarium.yml` (four full-size warehouses on Solarium, ten minutes).
+
 ### Performance evidence (per-node metrics, cluster facts, comparability)
 
 A reliability scenario asks whether the cluster stayed correct. A **capacity** scenario asks how fast

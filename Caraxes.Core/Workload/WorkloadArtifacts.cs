@@ -92,6 +92,114 @@ public sealed class ReconciliationSummary
 
     /// <summary>The TPC-H shape's verdict on its query answers, or null for every other shape.</summary>
     public TpchSummary? Tpch { get; set; }
+
+    /// <summary>The TPC-C shape's verdict on its consistency conditions, or null for every other shape.</summary>
+    public TpccSummary? Tpcc { get; set; }
+}
+
+/// <summary>
+/// The TPC-C verdict in <c>reconciliation.json</c>: what the measured window committed, what the
+/// transactions saw that they should not have, and how many cases of the consistency conditions the
+/// final state breaks. The pass/fail is already folded into <see cref="ReconciliationSummary.Passed"/>
+/// and every finding is in its failures; this is the note.
+/// </summary>
+public sealed class TpccSummary
+{
+    public bool Passed { get; set; }
+
+    /// <summary><c>verified</c>, or <c>unavailable</c> when the final state could not be read.</summary>
+    public string Status { get; set; } = "";
+
+    public int Warehouses { get; set; }
+
+    public string Scale { get; set; } = "";
+
+    public long Executions { get; set; }
+
+    public long Committed { get; set; }
+
+    public long NewOrders { get; set; }
+
+    public long RolledBack { get; set; }
+
+    public long Conflicts { get; set; }
+
+    public long Undecided { get; set; }
+
+    public long Errors { get; set; }
+
+    public long Anomalies { get; set; }
+
+    public long ConditionsChecked { get; set; }
+
+    public long ConditionViolations { get; set; }
+}
+
+/// <summary>The measured-window figures of one TPC-C transaction type, from <c>tpcc.json</c>.</summary>
+public sealed class TpccTransactionStats
+{
+    public string Transaction { get; set; } = "";
+
+    public int MixPercent { get; set; }
+
+    public long Executions { get; set; }
+
+    public long Committed { get; set; }
+
+    public long RolledBack { get; set; }
+
+    public long Conflicts { get; set; }
+
+    public long Undecided { get; set; }
+
+    public long Errors { get; set; }
+
+    public long Anomalies { get; set; }
+
+    public long Retries { get; set; }
+
+    public double MeanMs { get; set; }
+
+    public double P50Ms { get; set; }
+
+    public double P95Ms { get; set; }
+
+    public double P99Ms { get; set; }
+
+    public double MaxMs { get; set; }
+}
+
+/// <summary>One consistency condition of a TPC-C run, from <c>tpcc.json</c>.</summary>
+public sealed class TpccConditionSummary
+{
+    public string Name { get; set; } = "";
+
+    public string Rule { get; set; } = "";
+
+    public long Checked { get; set; }
+
+    public long Violations { get; set; }
+
+    public List<string> Examples { get; set; } = [];
+}
+
+/// <summary>The content of <c>tpcc.json</c>: the size, the throughput and the per-transaction latency of a
+/// TPC-C run, and the consistency conditions of its final state.</summary>
+public sealed class TpccReport
+{
+    public int Warehouses { get; set; }
+
+    public string Scale { get; set; } = "";
+
+    public double MeasuredSeconds { get; set; }
+
+    public double NewOrdersPerMinute { get; set; }
+
+    public double TransactionsPerSecond { get; set; }
+
+    public List<TpccTransactionStats> Transactions { get; set; } = [];
+
+    public List<TpccConditionSummary> Conditions { get; set; } = [];
 }
 
 /// <summary>
@@ -452,6 +560,11 @@ public static class WorkloadArtifacts
     /// its measured window closed.</summary>
     public static TpchReport? ReadTpch(string outputDir) =>
         ReadJson<TpchReport>(Path.Combine(outputDir, "tpch.json"));
+
+    /// <summary>Null when the run wrote no <c>tpcc.json</c>: not a TPC-C run, or one that stopped before
+    /// its measured window closed.</summary>
+    public static TpccReport? ReadTpcc(string outputDir) =>
+        ReadJson<TpccReport>(Path.Combine(outputDir, "tpcc.json"));
 
     /// <summary>Null when the run wrote no <c>elle.json</c>: not an Elle shape, or a workload that
     /// stopped before the history closed.</summary>

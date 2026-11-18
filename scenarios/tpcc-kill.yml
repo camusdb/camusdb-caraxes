@@ -1,0 +1,31 @@
+# TPC-C-derived transactions under node kills and a partition: 3 nodes, RF 3, four warehouses at a tenth of the specified cardinalities, four workers, five minutes, serializable. A transaction cut by a fault is an error or an undecided commit and is counted; what the run is graded on is the state it leaves: every consistency condition must hold after the faults heal, the three ledger counters must have moved by the acknowledged commits and by no more than those plus the undecided ones, and no transaction may have seen a fractured order, delivery or payment while it ran.
+name: tpcc-kill
+cluster:
+  name: tpcc-kill
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: serializable
+workload:
+  kind: tpcc
+  tpcc_warehouses: 4
+  tpcc_scale: 0.1
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 4
+  connections: 4
+  duration: 5m
+  warmup: 15s
+  read_percent: 0
+  write_percent: 100
+  expect_faults: true
+nemesis:
+  seed: 7
+  events:
+    - { at: 1m, fault: kill, target: random, duration: 20s }
+    - { at: 2m, fault: kill, target: random, duration: 20s }
+    - { at: 3m, fault: partition, target: random, duration: 30s }
+    - { at: 4m, fault: kill, target: random, duration: 20s }
+teardown: true

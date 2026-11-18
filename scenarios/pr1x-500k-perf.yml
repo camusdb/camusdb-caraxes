@@ -1,4 +1,4 @@
-# Diagnostic for the pr1 read ceiling (2026-11-14, image k1171): the pr1 point-read body over 500,000 rows, so the seed is short and the row-id cache covers the table. Defaults: almost every read takes a key-value actor round trip. 36,365 reads/s, PASS.
+# pr1x-500k-default with DOTNET_PerfMapEnabled=1, for a perf profile of the leader under cold point reads (tools/p3c/perf-leader-arm.sh).
 name: pr1x-500k-perf
 cluster:
   name: pr1xperf

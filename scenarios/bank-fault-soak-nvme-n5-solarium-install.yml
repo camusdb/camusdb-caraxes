@@ -1,0 +1,79 @@
+# FIVE-NODE ARM of the forced-install fault soak (2026-11-17): the body of bank-fault-soak-nvme-reg10-solarium-install with
+# nodes 5 and replication_factor 5 (one partition, five voters, so a quorum is three and the group survives two nodes down),
+# the image built from the ~/camusdb checkout (5f711e9d: server 0.18.3, Kahuna.Core 1.17.3, Kommander 1.14.1, SolariumDb.Kahuna
+# 0.2.1) and fewer clients: 48 workers over 24 connections where the three-node arm has 128 over 64. The host has 16 cores and
+# 31 GiB; five nodes at 4 GiB can take 20 GiB and share the cores with the generator, so the three-node client count would make
+# the generator or the host the limiter. Throughput is therefore not comparable with the three-node arms. The fault schedule is
+# unchanged: 14 windows in two hours, kills and two pauses on the leader, the named faults on camus1 to camus3; camus4 and
+# camus5 take a fault only when they lead. What to read: reconciliation, no node dying on its own, every leader kill and pause
+# failed over within seconds with four of five voters left, and each long-kill restart (72m for 2 min, 96m for 4 min) repaired
+# by backfill or one install. See the three-node file for the history of the body and of each setting.
+name: bank-fault-soak-nvme-n5-solarium-install
+cluster:
+  name: bankfaultsoakn5
+  nodes: 5
+  partitions: 1
+  replication_factor: 5
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    durable_materialize_on_resolve: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 48
+  connections: 24
+  duration: 2h
+  warmup: 3m
+  drain: 60s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    - { at: 8m,   fault: kill,      target: leader, duration: 30s }
+    - { at: 16m,  fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 24m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 32m,  fault: pause,     target: camus2, duration: 30s }
+    - { at: 40m,  fault: slow-disk, target: camus3, duration: 30s }
+    - { at: 48m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 56m,  fault: pause,     target: leader, duration: 30s }
+    - { at: 64m,  fault: slow-disk, target: camus2, duration: 30s }
+    - { at: 72m,  fault: kill,      target: leader, duration: 2m }   # long kill: the restart should be re-seeded by a snapshot install
+    - { at: 80m,  fault: pause,     target: camus3, duration: 30s }
+    - { at: 88m,  fault: slow-disk, target: camus1, duration: 30s }
+    - { at: 96m,  fault: kill,      target: leader, duration: 4m }   # long kill: deeper store, second install
+    - { at: 104m, fault: pause,     target: leader, duration: 30s }
+    - { at: 112m, fault: kill,      target: leader, duration: 30s }
+checks:
+  max_recovery_seconds: 60
+  min_recovered_throughput_fraction: 0.9
+  require_recovery: true
+  require_progress_under_fault: true
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

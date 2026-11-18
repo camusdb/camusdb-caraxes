@@ -39,7 +39,16 @@ public sealed class WorkloadSpec
     /// warm-up and every execution is compared with it. A different answer fails the run and is never
     /// waived, and so does a query with no verified execution inside the measured window. It needs
     /// <c>read_percent: 100</c> and <c>mode: closed</c>, where <c>workers</c> is the number of concurrent
-    /// query streams. It is derived from TPC-H, not an audited run of it.</para></summary>
+    /// query streams. It is derived from TPC-H, not an audited run of it.</para>
+    ///
+    /// <para><c>tpcc</c> is the TPC-C transaction mix: every operation is a New-Order, Payment,
+    /// Order-Status, Delivery or Stock-Level transaction (45, 43, 4, 4 and 4 percent) over the nine TPC-C
+    /// tables, which <c>init</c> loads from a seeded generator for <see cref="TpccWarehouses"/> warehouses.
+    /// The consistency conditions of the specification are evaluated before the run and after it, and
+    /// three counters are compared with the commits the client was told of; a transaction that sees a
+    /// state no interleaving of whole transactions can produce fails the run. It needs
+    /// <c>write_percent: 100</c>, because the mix is the workload's own. There are no think times, so the
+    /// throughput is not a tpmC. It is derived from TPC-C, not an audited run of it.</para></summary>
     public string Kind { get; set; } = "accounts";
 
     /// <summary><c>tpch</c> only: the scale factor (<c>--tpch-scale</c>). 1 is about 8.66 million rows.
@@ -53,6 +62,19 @@ public sealed class WorkloadSpec
     /// <summary><c>tpch</c> only: connections the load spreads its INSERT statements over
     /// (<c>--tpch-load-connections</c>). 0 leaves the workload default (8).</summary>
     public int TpchLoadConnections { get; set; }
+
+    /// <summary><c>tpcc</c> only: the number of warehouses (<c>--tpcc-warehouses</c>). Worker i is bound to
+    /// warehouse i mod warehouses. 0 leaves the workload default (1).</summary>
+    public int TpccWarehouses { get; set; }
+
+    /// <summary><c>tpcc</c> only: the fraction of the specified cardinalities to load
+    /// (<c>--tpcc-scale</c>), between 0.01 and 1. 1 is 100,000 items and 3,000 customers and orders per
+    /// district, about 500,000 rows per warehouse. 0 leaves the workload default (1).</summary>
+    public double TpccScale { get; set; }
+
+    /// <summary><c>tpcc</c> only: connections the load spreads its INSERT statements over
+    /// (<c>--tpcc-load-connections</c>). 0 leaves the workload default (8).</summary>
+    public int TpccLoadConnections { get; set; }
 
     /// <summary><c>tokens</c> only: tokens in the table (<c>--tokens</c>). Fewer tokens means more moves
     /// racing for the same row. 0 leaves the workload default (2000).</summary>
@@ -328,9 +350,26 @@ public sealed class WorkloadSpec
 
     public void Validate()
     {
-        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "rw" or "predicate" or "tokens" or "tpch"))
+        if (Kind is not ("accounts" or "bank" or "fanout" or "append" or "rw" or "predicate" or "tokens" or "tpch" or "tpcc"))
             throw new ScenarioException(
-                $"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append', 'rw', 'predicate', 'tokens' or 'tpch', got '{Kind}'");
+                $"'workload.kind' must be 'accounts', 'bank', 'fanout', 'append', 'rw', 'predicate', 'tokens', 'tpch' or 'tpcc', got '{Kind}'");
+
+        if (Kind != "tpcc" && (TpccWarehouses != 0 || TpccScale != 0 || TpccLoadConnections != 0))
+            throw new ScenarioException($"'workload.tpcc_*' settings apply only to 'workload.kind: tpcc', but kind is '{Kind}'");
+
+        if (Kind == "tpcc")
+        {
+            if (TpccWarehouses < 0 || TpccWarehouses > 1000)
+                throw new ScenarioException($"'workload.tpcc_warehouses' must be between 1 and 1000 (0 = workload default), got {TpccWarehouses}");
+            if (TpccScale != 0 && !(TpccScale >= 0.01 && TpccScale <= 1))
+                throw new ScenarioException($"'workload.tpcc_scale' must be between 0.01 and 1 (0 = workload default), got {TpccScale}");
+            if (TpccLoadConnections < 0)
+                throw new ScenarioException($"'workload.tpcc_load_connections' must be >= 0 (0 = workload default), got {TpccLoadConnections}");
+            if (ReadPercent != 0 || WritePercent != 100)
+                throw new ScenarioException(
+                    $"'workload.kind: tpcc' draws each operation from its own transaction mix: set 'read_percent: 0' and " +
+                    $"'write_percent: 100', got {ReadPercent} + {WritePercent}");
+        }
 
         if (Kind != "tpch" && (TpchScale != 0 || !string.IsNullOrWhiteSpace(TpchQueries) || TpchLoadConnections != 0))
             throw new ScenarioException($"'workload.tpch_*' settings apply only to 'workload.kind: tpch', but kind is '{Kind}'");
