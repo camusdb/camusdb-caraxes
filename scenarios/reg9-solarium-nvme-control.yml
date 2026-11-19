@@ -1,0 +1,86 @@
+# SOLARIUM 0.1.7 PRICE PAIR ON THE NVME BODY (2026-11-06), arm = control. Same cluster stanza as the stock Solarium fault soak
+# (bank-fault-soak-nvme-reg9-solarium: 3 voters, 4 GiB nodes, Solarium store and WAL on the host NVMe, 128 workers over 64
+# connections, 50/50, 2,000 rows) with no faults, 10 min after a 6-min warm-up. The two arms differ only in the image:
+# caraxes/camusdb:reg8 = Kahuna.Core 1.15.6 / SolariumDb.Kahuna 0.1.6 (the inst4 build), caraxes/camusdb:reg9 = Kahuna.Core
+# 1.16.0 / SolariumDb.Kahuna 0.1.7 (the inst5 build). Why: the inst5 forced-install soak ran at 6,300 ops/s against inst4's
+# 7,808 on the same body, 0.88x like for like in the seconds the host fsync probe was fast, with the device issuing 0.32 write
+# IOs per op against 0.21-0.25 in every Solarium soak since 0.1.5 and bytes per op flat (16.1 vs 15.7 KiB). SolariumDb 0.1.7's
+# Kommander adapter adds a sync ledger that attests each synced WAL write with one sector write and one flush (grouped across
+# concurrent writers) and a hard-state ledger flushed per term/vote, so every group commit now carries one more small flushed
+# IO; on a device whose fsync regime is the ceiling that is the candidate cost. The tmpfs regression body cannot show it
+# (fsync is free there), hence this NVMe pair. Read: ops/s, write p50/p99, leader CPU-ms/op, write IOs per op and MB/s from
+# host-io.csv beside the fsync probe median, GC collections per generation (Kahuna 1.16.0's read-path allocation cut should
+# lower gen0 per op). The same-day RocksDB tmpfs pair (reg9-bank-head/control) isolates the Kahuna half.
+#
+name: reg9-solarium-nvme-control
+cluster:
+  name: reg9solnvmecontrol
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    durable_materialize_on_resolve: true
+    # fs2: bound RocksDB's native memory. fs1 died of native growth, not the managed heap:
+    # camus2 climbed 248 MB -> 3,615 MB native over two hours while its managed committed
+    # memory FELL to 441 MB, and the container OOM-killed it at 99.6% of 4,096 MiB. Without
+    # this bundle the KV backend and the Raft WAL hold two independent, unbudgeted
+    # block-cache + memtable footprints, while DOTNET_GCHeapHardLimitPercent=60% lets the
+    # managed heap claim 2,458 MiB of the same container - the two budgets overcommit it.
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    # fs3 runs the SAME configuration as fs2 on a Kommander that charges the Raft log's index and
+    # filter blocks to this budget. fs2 proved the budget was ineffective, not wrong: table-reader
+    # memory sat outside it at ~8.9% of live SST bytes (measured), which is where fs1/fs2's ~3 GB of
+    # unexplained native memory per node came from. Local packs Kommander 1.7.7-tablereaders.1 /
+    # Kahuna.Core+Shared 1.9.3-tablereaders.1, the latter packed from the published 1.9.3 commit
+    # (4792ac4d) with only the Kommander reference changed, so the binary delta against fs2 is that
+    # one fix. Watch raft.wal.table_readers_memory (should now stay inside the 768 MiB budget rather
+    # than tracking SST growth) and raft.wal.block_cache_pinned_usage (approaching the budget means
+    # the cache cannot make room and reads go to disk instead).
+  # fs4: cap glibc's secondary malloc arenas. fs1/fs2/fs3 each lost a node to container OOM with
+  # ~3 GB of native memory that no subsystem gauge could account for; /proc/1/smaps on a live fs3 node
+  # found 116 anonymous mappings of 60-70 MB holding 1,227 MB resident, which is glibc's per-thread
+  # arena signature (64 MB arenas, capped at 8 x ncores = 128 on this 16-core host, with 133 threads
+  # in the process). Arenas retain freed memory rather than returning it, so this is retention, not
+  # live data - which is why bounding durable-2PC retention, the block cache, memtables and table
+  # readers in turn each failed to move the total. MALLOC_ARENA_MAX=2 trades allocator contention for
+  # resident memory. Everything else is identical to fs3, so the delta is this one variable.
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg8"
+  camusdb:
+    # The lever under qualification: a primary-key point lookup remembers its row id and skips the index read.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 128
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

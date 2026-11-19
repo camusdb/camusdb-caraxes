@@ -1,0 +1,24 @@
+# TPC-C-derived transactional smoke, no faults: 3 nodes, RF 3, four warehouses at a tenth of the specified cardinalities (10,000 items, 300 customers and orders per district, about 210,000 rows). init loads the nine tables from the seeded generator; the run evaluates the consistency conditions, then four workers, one bound to each warehouse, draw New-Order, Payment, Order-Status, Delivery and Stock-Level transactions in the standard mix for two minutes with no think time, and the conditions are evaluated again with the ledger of acknowledged commits. PASS needs no anomaly, no broken condition and at least one commit of each transaction type inside the window. Proves the load, the five transactions and the check end to end; it is not a performance arm, and its throughput is not a tpmC.
+name: tpcc-smoke
+cluster:
+  name: tpcc-smoke
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: serializable
+workload:
+  kind: tpcc
+  tpcc_warehouses: 4
+  tpcc_scale: 0.1
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 4
+  connections: 4
+  duration: 2m
+  warmup: 15s
+  read_percent: 0
+  write_percent: 100
+  expect_faults: false
+teardown: true

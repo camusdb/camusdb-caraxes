@@ -96,6 +96,27 @@ public sealed class WorkloadRunner
     public async Task<WorkloadInvocation> InitAsync(
         Caraxes.Core.Scenario.ScenarioSpec scenario, string hostArtifactsDir, CancellationToken cancellationToken = default)
     {
+        IReadOnlyList<string> workloadArgs = BuildInitArgs(plan, scenario);
+
+        Console.WriteLine(
+            $"==> seeding {scenario.Workload.Rows} rows over {scenario.Workload.Tables} table(s) " +
+            $"into '{scenario.Workload.Database}'" +
+            (scenario.Workload.Kind == "tpch"
+                ? $", then loading TPC-H at scale {(scenario.Workload.TpchScale > 0 ? TpchScaleText(scenario.Workload.TpchScale) : "0.01")}"
+                : scenario.Workload.Kind == "tpcc"
+                    ? $", then loading TPC-C for {Math.Max(1, scenario.Workload.TpccWarehouses)} warehouse(s) at scale " +
+                      (scenario.Workload.TpccScale > 0 ? TpchScaleText(scenario.Workload.TpccScale) : "1")
+                    : ""));
+        return await RunContainerAsync(workloadArgs, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The <c>init</c> command line. Only the <c>tpch</c> and <c>tpcc</c> kinds are named to it: every other
+    /// shape seeds the same dataset and sets its own table up during <c>run</c>, so their command line is
+    /// unchanged.
+    /// </summary>
+    public static IReadOnlyList<string> BuildInitArgs(ClusterPlan plan, Caraxes.Core.Scenario.ScenarioSpec scenario)
+    {
         List<string> workloadArgs =
         [
             "init",
@@ -108,10 +129,45 @@ public sealed class WorkloadRunner
         ];
         AppendCommonFlags(workloadArgs, scenario.Workload);
 
-        Console.WriteLine(
-            $"==> seeding {scenario.Workload.Rows} rows over {scenario.Workload.Tables} table(s) " +
-            $"into '{scenario.Workload.Database}'");
-        return await RunContainerAsync(workloadArgs, hostArtifactsDir, cancellationToken).ConfigureAwait(false);
+        if (scenario.Workload.Kind == "tpch")
+        {
+            workloadArgs.Add("--workload");
+            workloadArgs.Add("tpch");
+            AppendTpchScale(workloadArgs, scenario.Workload);
+            AppendIfPositive(workloadArgs, "--tpch-load-connections", scenario.Workload.TpchLoadConnections);
+        }
+        if (scenario.Workload.Kind == "tpcc")
+        {
+            workloadArgs.Add("--workload");
+            workloadArgs.Add("tpcc");
+            AppendTpccSize(workloadArgs, scenario.Workload);
+            AppendIfPositive(workloadArgs, "--tpcc-load-connections", scenario.Workload.TpccLoadConnections);
+        }
+        return workloadArgs;
+    }
+
+    /// <summary>The size goes to both verbs: <c>run</c> refuses a database loaded at another one.</summary>
+    private static void AppendTpccSize(List<string> args, Caraxes.Core.Scenario.WorkloadSpec workload)
+    {
+        AppendIfPositive(args, "--tpcc-warehouses", workload.TpccWarehouses);
+        if (workload.TpccScale > 0)
+        {
+            args.Add("--tpcc-scale");
+            args.Add(TpchScaleText(workload.TpccScale));
+        }
+    }
+
+    private static string TpchScaleText(double scale)
+        => scale.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>The scale goes to both verbs: <c>run</c> refuses a database loaded at another one.</summary>
+    private static void AppendTpchScale(List<string> args, Caraxes.Core.Scenario.WorkloadSpec workload)
+    {
+        if (workload.TpchScale > 0)
+        {
+            args.Add("--tpch-scale");
+            args.Add(TpchScaleText(workload.TpchScale));
+        }
     }
 
     /// <summary>
@@ -250,6 +306,15 @@ public sealed class WorkloadRunner
 
         if (scenario.Workload.Kind == "tokens")
             AppendIfPositive(workloadArgs, "--tokens", scenario.Workload.Tokens);
+
+        if (scenario.Workload.Kind == "tpch")
+        {
+            AppendTpchScale(workloadArgs, scenario.Workload);
+            AppendIfSet(workloadArgs, "--tpch-queries", scenario.Workload.TpchQueries.Replace(" ", ""));
+        }
+
+        if (scenario.Workload.Kind == "tpcc")
+            AppendTpccSize(workloadArgs, scenario.Workload);
 
         List<string> notes = [];
 

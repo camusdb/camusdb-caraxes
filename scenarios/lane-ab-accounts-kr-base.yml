@@ -1,0 +1,39 @@
+# Ordered-lane A/B (Kahuna ba8ac16a): body of kr-ab-accounts-kr.yml, unchanged except name, cluster name and image.
+# base = caraxes/camusdb:lane0 (Kahuna.Core 1.17.2), cand = caraxes/camusdb:lane1 (Kahuna.Core 1.17.3-lane.1:
+# the durable inter-node handlers take no ordered-lane turn). Same CamusDB tree (492c809c) for both.
+name: lane-ab-accounts-kr-base
+cluster:
+  name: laneabaccountsbase
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:lane0"
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 32
+  connections: 64
+  duration: 5m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+settle_seconds: 60
+checks:
+  require_client_headroom: true
+  require_quiet_host: true
+teardown: true

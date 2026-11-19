@@ -1,0 +1,48 @@
+# TPC-C-derived transactional arm at the specified cardinalities, no faults: four warehouses (100,000 items; 100,000 stock rows, 30,000 customers and 30,000 orders per warehouse; about 2.1 million rows), one worker bound to each warehouse, ten minutes, serializable. tpcc.json carries the latency of each of the five transactions and the New-Orders per minute; there are no think times, so that figure is not a tpmC and is not comparable with a published TPC-C result. The consistency conditions are evaluated before and after the run. Arm: Solarium store and WAL on the host NVMe, 4 GiB nodes, image built from the checkout.
+name: tpcc-w4-solarium
+cluster:
+  name: tpccsol
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    one_phase_apply_time_validation: true
+    # 60 s, not the 10-minute default: the committed-head ledger keeps one entry per written key for this long, and the TPC-H load at 866,000 rows killed two of three 4 GiB nodes with a managed OutOfMemoryException in PreparedIntentStore.CaptureLedger (2026-11-16). This load writes more than twice as many rows.
+    staged_base_fence_retention_ms: 60000
+    durable_materialize_on_resolve: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+workload:
+  kind: tpcc
+  tpcc_warehouses: 4
+  tpcc_scale: 1
+  tpcc_load_connections: 4
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 4
+  connections: 4
+  duration: 10m
+  warmup: 1m
+  drain: 30s
+  read_percent: 0
+  write_percent: 100
+  expect_faults: false
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

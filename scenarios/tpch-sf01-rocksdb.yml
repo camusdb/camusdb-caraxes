@@ -1,0 +1,41 @@
+# TPC-H-derived analytical arm at scale 0.1 (about 866,000 rows; lineitem about 600,000), read-only, no faults. Four streams execute the 22 queries in turn for ten minutes; every answer is compared with the reference taken before warm-up, and tpch.json carries the latency of each query. Image k1172. Arm: RocksDB store on the host NVMe, 4 GiB nodes, default query settings.
+name: tpch-sf01-rocksdb
+cluster:
+  name: tpchrdb
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 4096
+  kahuna:
+    one_phase_apply_time_validation: true
+    # 60 s, not the 10-minute default: the load writes about 30,000 keys a second and the committed-head ledger keeps one entry per written key for this long. With the default, two of three 4 GiB nodes died of a managed OutOfMemoryException in PreparedIntentStore.CaptureLedger right after the load (2026-11-16).
+    staged_base_fence_retention_ms: 60000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1172"
+workload:
+  kind: tpch
+  tpch_scale: 0.1
+  tpch_load_connections: 4
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 4
+  connections: 4
+  duration: 10m
+  warmup: 1m
+  drain: 30s
+  read_percent: 100
+  write_percent: 0
+  expect_faults: false
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+checks:
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

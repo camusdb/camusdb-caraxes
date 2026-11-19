@@ -71,6 +71,8 @@ public static class ScenarioSpecReader
         "rw_keys", "rw_max_writes_per_key", "rw_max_txn_length", "rw_key_type", "rw_access",
         "predicate_groups", "predicate_group_size", "predicate_max_writes_per_group", "predicate_max_txn_length", "predicate_read",
         "tokens",
+        "tpch_scale", "tpch_queries", "tpch_load_connections",
+        "tpcc_warehouses", "tpcc_scale", "tpcc_load_connections",
     };
 
     public static ScenarioSpec ReadFile(string path)

@@ -1,0 +1,63 @@
+# reg10 (2026-11-07): Kahuna.Core 1.16.1 (3538a59a, Kommander 1.14.0, Grpc 2.85.0 unchanged) and SolariumDb.Kahuna 0.1.8 (542d206)
+# against the reg9 image (Kahuna.Core 1.16.0 / Kommander 1.13.4 / SolariumDb.Kahuna 0.1.7). The three releases answer the three
+# findings of the inst5 soaks and the reg9p pairs of 2026-11-06: SolariumDb 0.1.8 attests the write group's last sequence in the
+# sync ledger with at most one flush per write group (0.1.7 flushed once per synced write, which showed as 0.29-0.32 device write
+# IOs per op against 0.21-0.25 before it) and flushes with fdatasync on Linux; Kahuna 1.16.1 spaces the inter-node batcher's
+# stream re-opens to a dead peer (per-peer backoff 100 ms doubling to 2 s) and logs them as one episode (1.16.0 logged ~250
+# Warning lines a second per dead peer on the leader); Kommander 1.14.0 no longer seeds a follower whose commit frontier already
+# reaches the checkpoint when only its durable frontier lags (1.13.4 started a snapshot transfer the follower then skipped, on
+# every 30-s pause under 0.1.7). Image caraxes/camusdb:reg10 = CamusDB HEAD with the two pins.
+# This pair, arm = control: the RocksDB tmpfs regression body (reg4/reg5/reg9 unchanged: 2,000 rows, 256 workers over 64 connections,
+# 50/50, 10 min after 6 min warmup, tmpfs data, cleartext, hash routing stated, row-id cache on, memory_limit_mb 8192 as in reg9).
+# SolariumDb does not run here; the pair prices Kahuna 1.16.1 and Kommander 1.14.0 on their own (the batcher's per-peer record
+# and the probe's new check sit on paths a healthy cluster also walks). reg9p read: 1.16.0 head 11,232 against the 1.15.6
+# control's 11,008 (1.020x), leader CPU-ms/op 0.781 vs 0.784. Same-build repeats differ by about 0.5%.
+#
+name: reg10-bank-control
+cluster:
+  name: reg10bankcontrol
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  # The routing mode under test, stated explicitly so the arm does not depend on the build's default.
+  key_range_sharding: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    # ON, and stated rather than inherited: this is CamusDB's default as of `529f8611`.
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:reg9"
+  camusdb:
+    # The default since edcb9fab, stated so every arm reads the same.
+    point_read_row_id_cache_enabled: true
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 6m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

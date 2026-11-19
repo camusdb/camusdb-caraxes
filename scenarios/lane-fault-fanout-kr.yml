@@ -1,0 +1,69 @@
+# Forwarded durable requests off the ordered lane under faults (Kahuna 45f12c3a).
+#
+# Body of lane-ab-fanout-kr-cand.yml (kr146-fanout-kr: three tables on three key-range partitions, every
+# write transaction forwards about three durable requests to the other leaders), on CamusDB 5f711e9d with
+# Kahuna.Core 1.17.3 (5dca7b47, which carries cbb1fcbb), run with --skip-build, with a fault schedule aimed at
+# the RECEIVING leaders:
+#
+#   pause      a SIGSTOPed receiver: its streams go quiet, the senders' reaper expires their forwards, and
+#              on resume every buffered request runs at once instead of one per stream.
+#   slow-disk  a leader whose device stalls: its Raft rounds stop, the write aggregator fills, and the
+#              forwarded requests queue at its admission.
+#   kill       leader change and restart with many forwards in flight; the restart replays the WAL while
+#              peers may still route to it.
+#   partition  a leader isolated from its peers while the senders still believe in it.
+#   slow       200 ms of netem latency on a leader: every forward lives longer on the wire.
+#
+# Read the receivers' memory-samples.csv, reaper expiries, rejected_queue_full and the throughput between
+# faults against the fault-free A/B (848 ops/s on this host).
+name: lane-fault-fanout-kr
+cluster:
+  name: lanefaultfanout
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  key_range_sharding: true
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    recent_heartbeat_ms: 25
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:lanefault-5f711e9d"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 12000
+  tables: 3
+  mode: closed
+  workers: 32
+  connections: 16
+  duration: 21m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  routing_mode: off
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 45
+  events:
+    - { at: 3m,  fault: pause,     target: leader, duration: 30s }
+    - { at: 6m,  fault: slow-disk, target: leader, duration: 45s }
+    - { at: 9m,  fault: kill,      target: leader, duration: 30s }
+    - { at: 12m, fault: partition, target: leader, duration: 30s }
+    - { at: 15m, fault: slow,      target: leader, duration: 60s, delay_ms: 200 }
+    - { at: 18m, fault: pause,     target: random, duration: 45s }
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+teardown: true

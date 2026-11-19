@@ -34,6 +34,10 @@ workload:
 
 checks:
   min_committed_txns: 1000
+elle:
+  # A per-SCC search budget above elle-cli's one second: a 60 s cell can form a cycle group that the
+  # default does not finish, and an unknown verdict fails the cell.
+  cycle_search_timeout_ms: 30000
 axes:
   locking: [pessimistic, optimistic]
   isolation: [read_committed, serializable]

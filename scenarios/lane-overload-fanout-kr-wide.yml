@@ -1,0 +1,55 @@
+# Control arm of lane-overload-fanout-kr: the same open-loop overload and the same CamusDB build, with ten
+# times the rows (120,000 over three tables). In lane-overload-fanout-kr the latency fault filled the client's
+# 4,096-operation window, and 2,048 write transactions in flight over 4,000 rows per table put a write intent on
+# about half of every table: nearly every new transaction collided and goodput stayed collapsed after the fault
+# healed. With 40,000 rows per table the same window covers about 5% of a table. If the cluster now recovers from
+# the latency fault, that collapse was key-space contention; if it stays degraded, the receiver side is suspect.
+name: lane-overload-fanout-kr-wide
+cluster:
+  name: laneoverloadwide
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  key_range_sharding: true
+  placement_rebalancer: true
+  leader_balancer: true
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 6144
+  kahuna:
+    recent_heartbeat_ms: 25
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:lanefault-5f711e9d"
+workload:
+  kind: fanout
+  database: caraxes
+  rows: 120000
+  tables: 3
+  mode: open
+  target_ops: 4000
+  max_in_flight: 4096
+  workers: 64
+  connections: 16
+  duration: 8m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  routing_mode: off
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 47
+  events:
+    - { at: 2m,  fault: slow,      target: leader, duration: 60s, delay_ms: 200 }
+    - { at: 5m,  fault: slow-disk, target: leader, duration: 60s }
+settle_seconds: 90
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+teardown: true

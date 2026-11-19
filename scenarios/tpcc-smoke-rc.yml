@@ -1,0 +1,24 @@
+# TPC-C-derived transactional smoke at read committed, no faults: the tpcc-smoke shape (3 nodes, RF 3, four warehouses at a tenth of the specified cardinalities, four workers, two minutes) with the writing transactions at read committed instead of serializable. Every counter is moved with a relative update and the order id is read back after the increment, so the consistency conditions must hold at this level too; Order-Status and Stock-Level stay on the serializable snapshot. PASS needs no anomaly, no broken condition and at least one commit of each transaction type inside the window.
+name: tpcc-smoke-rc
+cluster:
+  name: tpcc-smoke-rc
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+workload:
+  kind: tpcc
+  tpcc_warehouses: 4
+  tpcc_scale: 0.1
+  database: caraxes
+  rows: 1000
+  mode: closed
+  workers: 4
+  connections: 4
+  duration: 2m
+  warmup: 15s
+  read_percent: 0
+  write_percent: 100
+  expect_faults: false
+teardown: true

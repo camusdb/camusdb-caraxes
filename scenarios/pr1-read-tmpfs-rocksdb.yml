@@ -1,0 +1,51 @@
+# pr1 (2026-11-14): read-only point reads over a table larger than the caches. 5,000,000 rows x 256-byte payload in one table (kind accounts, about 2 GB of rows per node), 100% reads: each operation is one read-only autocommit SELECT of the four columns by primary key, the key drawn uniformly from the whole table, the returned row checked. The table is 5x the primary-key row-id cache (1,000,000 entries) and above the 768 MiB block cache, so a uniform draw misses both most of the time. No writes after the seed, no faults. Image k1170 (Kahuna.Core 1.17.0, SolariumDb.Kahuna 0.2.1). Arm: RocksDB store and WAL on tmpfs, 8 GiB nodes (the CPU ceiling, no device).
+name: pr1-read-tmpfs-rocksdb
+cluster:
+  name: pr1tmrdb
+  nodes: 3
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: true
+  key_range_sharding: false
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    one_phase_apply_time_validation: true
+    # 60 s, not the 10-minute default: the seed writes ~5,500 keys a second and the committed-head ledger keeps one entry per written key for this long.
+    staged_base_fence_retention_ms: 60000
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1170"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+    optimistic_intent_wait_ms: 100
+    serializable_optimistic_point_locks: false
+workload:
+  kind: accounts
+  database: caraxes
+  rows: 5000000
+  payload_bytes: 256
+  batch: 1000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 10m
+  warmup: 3m
+  drain: 30s
+  read_percent: 100
+  write_percent: 0
+  expect_faults: false
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

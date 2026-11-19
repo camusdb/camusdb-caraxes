@@ -4,3 +4,4 @@ runs/
 *.user
 .DS_Store
 tools/elle/*.jar
+__pycache__

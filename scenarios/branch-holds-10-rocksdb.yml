@@ -1,0 +1,49 @@
+# What does an install cost with many live branches, and does each branch still read its own fork? Driven by tools/branch/holds-repro.py.
+# Image heldhistory2 = CamusDB 74f1fa2c with Kahuna.Core built from 53547e45 plus the held-history install fix, baked with the certificates for
+# nodes + spares = 10. Another count would regenerate them and rebuild this tag from ~/camusdb, without the fix. The kill at the end only
+# makes the nemesis start its timeline, which the driver reads for its clock; it lands after the driver has finished.
+name: branch-holds-10-rocksdb
+cluster:
+  name: branchholds
+  nodes: 5
+  partitions: 1
+  replication_factor: 3
+  placement_rebalancer: true
+  leader_balancer: false
+  locking: optimistic
+  isolation: read_committed
+  diagnostics: true
+  memory_limit_mb: 3072
+  kahuna:
+    storage: rocksdb
+    wal_storage: rocksdb
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:heldhistory2"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 50000
+  mode: closed
+  workers: 64
+  connections: 32
+  duration: 30m
+  warmup: 1m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+nemesis:
+  seed: 1
+  events:
+    - { at: 28m, fault: kill, target: leader, duration: 15s }
+checks:
+  require_recovery: false
+  require_progress_under_fault: false
+teardown: true
