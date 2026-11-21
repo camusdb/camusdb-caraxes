@@ -1,0 +1,64 @@
+# Worker bracket of k117-sol-tmpfs-n1 (2026-11-19) for the PostgreSQL comparison (tools/pgbench-bank): the same single-node Solarium
+# tmpfs bank body at 512 workers over 128 connections, with a 3-minute warm-up and a 5-minute window (the 256-worker arm was flat
+# from its first measured minute). Run with --skip-build.
+#
+# Single-node arm of k117-sol-tmpfs-head (2026-11-18): the same image (k1170), Solarium store and WAL on tmpfs, isolation and
+# 256-worker bank body, on one node at replication factor 1 and with no nemesis. The Solarium twin of k117-ser-tmpfs-n1, against
+# the three-node arm's 14,319 txn/s (k117-sol-tmpfs-head-k117). Only the topology differs: nodes 1, replication factor 1,
+# balancers off. The 8192 MiB limit is kept: the three-node Solarium nodes peaked near 4.9 GiB (the RocksDB single-node arm
+# was OOM-killed at 8 GiB), and the engine budgets and heap are pinned, so the limit only bounds the tmpfs data.
+# Run it with --skip-build: the scenario names a historical image, and a build would retag it from the current ~/camusdb tree.
+name: k117-sol-tmpfs-n1-w512
+cluster:
+  name: k117stw512
+  nodes: 1
+  partitions: 1
+  replication_factor: 1
+  placement_rebalancer: false
+  leader_balancer: false
+  key_range_sharding: false
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 2458
+  tls: false
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    durable_materialize_on_resolve: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  env:
+    MALLOC_ARENA_MAX: "2"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1170"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+    optimistic_intent_wait_ms: 100
+    serializable_optimistic_point_locks: false
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 512
+  connections: 128
+  duration: 5m
+  warmup: 3m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true

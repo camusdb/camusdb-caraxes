@@ -1,0 +1,59 @@
+# GC and write-hold defaults (2026-11-20): single-node k117-sol-tmpfs-n1 body, 3-minute warm-up and 4-minute window, one change per arm.
+# One node on tmpfs, 64 workers, image t5 (CamusDB 97319e2d, Kahuna.Core 1.18.0). GC mode and heap limit varied separately: adaptation off with a 48 MiB gen0 budget per heap, heap limit 3,584 MiB, default 1 ms hold.
+# Run with --skip-build.
+name: t5-n1-w64-f3584
+cluster:
+  name: t5f35
+  nodes: 1
+  partitions: 1
+  replication_factor: 1
+  placement_rebalancer: false
+  leader_balancer: false
+  key_range_sharding: false
+  locking: optimistic
+  isolation: serializable
+  diagnostics: true
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 3584
+  tls: false
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    durable_materialize_on_resolve: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+  env:
+    MALLOC_ARENA_MAX: "2"
+    DOTNET_GCDynamicAdaptationMode: "0"
+    DOTNET_GCgen0size: "3000000"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:t5"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+    optimistic_intent_wait_ms: 100
+    serializable_optimistic_point_locks: false
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 64
+  connections: 64
+  duration: 4m
+  warmup: 3m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: true
+  metrics_interval: 5s
+  cluster_facts: true
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: true
+  require_quiet_host: true
+teardown: true
