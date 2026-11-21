@@ -1,0 +1,62 @@
+# PostgreSQL-gap exploration (2026-11-19): single-node k117-sol-tmpfs-n1 body, 3-minute warm-up and 4-minute window, one change per arm.
+# 256 workers, the combined arm with no meter listener.
+# Run with --skip-build.
+name: pg1-n1-w256-best-nometrics
+cluster:
+  name: pg1bn256
+  nodes: 1
+  partitions: 1
+  replication_factor: 1
+  placement_rebalancer: false
+  leader_balancer: false
+  key_range_sharding: false
+  locking: optimistic
+  isolation: serializable
+  diagnostics: false
+  memory_limit_mb: 8192
+  data_tmpfs_mb: 6144
+  gc_heap_hard_limit_mb: 3584
+  tls: false
+  kahuna:
+    storage: solarium
+    wal_storage: solarium
+    durable_materialize_on_resolve: true
+    rocksdb_shared_memory_budget_mb: 768
+    rocksdb_shared_memtable_budget_mb: 256
+    one_phase_apply_time_validation: true
+    staged_base_fence_retention_ms: 600000
+    key_value_write_post_completion_hold_ms: 0
+    key_value_write_linger_ms: 0
+  env:
+    MALLOC_ARENA_MAX: "2"
+    DOTNET_GCDynamicAdaptationMode: "0"
+    DOTNET_GCgen0size: "3000000"
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:k1170"
+  camusdb:
+    point_read_row_id_cache_enabled: true
+    optimistic_intent_wait_ms: 100
+    serializable_optimistic_point_locks: false
+    engine_metrics_enabled: false
+workload:
+  kind: bank
+  database: caraxes
+  rows: 2000
+  mode: closed
+  workers: 256
+  connections: 64
+  duration: 4m
+  warmup: 3m
+  drain: 30s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  node_metrics: false
+  metrics_interval: 5s
+  cluster_facts: false
+  routing_mode: learned
+checks:
+  require_client_headroom: true
+  require_cluster_facts: false
+  require_quiet_host: true
+teardown: true
