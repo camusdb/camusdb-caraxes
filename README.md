@@ -209,10 +209,15 @@ and not a coincidence.
 
 Kahuna runs a split only on the node that leads the partition owning the range map, so the fault asks the
 target first and then every other node, following the leader hint when an answer carries one; a dead or
-partitioned target is simply skipped. A refusal that can clear with time (the halves not yet settled, a
-quiesce that did not confirm, a transfer that failed) is asked again every half second until
+partitioned target is simply skipped. A node that answers an error instead of a result (an HTTP 500) is
+asked again when it is the node the last `NotLeader` answer named, because no other node can run the
+split; any other node gives way to the next. A node that already answered `NotLeader` is asked again only
+after half a second, so an election, in which every node answers that at once, does not use up the asks.
+A refusal that can clear with time (the halves not yet settled, a quiesce that did not confirm, a transfer
+that failed, a scan for the split key that did not settle) is asked again every half second until
 `split_timeout_seconds` (default 60) or `split_retries` (default 60) run out; an indeterminate answer is
-judged by the range count the next answer reports. The call is loopback-only without authentication, so it
+judged by the range count the next answer reports. A failed outcome names the last ask and keeps the error
+of an earlier ask that a later answer followed. The call is loopback-only without authentication, so it
 runs inside the node's network namespace like `leader-transfer`. The heal is a no-op that closes the window
 `duration` later. Every outcome goes to the timeline and to the verdict, which fails the run when a
 scheduled split did not commit: a cutover that never happened is the scenario's claim not happening.

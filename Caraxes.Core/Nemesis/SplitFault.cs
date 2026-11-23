@@ -36,6 +36,13 @@ public sealed record SplitOutcome(
 }
 
 /// <summary>
+/// An answer of a node that is not a split result: the error page of an HTTP 500, an empty body, a JSON
+/// body without a status. The node is up and the call failed inside it. A node that did not answer at
+/// all (a dead container, a refused connection) fails the call with another exception.
+/// </summary>
+public sealed class SplitAnswerException(string message) : Exception(message);
+
+/// <summary>
 /// A range split at a chosen moment: CamusDB's <c>POST /v1/cluster/split-range</c> divides one key space of
 /// the workload's table at its median key, through the same quiesce, copy, hand-off and cutover the
 /// load-based trigger runs. The trigger's timing is a function of load and settle windows, so a scenario
@@ -52,15 +59,25 @@ public sealed record SplitOutcome(
 /// <para>Who answers. Kahuna runs a split only on the node that leads the partition owning the range
 /// map, so the fault asks the target first and then every other node, following the leader hint when the
 /// answer carries one. A refusal that can clear with time — the halves not yet settled, a quiesce that
-/// did not confirm, a transfer that failed — is asked again until <c>split_timeout_seconds</c> runs out
-/// or <c>split_retries</c> asks were made; an indeterminate answer is judged by the range count the
-/// next answer reports, because the map may have moved after all. A permanent refusal (no range, the
-/// partition limit, a malformed request) ends the attempt at once.</para>
+/// did not confirm, a transfer that failed, a scan for the split key that did not settle — is asked
+/// again until <c>split_timeout_seconds</c> runs out or <c>split_retries</c> asks were made; an
+/// indeterminate answer is judged by the range count the next answer reports, because the map may have
+/// moved after all. A permanent refusal (no range, the partition limit, a malformed request) ends the
+/// attempt at once.</para>
+///
+/// <para>Which node is asked next. A node that does not answer gives way to the next one. A node that
+/// answers an error instead of a result (<see cref="SplitAnswerException"/>) is asked again when it is
+/// the node the last <c>NotLeader</c> answer named, because no other node can run the split; on
+/// 2026-11-23 the fault left a leader whose scan had failed, spent the rest of a 12 s budget on a node
+/// that answered <c>NotLeader</c>, and the split never ran. A node that already answered
+/// <c>NotLeader</c> is asked again only after a pause: during an election every node answers that at
+/// once, and asks without a pause would use up <c>split_retries</c> before a leader exists.</para>
 ///
 /// <para>The window. The split completes inside the call, so the heal is a no-op that closes the window
 /// <c>duration</c> later for the correlator. The outcome goes to the timeline and to
 /// <see cref="NemesisContext.SplitOutcomes"/>, and the verdict fails a run in which a scheduled split did
-/// not commit: a cutover that never happened is the scenario's claim not happening.</para>
+/// not commit: a cutover that never happened is the scenario's claim not happening. A failed outcome
+/// names the last ask, and keeps the error of an earlier ask that a later answer followed.</para>
 /// </summary>
 public sealed class SplitFault : IFault
 {
@@ -70,10 +87,12 @@ public sealed class SplitFault : IFault
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>Outcomes after which the same ask can succeed a moment later.</summary>
+    /// <summary>Outcomes after which the same ask can succeed a moment later. <c>MedianScanFailed</c> is
+    /// CamusDB's own: Kahuna gave up on the scan that picks the split key, and no split was attempted.</summary>
     private static readonly IReadOnlySet<string> RetryableStatuses = new HashSet<string>(StringComparer.Ordinal)
     {
         "BelowMinRangeSize", "PartitionCreationFailed", "QuiesceFailed", "TransferFailed", "CutoverFailed", "ConcurrentSplit", "Indeterminate",
+        "MedianScanFailed",
     };
 
     private readonly NemesisContext context;
@@ -86,15 +105,34 @@ public sealed class SplitFault : IFault
 
     private readonly int retries;
 
+    private readonly Func<NodePlan, CancellationToken, Task<SplitRangeResult>> ask;
+
+    private readonly Func<CancellationToken, Task> pause;
+
     private string? lastOutcome;
 
     public SplitFault(NemesisContext context, string table, string? index, TimeSpan budget, int retries)
+        : this(context, table, index, budget, retries, ask: null, pause: null)
+    {
+    }
+
+    /// <summary>
+    /// The fault with the call to the node and the pause between asks replaced, for tests of the order
+    /// of the asks. A null <paramref name="ask"/> is the call to the node; a null <paramref name="pause"/>
+    /// waits half a second.
+    /// </summary>
+    public SplitFault(
+        NemesisContext context, string table, string? index, TimeSpan budget, int retries,
+        Func<NodePlan, CancellationToken, Task<SplitRangeResult>>? ask,
+        Func<CancellationToken, Task>? pause)
     {
         this.context = context;
         this.table = table;
         this.index = string.IsNullOrWhiteSpace(index) ? null : index.Trim();
         this.budget = budget;
         this.retries = retries;
+        this.ask = ask ?? AskNodeAsync;
+        this.pause = pause ?? (cancellationToken => Task.Delay(RetryDelay, cancellationToken));
     }
 
     public string Kind => "split";
@@ -117,29 +155,56 @@ public sealed class SplitFault : IFault
         int? descriptorsBefore = null;
         SplitRangeResult? last = null;
         string lastNode = target.Name;
-        string? transportError = null;
+
+        // The node the last NotLeader answer named, and the nodes that answered NotLeader.
+        string? leader = null;
+        HashSet<string> answeredNotLeader = new(StringComparer.Ordinal);
+
+        // An ask that ended without a split result. failedStatus is set while the most recent ask is
+        // such an ask; lastFailure keeps its text after a later ask answered.
+        string? failedStatus = null;
+        string? lastFailure = null;
 
         while (attempts < retries + 1 && DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
         {
             NodePlan node = order[nodeIndex % order.Count];
             attempts++;
+            lastNode = node.Name;
 
-            SplitRangeResult? result;
+            SplitRangeResult result;
             try
             {
-                result = await AskAsync(node, cancellationToken).ConfigureAwait(false);
-                transportError = null;
+                result = await ask(node, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SplitAnswerException ex)
+            {
+                // The node is up and the call failed inside it. The node the cluster named as the leader
+                // is the only one that can run the split, so it is asked again; another node gives way.
+                failedStatus = "NodeError";
+                lastFailure = ex.Message;
+
+                if (node.Name != leader)
+                    nodeIndex++;
+
+                await pause(cancellationToken).ConfigureAwait(false);
+                continue;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // No answer: the node is down or unreachable. Ask the next one.
-                transportError = $"{node.Name}: {ex.Message}";
+                failedStatus = "NoAnswer";
+                lastFailure = $"{node.Name} did not answer: {ex.Message}";
+
+                if (node.Name == leader)
+                    leader = null;
+
                 nodeIndex++;
-                await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false);
+                await pause(cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
-            lastNode = node.Name;
+            failedStatus = null;
+            string? previousStatus = last?.Status;
             last = result;
 
             if (result.Success)
@@ -150,7 +215,7 @@ public sealed class SplitFault : IFault
             {
                 result.Success = true;
                 result.Status = "Succeeded";
-                result.Reason = $"an earlier ask ended {last.Status} but the range count rose from {before} to {result.DescriptorsBefore}";
+                result.Reason = $"an earlier ask ended {previousStatus ?? "without an answer"} but the range count rose from {before} to {result.DescriptorsBefore}";
                 break;
             }
 
@@ -158,28 +223,48 @@ public sealed class SplitFault : IFault
 
             if (result.Status == "NotLeader")
             {
-                NodePlan? hinted = result.LeaderHint is null ? null : plan.Nodes.FirstOrDefault(n => LeaderTransferFault.RaftEndpoint(n) == result.LeaderHint);
-                nodeIndex = hinted is not null ? order.IndexOf(hinted) : nodeIndex + 1;
+                answeredNotLeader.Add(node.Name);
+
+                NodePlan? hinted = result.LeaderHint is null
+                    ? null
+                    : plan.Nodes.FirstOrDefault(n => LeaderTransferFault.RaftEndpoint(n) == result.LeaderHint && n.Name != node.Name);
+
+                leader = hinted?.Name;
+                nodeIndex = hinted is not null ? order.FindIndex(n => n.Name == hinted.Name) : nodeIndex + 1;
+
+                // During an election every node answers NotLeader at once. A node that already answered
+                // it is asked again after a pause, so the asks last as long as the budget.
+                if (answeredNotLeader.Contains(order[nodeIndex % order.Count].Name))
+                    await pause(cancellationToken).ConfigureAwait(false);
+
                 continue;
             }
 
             if (!RetryableStatuses.Contains(result.Status) && result.Determinate)
                 break;
 
-            await Task.Delay(RetryDelay, cancellationToken).ConfigureAwait(false);
+            await pause(cancellationToken).ConfigureAwait(false);
         }
 
         double seconds = (DateTime.UtcNow - started).TotalSeconds;
-        bool ok = last?.Success == true;
+        bool ok = failedStatus is null && last?.Success == true;
+
+        // The outcome names the last ask. When that ask answered, an earlier ask that did not is the
+        // usual reason the split did not commit, so its text stays in the reason.
+        string status = failedStatus ?? last?.Status ?? "NoAnswer";
+        string? reason = failedStatus is not null ? lastFailure : last?.Reason;
+
+        if (!ok && failedStatus is null && lastFailure is not null)
+            reason = $"{reason} An earlier ask failed: {lastFailure}";
 
         SplitOutcome outcome = new(
             table, index, lastNode,
-            last?.Status ?? "NoAnswer",
+            status,
             last?.KeySpace ?? "",
             last?.SplitKey,
             last?.NewPartitionId ?? 0,
             attempts, seconds, ok,
-            last?.Reason ?? transportError ?? "no node answered");
+            reason ?? "no node answered");
 
         context.RecordSplit(outcome);
         lastOutcome = outcome.Describe();
@@ -191,23 +276,39 @@ public sealed class SplitFault : IFault
     /// <summary>Nothing to undo: the cutover committed inside the injection. The heal only closes the window.</summary>
     public Task HealAsync(NodePlan target, ClusterPlan plan, CancellationToken cancellationToken) => Task.CompletedTask;
 
-    private async Task<SplitRangeResult> AskAsync(NodePlan node, CancellationToken cancellationToken)
+    private async Task<SplitRangeResult> AskNodeAsync(NodePlan node, CancellationToken cancellationToken)
     {
         string body = JsonSerializer.Serialize(new { database = context.Database, table, index });
         string answer = await InContainerHttp.PostAsync(node, "/v1/cluster/split-range", body, RequestBound, cancellationToken).ConfigureAwait(false);
 
+        return ParseAnswer(node.Name, answer);
+    }
+
+    /// <summary>
+    /// Reads the split result in a node's answer. Every result names its status, so a body that is not
+    /// JSON, or is JSON without a status, is some other answer of a node that is up: a
+    /// <see cref="SplitAnswerException"/>.
+    /// </summary>
+    public static SplitRangeResult ParseAnswer(string node, string answer)
+    {
+        SplitRangeResult? result;
+
         try
         {
-            return JsonSerializer.Deserialize<SplitRangeResult>(answer, JsonOptions)
-                ?? throw new InvalidOperationException("empty answer");
+            result = JsonSerializer.Deserialize<SplitRangeResult>(answer, JsonOptions);
         }
         catch (JsonException e)
         {
-            throw new InvalidOperationException($"split-range on {node.Name} answered something that is not its result: {Truncate(answer)} ({e.Message})");
+            throw new SplitAnswerException($"split-range on {node} answered something that is not its result: {Truncate(answer)} ({e.Message})");
         }
+
+        if (result is null || string.IsNullOrEmpty(result.Status))
+            throw new SplitAnswerException($"split-range on {node} answered something that is not its result: {Truncate(answer)}");
+
+        return result;
     }
 
-    private static string Truncate(string s) => s.Length <= 200 ? s : s[..200] + "…";
+    private static string Truncate(string s) => s.Length <= 300 ? s : s[..300] + "…";
 }
 
 /// <summary>Answer of CamusDB's <c>POST /v1/cluster/split-range</c>.</summary>
