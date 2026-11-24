@@ -63,6 +63,25 @@ public sealed class NemesisContext
             sqlStatements.Add(outcome);
     }
 
+    private readonly List<MigrationOutcome> migrations = [];
+
+    /// <summary>Every <c>migrate</c> event's outcome, in completion order. Read by the verification after the
+    /// workload.</summary>
+    public IReadOnlyList<MigrationOutcome> Migrations
+    {
+        get
+        {
+            lock (sqlGate)
+                return migrations.ToList();
+        }
+    }
+
+    public void RecordMigration(MigrationOutcome outcome)
+    {
+        lock (sqlGate)
+            migrations.Add(outcome);
+    }
+
     private readonly List<SplitOutcome> splitOutcomes = [];
 
     /// <summary>Every <c>split</c> event's outcome, in completion order. Read by the verdict after the
