@@ -421,6 +421,33 @@ the faults heal (`expect: any`) and requiring the element `present` proves a cut
 cleanly enough to run again. See `scenarios/schema-preflight.yml`, `schema-add-column-kill.yml` and
 `schema-index-kill.yml`.
 
+### Schema migrations in transactions (`migrate` fault)
+
+The `migrate` nemesis fault runs one schema migration in one explicit transaction on its target node while the workload
+runs: an index on the table the workload writes (an online build), a new table with a row, a new column, and a row that
+uses it, then COMMIT (or ROLLBACK, with `rollback: true`). It needs `transactional_ddl_enabled` on the nodes, through the
+`camusdb:` passthrough. `migration` numbers the migration, and its objects carry the number, so each event needs a number
+of its own. A migration refused with a retryable code is run again from BEGIN, up to `sql_retries` times; a COMMIT that
+answers `CADB0509` is sent again on the same transaction; a COMMIT that nobody answers is left as it is.
+
+After the workload, every live node must show each migration whole or absent: the table with its row, the column, the
+index with one entry for each row, and the row of the log table, all or none. All nodes must agree. A migration whose
+COMMIT answered ok must be whole; one that was refused or rolled back must be absent; one without an answer may be
+either. Then every node must accept a schema change, which a change set left pending or a DDL lock left held would
+refuse. A run in which no migration committed fails as VACUOUS. The findings go to the verdict and to
+`migration-verify.json`.
+
+```yaml
+cluster:
+  camusdb: { transactional_ddl_enabled: true }
+nemesis:
+  events:
+    - { at: 45s, fault: migrate, target: camus2, migration: 3, sql_timeout_seconds: 60 }
+    - { at: 46s, fault: kill,    target: camus2, duration: 12s }    # the node that runs the transaction
+```
+
+See `scenarios/schema-transaction-kill.yml`.
+
 ### Bank-transfer invariant workload
 
 `workload.kind: bank` swaps the shard-disjoint baseline for **transfers between two rows across the

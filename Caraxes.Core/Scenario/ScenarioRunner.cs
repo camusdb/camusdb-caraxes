@@ -167,6 +167,17 @@ public sealed class ScenarioRunner
                     .ConfigureAwait(false);
             }
 
+            // Still up, and quiescent, for the same reason: every migration is whole or absent on every node.
+            if (nemesisContext?.Migrations is { Count: > 0 } migrations)
+            {
+                Console.WriteLine("==> verifying the migrations on the live cluster");
+                List<NodePlan> migrationNodes = plan.Nodes.Concat(nemesisContext.JoinedNodes.Select(j => j.Node)).ToList();
+                migrationVerify = await new Caraxes.Core.Schema.MigrationVerifier(
+                        scenario.Workload.Database, migrationNodes, TimeSpan.FromSeconds(180), TimeSpan.FromSeconds(60))
+                    .VerifyAsync(migrations, Path.Combine(artifactsDir, "run", "migration-verify.json"), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             // Still up, and quiescent: the chain is closed over the final ledger and the live
             // fingerprint is read now, so the rehearsal after teardown has something exact to match.
             if (scenario.BackupVerify is not null)
@@ -252,6 +263,8 @@ public sealed class ScenarioRunner
 
     /// <summary>The schema verification, when the scenario asked for one.</summary>
     private Caraxes.Core.Schema.SchemaVerifyResult? schemaVerify;
+
+    private Caraxes.Core.Schema.MigrationVerifyResult? migrationVerify;
 
     /// <summary>
     /// Waits for partition leadership to settle before the measured window opens, and records where it
@@ -678,6 +691,7 @@ public sealed class ScenarioRunner
         GradeBackupVerify(notes, ref passed);
         GradeSqlStatements(notes, ref passed);
         GradeSplits(notes, ref passed);
+        GradeMigrations(notes, ref passed);
         GradeSchemaVerify(outputDir, notes, ref passed);
         GradeDivergentApply(outputDir, notes, ref passed);
         GradeSuspend(notes, ref passed);
@@ -825,6 +839,45 @@ public sealed class ScenarioRunner
         if (outcomes.Count < scheduled)
         {
             notes.Add($"  CHECK FAILED: split: {scheduled - outcomes.Count} of {scheduled} split(s) never ran (see timeline.jsonl: a target that did not resolve, or a run that ended first)");
+            passed = false;
+        }
+    }
+
+    /// <summary>
+    /// Fails a run in which a migration was left in part, on some nodes only, or against the answer of its
+    /// COMMIT, and a run in which no migration committed, because such a run tested nothing.
+    /// </summary>
+    private void GradeMigrations(List<string> notes, ref bool passed)
+    {
+        int scheduled = scenario.Nemesis?.Events.Count(e => e.Fault == "migrate") ?? 0;
+        if (scheduled == 0)
+            return;
+
+        IReadOnlyList<MigrationOutcome> outcomes = nemesisContext?.Migrations ?? [];
+        notes.Add($"migrations: {scheduled} scheduled, {outcomes.Count} ran, {outcomes.Count(o => o.End == MigrationEnd.Committed)} committed, " +
+                  $"{outcomes.Count(o => o.End == MigrationEnd.NotCommitted)} not committed, {outcomes.Count(o => o.End == MigrationEnd.Unknown)} without an answer");
+        foreach (MigrationOutcome outcome in outcomes)
+            notes.Add($"  {outcome.Describe()}");
+
+        if (migrationVerify is null)
+        {
+            notes.Add("  CHECK FAILED: migrations: the verification did not run (the workload or seeding failed before it, or no migration ran)");
+            passed = false;
+            return;
+        }
+
+        notes.Add($"  verified on {migrationVerify.Nodes.Count} node(s): {migrationVerify.Whole} whole, {migrationVerify.Absent} absent" +
+                  (migrationVerify.ConvergedAfterSeconds is double s ? $", converged after {s:0.0} s" : ", never converged") +
+                  (migrationVerify.AcceptsSchemaChangesAfterSeconds is double a ? $", schema changes accepted after {a:0.0} s" : "") +
+                  " (migration-verify.json)");
+        foreach (string failure in migrationVerify.Failures)
+            notes.Add($"  CHECK FAILED: migrations: {failure}");
+        if (!migrationVerify.Passed)
+            passed = false;
+
+        if (outcomes.All(o => o.End != MigrationEnd.Committed))
+        {
+            notes.Add("  CHECK FAILED: VACUOUS: no migration committed");
             passed = false;
         }
     }

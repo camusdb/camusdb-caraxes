@@ -14,7 +14,7 @@ namespace Caraxes.Core.Nemesis;
 public static class FaultFactory
 {
     public static readonly IReadOnlyList<string> KnownKinds =
-        ["kill", "stop", "pause", "partition", "slow", "loss", "fill-disk", "slow-disk", "remove-node", "leader-transfer", "clock-skew", "backup", "add-node", "sql", "disk-corrupt", "split"];
+        ["kill", "stop", "pause", "partition", "slow", "loss", "fill-disk", "slow-disk", "remove-node", "leader-transfer", "clock-skew", "backup", "add-node", "sql", "migrate", "disk-corrupt", "split"];
 
     public static void EnsureKnownKind(string kind)
     {
@@ -45,6 +45,7 @@ public static class FaultFactory
         "backup" => new BackupFault(e.BackupKind),
         "add-node" => new AddNodeFault(context, e.NodeName, e.SeedFromBackup),
         "sql" => new SqlFault(context, e.Sql!, e.Expect, TimeSpan.FromSeconds(e.SqlTimeoutSeconds), e.SqlRetries),
+        "migrate" => new MigrateFault(context, e.Migration, e.Rollback, TimeSpan.FromSeconds(e.SqlTimeoutSeconds), e.SqlRetries),
         "disk-corrupt" => new DiskCorruptFault(e.Damage!, e.DamageLayer, e.DamageFile, e.DamageSeed, e.DamageCount, context),
         "split" => new SplitFault(context, e.SplitTable, e.SplitIndex, TimeSpan.FromSeconds(e.SplitTimeoutSeconds), e.SplitRetries),
         _ => throw new NemesisException($"unknown fault '{e.Fault}'"),

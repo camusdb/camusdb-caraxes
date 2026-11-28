@@ -32,6 +32,9 @@ public sealed class NemesisSpec
         foreach (NemesisEvent e in Events)
             e.Validate();
 
+        if (Events.Where(e => e.Fault == "migrate").GroupBy(e => e.Migration).FirstOrDefault(g => g.Count() > 1) is { } twice)
+            throw new NemesisException($"nemesis event 'migrate': migration {twice.Key} is scheduled more than once");
+
         Random?.Validate();
     }
 
@@ -48,7 +51,7 @@ public sealed class NemesisSpec
 public sealed class NemesisEvent
 {
     /// <summary>Fault kind: kill | stop | pause | partition | slow | loss | fill-disk | slow-disk | disk-corrupt | remove-node |
-    /// leader-transfer | clock-skew | backup | add-node | sql | split.</summary>
+    /// leader-transfer | clock-skew | backup | add-node | sql | migrate | split.</summary>
     public string Fault { get; set; } = "";
 
     /// <summary>Target: a node name (camusN) or <c>random</c>.</summary>
@@ -153,6 +156,13 @@ public sealed class NemesisEvent
     /// (<c>CADB0502</c>, <c>CADB0504</c>). Default 10; 0 tests the first attempt alone.</summary>
     public int SqlRetries { get; set; } = 10;
 
+    /// <summary>The number of the migration that the <c>migrate</c> fault runs, unique in the scenario. Required for
+    /// that fault, refused for every other kind.</summary>
+    public int Migration { get; set; }
+
+    /// <summary>Whether the <c>migrate</c> fault rolls its transaction back instead of committing it.</summary>
+    public bool Rollback { get; set; }
+
     /// <summary>The table whose key space the <c>split</c> fault divides, in the workload's database. Default
     /// <c>workload_accounts</c>, the bank table.</summary>
     public string SplitTable { get; set; } = "workload_accounts";
@@ -192,6 +202,12 @@ public sealed class NemesisEvent
 
         if (Fault != "sql" && Sql is not null)
             throw new NemesisException($"nemesis event '{Fault}': 'sql' is only meaningful for the sql fault");
+
+        if (Fault == "migrate" && Migration < 1)
+            throw new NemesisException("nemesis event 'migrate': give the migration a number >= 1 in 'migration'");
+
+        if (Fault != "migrate" && (Migration != 0 || Rollback))
+            throw new NemesisException($"nemesis event '{Fault}': 'migration' and 'rollback' are only meaningful for the migrate fault");
 
         if (!SqlFault.Expectations.Contains(Expect))
             throw new NemesisException(
@@ -300,6 +316,8 @@ public sealed class RandomNemesisSpec
             FaultFactory.EnsureKnownKind(fault);
             if (fault == "sql")
                 throw new NemesisException("nemesis.random cannot draw 'sql': a statement has to be written out, so schedule it as an event");
+            if (fault == "migrate")
+                throw new NemesisException("nemesis.random cannot draw 'migrate': each migration needs a number of its own, so schedule it as an event");
         }
 
         try

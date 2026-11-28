@@ -1,0 +1,62 @@
+# SCHEMA MIGRATIONS IN EXPLICIT TRANSACTIONS, UNDER BANK TRAFFIC, WHILE NODES DIE. Each migration creates an index on
+# the table the transfers write (an online build), a table with a row, a column, and a row that uses the column, all in
+# one transaction, and commits it. The kills are aimed at three things: the node that runs the transaction (its client
+# sees no answer), a node that only hosts replicas or leads the schema log, and the moment of COMMIT.
+#
+# Verdict: on every node each migration is whole or absent, the same everywhere, and as the answer of its COMMIT said;
+# the index of a whole migration holds one entry for each row; and every node accepts a schema change again. A change
+# set that stays pending, or a DDL lock that stays held, fails the last check. The bank ledger's checks still apply:
+# the transfers run against the tables the migrations change.
+#
+# The server needs transactional_ddl_enabled, which is off by default.
+name: schema-transaction-kill
+cluster:
+  name: schema-transaction-kill
+  nodes: 3
+  partitions: 3
+  replication_factor: 3
+  locking: optimistic
+  isolation: read_committed
+  camusdb:
+    transactional_ddl_enabled: true
+  camusdb_repo: "~/camusdb"
+  image: "caraxes/camusdb:txddl1"
+workload:
+  kind: bank
+  database: caraxes
+  rows: 10000
+  mode: closed
+  workers: 16
+  connections: 8
+  duration: 240s
+  warmup: 15s
+  drain: 10s
+  read_percent: 50
+  write_percent: 50
+  expect_faults: true
+  scan_probe_interval: 5s
+nemesis:
+  seed: 1
+  events:
+    # No fault, then a planned rollback.
+    - { at: 15s,   fault: migrate, target: camus1, duration: 1s, migration: 1, sql_timeout_seconds: 60 }
+    - { at: 30s,   fault: migrate, target: camus2, duration: 1s, migration: 2, sql_timeout_seconds: 60, rollback: true }
+    # The node that runs the transaction dies: early (the online build), and later (near COMMIT).
+    - { at: 45s,   fault: migrate, target: camus2, duration: 1s, migration: 3, sql_timeout_seconds: 60 }
+    - { at: 46s,   fault: kill,    target: camus2, duration: 12s }
+    - { at: 75s,   fault: migrate, target: camus3, duration: 1s, migration: 4, sql_timeout_seconds: 60 }
+    - { at: 78s,   fault: kill,    target: camus3, duration: 12s }
+    # Another node dies: one of these kills takes the schema leader.
+    - { at: 105s,  fault: migrate, target: camus1, duration: 1s, migration: 5, sql_timeout_seconds: 60 }
+    - { at: 106s,  fault: kill,    target: camus2, duration: 12s }
+    - { at: 135s,  fault: migrate, target: camus2, duration: 1s, migration: 6, sql_timeout_seconds: 60 }
+    - { at: 137s,  fault: kill,    target: camus1, duration: 12s }
+    - { at: 165s,  fault: migrate, target: camus1, duration: 1s, migration: 7, sql_timeout_seconds: 60 }
+    - { at: 166s,  fault: pause,   target: camus3, duration: 8s }
+    # After the faults.
+    - { at: 200s,  fault: migrate, target: camus3, duration: 1s, migration: 8, sql_timeout_seconds: 60 }
+checks:
+  max_recovery_seconds: 60
+  # A correctness arm: each committed migration leaves one more index on the table the transfers write.
+  grade_recovery: false
+teardown: true
